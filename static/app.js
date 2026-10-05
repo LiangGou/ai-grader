@@ -4,54 +4,163 @@
 
   function $(id) { return document.getElementById(id); }
 
-  /* ---------- Web Speech API transcription (en-US) ---------- */
-  function bindVoice(btnId, textareaId, statusId) {
-    var btn = $(btnId), stopBtn = $("stopVoiceBtn"), ta = $(textareaId);
-    if (!btn || !ta) return;
-    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-      btn.disabled = true;
-      btn.textContent = "🎤 Voice input not supported in this browser";
-      return;
+  /* ---------- Record-then-transcribe voice memos (Whisper) ----------
+     window.recordAndTranscribe({container, onText, onError, onCancel}):
+     tap record -> animated waveform + timer -> tap stop -> audio POSTed to
+     /api/transcribe -> onText(transcript). Manual typing always stays available. */
+  window.recordAndTranscribe = function (options) {
+    options = options || {};
+    var container = options.container;
+    var onText = options.onText || function () {};
+    var onError = options.onError || function () {};
+    var onCancel = options.onCancel || function () {};
+    if (!container) { onError("Voice recorder: no container element."); return null; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      onError("This browser cannot access the microphone. Please type instead.");
+      return null;
     }
-    var rec = new SR();
-    rec.lang = "en-US";
-    rec.interimResults = true;
-    rec.continuous = true;
-    var baseText = "";
-    rec.onresult = function (e) {
-      var interim = "";
-      for (var i = e.resultIndex; i < e.results.length; i++) {
-        var t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) baseText += t;
-        else interim += t;
+    if (typeof MediaRecorder === "undefined") {
+      onError("Audio recording is not supported in this browser. Please type instead.");
+      return null;
+    }
+
+    var panel = document.createElement("div");
+    panel.className = "rec-panel";
+    panel.innerHTML =
+      '<div class="rec-top"><span class="rec-dot"></span>' +
+      '<span class="rec-timer">0:00</span>' +
+      '<span class="rec-hint">Recording… tap Stop when done</span></div>' +
+      '<canvas class="rec-wave" width="600" height="120"></canvas>' +
+      '<div class="rec-actions">' +
+      '<button type="button" class="btn btn-primary btn-small rec-stop">⏹ Stop</button>' +
+      '<button type="button" class="btn btn-small rec-cancel">Cancel</button></div>';
+    container.innerHTML = "";
+    container.appendChild(panel);
+    var canvas = panel.querySelector(".rec-wave");
+    var timerEl = panel.querySelector(".rec-timer");
+    var hintEl = panel.querySelector(".rec-hint");
+    var stopBtn = panel.querySelector(".rec-stop");
+    var cancelBtn = panel.querySelector(".rec-cancel");
+
+    var stream = null, recorder = null, audioCtx = null, analyser = null;
+    var rafId = null, timerId = null, chunks = [], startTime = 0, finished = false;
+
+    function cleanup() {
+      finished = true;
+      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+      if (timerId) { clearInterval(timerId); timerId = null; }
+      try { if (audioCtx) audioCtx.close(); } catch (e) { /* noop */ }
+      audioCtx = null;
+      if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    }
+    function fail(msg) {
+      cleanup();
+      panel.innerHTML = "";
+      onError(msg);
+    }
+    function pickMime() {
+      var cands = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus", "audio/mp4;codecs=mp4a"];
+      for (var i = 0; i < cands.length; i++) {
+        try { if (MediaRecorder.isTypeSupported(cands[i])) return cands[i]; } catch (e) { /* noop */ }
       }
-      ta.value = (baseText + interim).trim();
-    };
-    rec.onend = function () {
-      btn.style.display = "";
-      if (stopBtn) stopBtn.style.display = "none";
-      setStatus("Transcription ended — click the button again to add more, or edit the box directly.");
-    };
-    rec.onerror = function (e) {
-      setStatus("Speech recognition error: " + e.error + ". Please check microphone permission and try again.");
-      btn.style.display = "";
-      if (stopBtn) stopBtn.style.display = "none";
-    };
-    function setStatus(msg) {
-      var s = statusId ? $(statusId) : null;
-      if (s) s.textContent = msg;
+      return "";
     }
-    btn.addEventListener("click", function () {
-      baseText = ta.value ? ta.value.trim() + " " : "";
-      try {
-        rec.start();
-        btn.style.display = "none";
-        if (stopBtn) { stopBtn.style.display = ""; stopBtn.onclick = function () { rec.stop(); }; }
-        setStatus("🎙 Listening… click “Stop” when done.");
-      } catch (err) { setStatus("Failed to start speech recognition: " + err.message); }
+    function draw() {
+      if (finished || !analyser) return;
+      var ctx = canvas.getContext("2d");
+      var W = canvas.width, H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+      var data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(data);
+      var n = data.length, bw = W / n;
+      for (var i = 0; i < n; i++) {
+        var v = data[i] / 255, h = Math.max(3, v * H);
+        ctx.fillStyle = "hsl(" + (210 - Math.round(v * 60)) + ", 80%, 55%)";
+        ctx.fillRect(i * bw + 1, (H - h) / 2, Math.max(1, bw - 2), h);
+      }
+      rafId = requestAnimationFrame(draw);
+    }
+    function tick() {
+      var s = Math.floor((Date.now() - startTime) / 1000);
+      timerEl.textContent = Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2);
+    }
+    function send(blob) {
+      hintEl.textContent = "Transcribing…";
+      stopBtn.disabled = true;
+      cancelBtn.disabled = true;
+      var fd = new FormData();
+      var ext = (blob.type.indexOf("mp4") !== -1 || blob.type.indexOf("m4a") !== -1) ? "m4a" : "webm";
+      fd.append("audio", blob, "memo." + ext);
+      fetch("/api/transcribe", { method: "POST", body: fd })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          cleanup();
+          panel.innerHTML = "";
+          if (!data.ok) { onError(data.error || "Transcription failed. Please try again."); return; }
+          onText(data.text || "");
+        })
+        .catch(function (e) {
+          cleanup();
+          panel.innerHTML = "";
+          onError("Transcription request failed: " + e.message);
+        });
+    }
+
+    stopBtn.addEventListener("click", function () {
+      if (finished || !recorder) return;
+      finished = true;
+      try { recorder.stop(); }
+      catch (e) { fail("Could not stop the recording. Please try again."); }
     });
-  }
+    cancelBtn.addEventListener("click", function () {
+      cleanup();
+      panel.innerHTML = "";
+      onCancel();
+    });
+
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (s) {
+      stream = s;
+      var mime = pickMime();
+      try {
+        recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      } catch (e) { fail("Could not start the recorder: " + e.message); return; }
+      recorder.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+      recorder.onstop = function () {
+        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+        if (timerId) { clearInterval(timerId); timerId = null; }
+        try { if (audioCtx) audioCtx.close(); } catch (e2) { /* noop */ }
+        audioCtx = null;
+        var blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        stream = null;
+        if (!blob.size) { panel.innerHTML = ""; onError("The recording is empty. Please try again."); return; }
+        send(blob);
+      };
+      recorder.onerror = function () { fail("Recording error. Please check the microphone and try again."); };
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        var src = audioCtx.createMediaStreamSource(stream);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 64;
+        analyser.smoothingTimeConstant = 0.75;
+        src.connect(analyser);
+      } catch (e) { fail("Could not read microphone audio: " + e.message); return; }
+      chunks = [];
+      try { recorder.start(250); }
+      catch (e) { fail("Could not start the recorder: " + e.message); return; }
+      startTime = Date.now();
+      tick();
+      timerId = setInterval(tick, 250);
+      draw();
+    }).catch(function (e) {
+      var msg = "Microphone access was denied. Please allow microphone access and try again.";
+      if (e && e.name === "NotFoundError") msg = "No microphone found on this device.";
+      else if (e && e.name === "NotAllowedError") msg = "Microphone access was denied. Please allow it in the browser settings and try again.";
+      fail(msg);
+    });
+
+    return { cancel: function () { if (!finished) { cleanup(); panel.innerHTML = ""; onCancel(); } } };
+  };
 
   /* ---------- Assignment setup page: structured rubric ---------- */
   function rubricRow(item) {
@@ -89,7 +198,29 @@
     var rowsBox = $("itemsRows");
     (window.EXISTING_ITEMS || []).forEach(function (it) { rowsBox.appendChild(rubricRow(it)); });
 
-    bindVoice("voiceBtn", "transcript", "voiceStatus");
+    function setVoiceStatus(msg, isError) {
+      var s = $("voiceStatus");
+      if (s) {
+        s.textContent = msg;
+        s.classList.toggle("error-text", !!isError);
+      }
+    }
+    $("voiceBtn").addEventListener("click", function () {
+      var btn = this;
+      btn.disabled = true;
+      setVoiceStatus("Starting recorder…", false);
+      window.recordAndTranscribe({
+        container: $("recPanel"),
+        onText: function (text) {
+          btn.disabled = false;
+          setVoiceStatus(text ? "Transcribed — review the notes below, then generate the structured rubric." : "Got empty transcription — please try again.", !text);
+          var ta = $("transcript");
+          ta.value = ta.value ? ta.value.replace(/\s+$/, "") + "\n" + text : text;
+        },
+        onError: function (msg) { btn.disabled = false; setVoiceStatus(msg, true); },
+        onCancel: function () { btn.disabled = false; setVoiceStatus("Recording cancelled.", false); }
+      });
+    });
 
     $("addRowBtn").addEventListener("click", function () {
       rowsBox.appendChild(rubricRow());
@@ -158,7 +289,19 @@
 
   /* ---------- Grading page ---------- */
   if ($("gradeBtn") && typeof window.ASSIGNMENT_ID !== "undefined") {
-    bindVoice("nameVoiceBtn", "studentName", null);
+    $("nameVoiceBtn").addEventListener("click", function () {
+      var btn = this;
+      btn.disabled = true;
+      window.recordAndTranscribe({
+        container: $("nameRecPanel"),
+        onText: function (text) {
+          btn.disabled = false;
+          $("studentName").value = (text || "").trim();
+        },
+        onError: function (msg) { btn.disabled = false; alert(msg); },
+        onCancel: function () { btn.disabled = false; }
+      });
+    });
     var input = $("photoInput"), preview = $("preview");
     input.addEventListener("change", function () {
       preview.innerHTML = "";

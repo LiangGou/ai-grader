@@ -110,3 +110,27 @@ label { font-size: 14px; font-weight: bold; }
 .howto { font-size: 14px; padding-left: 20px; }
 .howto li { margin-bottom: 6px; }
 code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+
+/* Voice-memo recording panel (record -> Whisper transcribe) */
+.rec-panel {
+  background: #1c1e22; color: #eee; border-radius: 12px;
+  padding: 12px; margin: 10px 0;
+}
+.rec-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.rec-dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: #ff3b30; flex: none;
+  animation: rec-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(.8); }
+}
+.rec-timer { font-variant-numeric: tabular-nums; font-weight: bold; font-size: 16px; }
+.rec-hint { font-size: 13px; color: #aaa; margin-left: auto; }
+.rec-wave {
+  width: 100%; height: 90px; display: block;
+  background: #26282e; border-radius: 8px;
+}
+.rec-actions { display: flex; gap: 8px; margin-top: 10px; }
+.rec-actions .btn { flex: 1; }

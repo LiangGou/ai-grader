@@ -50,8 +50,11 @@ Home (`/`) → create a class → create a grading assignment under it → land 
 the assignment setup page (`/assignment/<id>`).
 
 ### 3.2 Enter the rubric (voice → structure → edit → save)
-1. Click **🎤 Record rubric by voice** — the Web Speech API transcribes live
-   into the notes box (Chrome/Edge recommended).
+1. Click **🎤 Record rubric by voice** — a recording panel appears with an
+   animated waveform, a pulsing red dot, and a timer. Tap **⏹ Stop** when
+   done; the audio is POSTed to `/api/transcribe` and transcribed by OpenAI
+   Whisper (`whisper-1`, English), then appended to the notes box. Cancel
+   discards the recording. (Microphone permission required.)
 2. Click **✨ Generate Structured Rubric** — `POST /api/structure_rubric`
    sends the transcript to OpenAI, which returns per-question
    `{q, max_score, criteria}` items.
@@ -65,8 +68,8 @@ the assignment setup page (`/assignment/<id>`).
    /assignment/<id>/upload_reference`) — they are sent along as grading context.
 
 ### 3.3 Grade papers
-1. Open **📷 Grade** (`/grade/<id>`), enter the student name (voice input
-   supported), take/upload one or more paper photos.
+1. Open **📷 Grade** (`/grade/<id>`), enter the student name (🎤 records a
+   voice memo and Whisper fills the name field), take/upload one or more paper photos.
 2. Click **🚀 Grade Now** — `POST /api/grade` sends rubric + answer-key images
    + paper photos to GPT-4o, which returns per-question scores with rationales,
    detected answers, total, and overall feedback.
@@ -88,6 +91,7 @@ histogram (pure CSS/JS); the full score table; and **⬇️ Export CSV**
 | POST | `/assignment/new` | Create an assignment (form: `class_id`, `name`) |
 | GET | `/assignment/<id>` | Assignment setup page (rubric editor) |
 | POST | `/api/structure_rubric` | Transcript → structured rubric items (JSON: `{transcript}` → `{ok, items}`) |
+| POST | `/api/transcribe` | Voice memo (multipart `audio`) → Whisper transcript (`{ok, text}`) |
 | POST | `/assignment/<id>/save_rubric` | Save rubric (JSON: `{mode, items}` or `{mode:"text", raw_text}`) |
 | POST | `/assignment/<id>/upload_reference` | Upload answer-key photos (multipart `images`) |
 | GET | `/grade/<id>` | Grading page |
@@ -145,14 +149,23 @@ rendered as `"Question 1 (max 5 pts): …"` lines — more precise than free tex
 
 ## 7. Voice input approach
 
-- Browser-native **Web Speech API** (`SpeechRecognition` /
-  `webkitSpeechRecognition`), `lang = "en-US"`, `continuous + interimResults`
-  for live transcription. No API key, no audio leaves the browser for
-  transcription.
-- Used in two places: the rubric notes box and the student-name field.
-- **Manual fallback everywhere**: the transcript lands in an editable textarea;
-  unsupported browsers get a disabled button with an explanatory label instead
-  of a silent failure.
+- **Record → Whisper transcribe** (replaced the earlier Web Speech API live
+  transcription, whose accuracy was not good enough). Frontend
+  (`window.recordAndTranscribe` in `static/app.js`): `getUserMedia` →
+  `MediaRecorder` (prefers `audio/webm;codecs=opus`, falls back through
+  `audio/mp4` for iOS Safari) → live waveform via `AudioContext` +
+  `AnalyserNode` frequency bars on a `<canvas>`, pulsing red dot, elapsed
+  timer → on Stop, the blob is POSTed as multipart `audio` to
+  `POST /api/transcribe`.
+- Backend (`grader.transcribe_audio`): OpenAI Whisper `whisper-1`,
+  `language="en"`, `response_format="text"` (~$0.006/min). The temp upload is
+  deleted in a `finally` block. Missing audio → 400; missing API key →
+  400 (same `RuntimeError` convention as other endpoints).
+- Used in two places: the rubric notes box (transcript **appended**) and the
+  student-name field (transcript **set**).
+- **Manual fallback everywhere**: the transcript lands in editable fields;
+  mic denial / unsupported browsers show a friendly error instead of a
+  silent failure, and typing always works.
 
 ## 8. Security notes
 
@@ -185,7 +198,7 @@ Local run only:
 ## 10. Known limitations & future work
 
 **Limitations (MVP)**
-- Voice transcription needs Chrome/Edge; Safari support is limited.
+- Voice transcription needs microphone permission and an OpenAI key (Whisper `whisper-1`); transcription quality depends on recording clarity.
 - Very large photos may hit per-image model limits — clear, full-page shots
   work best.
 - Single-file SQLite won't suit many concurrent teachers (→ Postgres).

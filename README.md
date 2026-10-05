@@ -16,7 +16,7 @@ question against the rubric → totals are tallied → class-wide stats + CSV ex
 
 1. **Classes / assignments**: create a class → create grading assignments under it (homework/exam name).
 2. **Rubric entry** (assignment setup page):
-   - 🎤 Voice input: Web Speech API (`en-US`) transcribes live into the notes box (needs Chrome/Edge);
+   - 🎤 Voice input: tap record → animated waveform + timer while recording → tap Stop → the audio is sent to the server and transcribed by OpenAI Whisper (`whisper-1`, English, ~$0.006/min), then appended to the notes box;
    - ✨ Generate structured rubric: the backend asks OpenAI to turn the spoken notes into per-question JSON (`question label / max score / scoring rules`);
    - The structured table is fully editable: add/remove rows, change labels, max scores, rules;
    - Plain-text mode also supported: skip voice and just type the rubric;
@@ -87,6 +87,6 @@ ai-grader/
 
 ## Known limitations (MVP)
 
-- Voice transcription depends on the browser's Web Speech API (most reliable in Chrome/Edge; Safari support is limited);
+- Voice transcription uses OpenAI Whisper (`whisper-1`, ~$0.006/min) via a record → Stop → server-side transcribe flow; needs microphone permission and an API key;
 - Oversized photos may exceed the model's per-image limits — take clear but not excessively zoomed shots;
 - Single-file SQLite: switch to Postgres if many teachers use it concurrently.

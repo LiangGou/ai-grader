@@ -1,6 +1,7 @@
-"""Call the OpenAI API (chat completions + vision) for two jobs:
+"""Call the OpenAI API for three jobs:
 1. Turn the teacher's colloquial voice transcript into a structured rubric;
-2. Grade photos of a student's paper question-by-question against the rubric.
+2. Grade photos of a student's paper question-by-question against the rubric;
+3. Transcribe recorded voice memos with Whisper (record-then-transcribe flow).
 
 Images are sent as base64 data URLs; supports multiple paper photos plus
 optional reference/answer-key images.
@@ -97,6 +98,23 @@ def _chat_json(system, user_content, max_tokens):
     if not text:
         raise ValueError("The model returned an empty response. Please try again.")
     return _parse_json_loose(text)
+
+
+def transcribe_audio(path):
+    """Transcribe a recorded voice memo with OpenAI Whisper. Returns the transcript string.
+
+    Raises RuntimeError for missing API key (caller maps to 400); other API
+    errors propagate for the caller to report.
+    """
+    client = _get_client()
+    with open(path, "rb") as f:
+        text = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=f,
+            language="en",
+            response_format="text",
+        )
+    return (text or "").strip()
 
 
 def structure_rubric(transcript):

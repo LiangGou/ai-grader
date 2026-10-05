@@ -7,8 +7,8 @@
 <div class="card">
   <h3>Option 1: Voice input (recommended)</h3>
   <button type="button" id="voiceBtn" class="btn btn-voice">🎤 Record rubric by voice</button>
-  <button type="button" id="stopVoiceBtn" class="btn btn-small" style="display:none">⏹ Stop</button>
-  <p class="muted" id="voiceStatus">Click to start speaking; your speech is transcribed live into the box below (use Chrome / Edge).</p>
+  <div id="recPanel"></div>
+  <p class="muted" id="voiceStatus">Tap record, speak your grading rules, then tap Stop — Whisper transcribes them into the box below.</p>
   <textarea id="transcript" rows="5" placeholder="e.g. Question 1, 5 points: 3 points for the correct concept, 2 for complete steps; Question 2, 10 points…"></textarea>
   <button type="button" id="structureBtn" class="btn btn-primary" style="margin-top:10px">✨ Generate Structured Rubric</button>
   <p class="muted">AI turns your spoken notes into per-question max scores and scoring rules, shown in the table below for review.</p>

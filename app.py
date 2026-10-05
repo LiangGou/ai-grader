@@ -111,6 +111,36 @@ def api_structure_rubric():
     return jsonify({"ok": True, "items": result["items"]})
 
 
+@app.route("/api/transcribe", methods=["POST"])
+def api_transcribe():
+    audio = request.files.get("audio")
+    if audio is None or not (audio.filename or "").strip():
+        return jsonify({"ok": False, "error": "No audio received. Please record a voice memo first."}), 400
+    ext = os.path.splitext(audio.filename or "")[1].lower() or ".webm"
+    if ext not in (".webm", ".ogg", ".mp3", ".m4a", ".wav", ".mp4"):
+        ext = ".webm"
+    tmp_path = None
+    try:
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix="voice_")
+        os.close(fd)
+        audio.save(tmp_path)
+        if os.path.getsize(tmp_path) == 0:
+            return jsonify({"ok": False, "error": "The recording is empty. Please try recording again."}), 400
+        text = grader.transcribe_audio(tmp_path)
+    except RuntimeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"Transcription failed: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+    return jsonify({"ok": True, "text": text})
+
+
 @app.route("/assignment/<int:assignment_id>/save_rubric", methods=["POST"])
 def assignment_save_rubric(assignment_id):
     data = request.get_json(force=True, silent=True) or {}
