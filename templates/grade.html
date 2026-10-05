@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}判卷 - {{ a.name }}{% endblock %}
+{% block content %}
+<h2>📷 {{ a.name }}</h2>
+
+<div class="card">
+  <h3>学生</h3>
+  <div class="inline-form">
+    <input type="text" id="studentName" placeholder="学生姓名" maxlength="30" style="flex:1">
+    <button type="button" id="nameVoiceBtn" class="btn btn-voice btn-small">🎤</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>答卷照片</h3>
+  <label class="file-label">
+    <input type="file" id="photoInput" accept="image/*" capture="environment" multiple hidden>
+    <span class="btn btn-big">📸 拍照 / 上传答卷</span>
+  </label>
+  <p class="muted">可多张连拍（整张试卷拍全、字迹清晰效果最好）。</p>
+  <div id="preview" class="thumbs"></div>
+</div>
+
+<div class="sticky-bar">
+  <button type="button" id="gradeBtn" class="btn btn-primary btn-big">🚀 开始判分</button>
+  <a class="btn" href="{{ url_for('results_page', assignment_id=a.id) }}">📊 看成绩</a>
+</div>
+
+<div id="gradeLoading" class="card" style="display:none">
+  <p>⏳ AI 正在看卷判分，请稍候…（通常 10～30 秒）</p>
+</div>
+
+<div id="gradeError" class="card error" style="display:none"></div>
+
+<div id="gradeResult" class="card" style="display:none">
+  <h3>判分结果 <span class="muted" id="resultStudent"></span></h3>
+  <div id="questionsBox"></div>
+  <p class="total-line">总分：<input type="number" id="totalInput" step="0.5" min="0" class="score-input"> / <span id="maxTotal"></span></p>
+  <p><strong>整体评语</strong></p>
+  <textarea id="overallFeedback" rows="3"></textarea>
+  <button type="button" id="saveGradeBtn" class="btn btn-primary btn-big" style="margin-top:10px">💾 保存成绩</button>
+  <p class="muted" id="saveMsg"></p>
+</div>
+
+<script>
+window.ASSIGNMENT_ID = {{ a.id }};
+</script>
+{% endblock %}
