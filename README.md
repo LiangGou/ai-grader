@@ -16,10 +16,9 @@ question against the rubric → totals are tallied → class-wide stats + CSV ex
 
 1. **Classes / assignments**: create a class → create grading assignments under it (homework/exam name).
 2. **Rubric entry** (assignment setup page):
-   - 🎤 Voice input: tap record → animated waveform + timer while recording → tap Stop → the audio is sent to the server and transcribed by OpenAI Whisper (`whisper-1`, English, ~$0.006/min), then appended to the notes box;
-   - ✨ Generate structured rubric: the backend asks OpenAI to turn the spoken notes into per-question JSON (`question label / max score / scoring rules`);
+   - 🎤 Voice input: tap record → animated waveform + timer while recording → tap Stop → the audio is sent to the server and transcribed by OpenAI Whisper (`whisper-1`, English, ~$0.006/min), then appended to the notes box (the notes box stays editable — typing directly works too);
+   - ✨ Generate structured rubric: the backend asks OpenAI to turn the notes into per-question JSON (`question label / max score / scoring rules`); structuring is required — saving needs at least one table row;
    - The structured table is fully editable: add/remove rows, change labels, max scores, rules;
-   - Plain-text mode also supported: skip voice and just type the rubric;
    - Optional reference/answer-key photos, sent along as grading context.
 3. **Photo grading**: enter the student name (voice supported) → upload multiple paper photos (mobile opens the camera directly)
    → the backend sends the rubric + answer-key images + paper photos to GPT-4o, which must return strict JSON

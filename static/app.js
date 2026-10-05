@@ -256,14 +256,11 @@
 
     $("saveRubricBtn").addEventListener("click", function () {
       var items = collectItems();
-      var payload;
-      if (items.length > 0) {
-        payload = { mode: "structured", items: items };
-      } else {
-        var raw = $("rawText").value.trim();
-        if (!raw) { alert("The rubric is empty: generate the structured table by voice, or type in the plain-text box."); return; }
-        payload = { mode: "text", raw_text: raw };
+      if (items.length === 0) {
+        alert("The structured rubric is empty. Record or type the grading rules in Step 1, then click “✨ Generate Structured Rubric” first.");
+        return;
       }
+      var payload = { mode: "structured", items: items };
       var btn = $("saveRubricBtn");
       btn.disabled = true;
       btn.textContent = "Saving…";

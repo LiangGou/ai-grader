@@ -50,21 +50,21 @@ Home (`/`) → create a class → create a grading assignment under it → land 
 the assignment setup page (`/assignment/<id>`).
 
 ### 3.2 Enter the rubric (voice → structure → edit → save)
-1. Click **🎤 Record rubric by voice** — a recording panel appears with an
-   animated waveform, a pulsing red dot, and a timer. Tap **⏹ Stop** when
-   done; the audio is POSTed to `/api/transcribe` and transcribed by OpenAI
-   Whisper (`whisper-1`, English), then appended to the notes box. Cancel
-   discards the recording. (Microphone permission required.)
+1. Enter the grading rules — either **🎤 Record rubric by voice** (a recording
+   panel appears with an animated waveform, a pulsing red dot, and a timer;
+   tap **⏹ Stop** when done; the audio is POSTed to `/api/transcribe` and
+   transcribed by OpenAI Whisper (`whisper-1`, English), then appended to the
+   notes box; Cancel discards the recording; microphone permission required)
+   or just type directly into the notes box, which stays editable.
 2. Click **✨ Generate Structured Rubric** — `POST /api/structure_rubric`
-   sends the transcript to OpenAI, which returns per-question
+   sends the notes to OpenAI, which returns per-question
    `{q, max_score, criteria}` items.
 3. The items render as an editable table: add/remove rows, change the question
    label, max score, or scoring rules by typing.
-4. (Alternative) **Plain-text mode**: type the rubric directly; used when the
-   structured table is empty.
-5. Click **💾 Save Rubric** — `POST /assignment/<id>/save_rubric` stores both
-   the structured JSON and an auto-generated plain-text rendering.
-6. Optionally upload reference/answer-key photos (`POST
+4. Click **💾 Save Rubric** — `POST /assignment/<id>/save_rubric` stores both
+   the structured JSON and an auto-generated plain-text rendering. Saving
+   requires at least one table row; there is no plain-text-only path.
+5. Optionally upload reference/answer-key photos (`POST
    /assignment/<id>/upload_reference`) — they are sent along as grading context.
 
 ### 3.3 Grade papers
@@ -92,7 +92,7 @@ histogram (pure CSS/JS); the full score table; and **⬇️ Export CSV**
 | GET | `/assignment/<id>` | Assignment setup page (rubric editor) |
 | POST | `/api/structure_rubric` | Transcript → structured rubric items (JSON: `{transcript}` → `{ok, items}`) |
 | POST | `/api/transcribe` | Voice memo (multipart `audio`) → Whisper transcript (`{ok, text}`) |
-| POST | `/assignment/<id>/save_rubric` | Save rubric (JSON: `{mode, items}` or `{mode:"text", raw_text}`) |
+| POST | `/assignment/<id>/save_rubric` | Save rubric (JSON: `{mode:"structured", items}`; requires ≥1 row) |
 | POST | `/assignment/<id>/upload_reference` | Upload answer-key photos (multipart `images`) |
 | GET | `/grade/<id>` | Grading page |
 | POST | `/api/grade` | Grade photos (multipart: `assignment_id`, `student_name`, `images`) → `{ok, result, photos}` |

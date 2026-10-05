@@ -5,17 +5,17 @@
 <p class="muted">Enter the grading rubric. Recommended flow: 🎤 speak the rules → ✨ generate a structured rubric → review &amp; edit → save.</p>
 
 <div class="card">
-  <h3>Option 1: Voice input (recommended)</h3>
+  <h3>Step 1: Grading rules (voice or typing)</h3>
   <button type="button" id="voiceBtn" class="btn btn-voice">🎤 Record rubric by voice</button>
   <div id="recPanel"></div>
-  <p class="muted" id="voiceStatus">Tap record, speak your grading rules, then tap Stop — Whisper transcribes them into the box below.</p>
-  <textarea id="transcript" rows="5" placeholder="e.g. Question 1, 5 points: 3 points for the correct concept, 2 for complete steps; Question 2, 10 points…"></textarea>
+  <p class="muted" id="voiceStatus">Tap record, speak your grading rules, then tap Stop — Whisper transcribes them into the box below. You can also just type directly.</p>
+  <textarea id="transcript" rows="5" placeholder="e.g. Question 1, 5 points: 3 points for the correct concept, 2 for complete steps; Question 2, 10 points…">{{ a.rubric_text if not items else '' }}</textarea>
   <button type="button" id="structureBtn" class="btn btn-primary" style="margin-top:10px">✨ Generate Structured Rubric</button>
   <p class="muted">AI turns your spoken notes into per-question max scores and scoring rules, shown in the table below for review.</p>
 </div>
 
 <div class="card">
-  <h3>Structured Rubric (editable)</h3>
+  <h3>Step 2: Structured Rubric (editable)</h3>
   <div id="itemsBox">
     <div class="rubric-row rubric-head">
       <span>Question</span><span>Max pts</span><span class="grow">Scoring / deduction rules</span><span></span>
@@ -23,12 +23,6 @@
     <div id="itemsRows"></div>
   </div>
   <button type="button" id="addRowBtn" class="btn btn-small">＋ Add a question</button>
-</div>
-
-<div class="card">
-  <h3>Option 2: Plain-text mode</h3>
-  <p class="muted">Prefer not to use voice/structure? Type the rubric here. Note: if the structured table above has rows, it takes precedence when saving.</p>
-  <textarea id="rawText" rows="5" placeholder="Type the grading rules directly…">{{ a.rubric_text if not items else '' }}</textarea>
 </div>
 
 <div class="card">
