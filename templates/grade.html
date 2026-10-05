@@ -14,10 +14,16 @@
 
 <div class="card">
   <h3>Paper photos</h3>
-  <label class="file-label">
-    <input type="file" id="photoInput" accept="image/*" capture="environment" multiple hidden>
-    <span class="btn btn-big">📸 Take / Upload Paper Photos</span>
-  </label>
+  <div class="btn-row">
+    <label class="file-label">
+      <input type="file" id="photoInput" accept="image/*" capture="environment" multiple hidden>
+      <span class="btn btn-big">📸 Take Photo</span>
+    </label>
+    <label class="file-label">
+      <input type="file" id="libraryInput" accept="image/*" multiple hidden>
+      <span class="btn btn-big">🖼️ Photo Library</span>
+    </label>
+  </div>
   <p class="muted">You can snap multiple pages in a row (clear, full-page shots grade best).</p>
   <div id="preview" class="thumbs"></div>
 </div>

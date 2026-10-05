@@ -299,27 +299,35 @@
         onCancel: function () { btn.disabled = false; }
       });
     });
-    var input = $("photoInput"), preview = $("preview");
-    input.addEventListener("change", function () {
+    var selectedFiles = [];
+    function renderPreviews() {
+      var preview = $("preview");
       preview.innerHTML = "";
-      Array.prototype.forEach.call(input.files, function (f) {
+      selectedFiles.forEach(function (f) {
         var img = document.createElement("img");
         img.className = "thumb";
         img.src = URL.createObjectURL(f);
         preview.appendChild(img);
       });
-    });
+    }
+    function handlePicked(input) {
+      Array.prototype.forEach.call(input.files, function (f) { selectedFiles.push(f); });
+      input.value = "";  // allow picking the same file again
+      renderPreviews();
+    }
+    $("photoInput").addEventListener("change", function () { handlePicked(this); });
+    $("libraryInput").addEventListener("change", function () { handlePicked(this); });
 
     var currentResult = null;
 
     $("gradeBtn").addEventListener("click", function () {
       var name = $("studentName").value.trim();
       if (!name) { alert("Please enter the student name first."); return; }
-      if (!input.files.length) { alert("Please take/upload paper photos first."); return; }
+      if (!selectedFiles.length) { alert("Please take/upload paper photos first."); return; }
       var fd = new FormData();
       fd.append("assignment_id", window.ASSIGNMENT_ID);
       fd.append("student_name", name);
-      Array.prototype.forEach.call(input.files, function (f) { fd.append("images", f); });
+      selectedFiles.forEach(function (f) { fd.append("images", f); });
       $("gradeLoading").style.display = "";
       $("gradeError").style.display = "none";
       $("gradeResult").style.display = "none";
