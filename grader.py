@@ -1,8 +1,9 @@
-"""调用 OpenAI API（chat completions + vision）做两件事：
-1. 把老师口语化的语音 transcript 整理成结构化 rubric；
-2. 按 rubric 对学生答卷照片逐题判分。
+"""Call the OpenAI API (chat completions + vision) for two jobs:
+1. Turn the teacher's colloquial voice transcript into a structured rubric;
+2. Grade photos of a student's paper question-by-question against the rubric.
 
-图片以 base64 data URL 传入，支持多张答卷图 + 可选参考答案图。
+Images are sent as base64 data URLs; supports multiple paper photos plus
+optional reference/answer-key images.
 """
 import base64
 import json
@@ -15,22 +16,22 @@ load_dotenv()
 
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 
-STRUCTURE_SYSTEM = """你是一位经验丰富的阅卷组长，擅长把老师口头描述的判分规则整理成清晰的结构化评分标准。
-老师会给你一段语音转写文本（可能口语化、有重复、有语气词），你要提炼出每一道题的：题号、满分、得分/扣分规则。
-只输出 JSON 对象，不要任何解释文字，格式如下：
-{"items": [{"q": "第一题", "max_score": 5, "criteria": "答对核心概念得3分，解题步骤完整得2分"}, ...]}
-如果 transcript 里没有明确提到某题的满分，根据题目类型给一个合理的默认满分并在 criteria 里注明"满分由AI默认设定，请老师确认"。
-如果 transcript 完全无法解析出任何题目，输出 {"items": []}。
+STRUCTURE_SYSTEM = """You are an experienced grading lead who turns a teacher's spoken grading rules into a clear, structured rubric.
+The teacher gives you a voice transcript (possibly colloquial, with repetitions and filler words). Extract, for each question: the question label, the max score, and the scoring/deduction rules.
+Output ONLY a JSON object, no explanations, in this format:
+{"items": [{"q": "Question 1", "max_score": 5, "criteria": "3 points for the correct concept, 2 points for complete steps"}, ...]}
+If the transcript does not state a max score for a question, assign a reasonable default based on the question type and note "Max score set by AI default — please confirm" in criteria.
+If the transcript yields no questions at all, output {"items": []}.
 """
 
-GRADER_SYSTEM = """你是一位严格按 rubric 判分的阅卷老师。规则：
-1. 只根据图片中实际看到的学生作答判分。某题看不到、看不清、或学生未作答，该题给 0 分并在 feedback 中注明原因。
-2. 每题得分不得超过该题满分。
-3. 先简述每道题你识别到的学生答案（原文引用或概括），再依据 rubric 给分——这能减少幻觉。
-4. 只输出 JSON 对象，不要任何解释文字，格式如下：
-{"questions": [{"q": "题号", "score": 得分数字, "max_score": 满分数字, "answer_seen": "识别到的学生答案简述", "feedback": "给分/扣分理由"}],
- "total": 总分数字, "max_total": 满分总分数字, "overall_feedback": "整体评语"}
-total 必须是各题 score 之和，max_total 必须是各题 max_score 之和。
+GRADER_SYSTEM = """You are a strict grader who scores exactly by the rubric. Rules:
+1. Score ONLY what you can actually see in the student's paper photos. If a question is missing, illegible, or unanswered, give it 0 and note why in feedback.
+2. No question's score may exceed its max score.
+3. First briefly describe the student answer you detected for each question (quote or summarize it), then score it against the rubric — this reduces hallucination.
+4. Output ONLY a JSON object, no explanations, in this format:
+{"questions": [{"q": "question label", "score": numeric score, "max_score": numeric max, "answer_seen": "brief description of the detected student answer", "feedback": "reason for the score/deductions"}],
+ "total": numeric total, "max_total": numeric max total, "overall_feedback": "overall comment"}
+total must equal the sum of the question scores, and max_total must equal the sum of the max scores.
 """
 
 
@@ -38,15 +39,16 @@ def _get_client():
     try:
         from openai import OpenAI
     except ImportError as e:
-        raise RuntimeError("缺少 openai SDK，请先 pip install -r requirements.txt") from e
+        raise RuntimeError("openai SDK is missing. Run: pip install -r requirements.txt") from e
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("尚未配置 OPENAI_API_KEY，请先到「设置」页填写 API Key。")
+        raise RuntimeError("OPENAI_API_KEY is not configured. Please enter your API key on the Settings page.")
     return OpenAI(api_key=api_key)
 
 
 def _parse_json_loose(text):
-    """解析模型输出的 JSON：先直接解析，失败则去 markdown 包裹/截取大括号兜底。"""
+    """Parse model JSON output: try a direct parse, then fall back to stripping
+    markdown fences / extracting the outermost braces."""
     text = (text or "").strip()
     try:
         return json.loads(text)
@@ -63,7 +65,7 @@ def _parse_json_loose(text):
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
         return json.loads(text[start : end + 1])
-    raise ValueError("模型返回的内容不是合法 JSON")
+    raise ValueError("The model output is not valid JSON")
 
 
 def _data_url(path):
@@ -93,15 +95,15 @@ def _chat_json(system, user_content, max_tokens):
     )
     text = (resp.choices[0].message.content or "").strip()
     if not text:
-        raise ValueError("模型返回为空，请重试。")
+        raise ValueError("The model returned an empty response. Please try again.")
     return _parse_json_loose(text)
 
 
 def structure_rubric(transcript):
-    """把口语化 transcript 整理成结构化 rubric，返回 dict：{"items": [...]}。"""
+    """Turn a colloquial transcript into a structured rubric. Returns {"items": [...]}."""
     data = _chat_json(
         STRUCTURE_SYSTEM,
-        f"老师的口头判分规则如下：\n\n{transcript}",
+        f"The teacher's spoken grading rules:\n\n{transcript}",
         max_tokens=2048,
     )
     items = data.get("items", [])
@@ -122,40 +124,40 @@ def structure_rubric(transcript):
 
 
 def rubric_items_to_text(items):
-    """把结构化 rubric 拼成纯文本版（给老师看 / 存档）。"""
+    """Render the structured rubric as plain text (for teacher review / archiving)."""
     lines = []
     for it in items:
         ms = it.get("max_score", 0)
         ms_s = int(ms) if float(ms).is_integer() else ms
-        lines.append(f"{it.get('q', '')}（满分{ms_s}分）：{it.get('criteria', '')}")
+        lines.append(f"{it.get('q', '')} (max {ms_s} pts): {it.get('criteria', '')}")
     return "\n".join(lines)
 
 
 def build_rubric_prompt_text(rubric_text, rubric_items):
-    """判分时用的 rubric 文本：优先用结构化版本（更准）。"""
+    """Rubric text used for grading: prefer the structured version (more accurate)."""
     if rubric_items:
         return rubric_items_to_text(rubric_items)
     return rubric_text or ""
 
 
 def grade_paper(rubric_text, rubric_items, image_paths, reference_image_paths=None):
-    """判分。返回 dict：{"questions": [...], "total": x, "max_total": y, "overall_feedback": ...}。"""
+    """Grade a paper. Returns {"questions": [...], "total": x, "max_total": y, "overall_feedback": ...}."""
     if not image_paths:
-        raise RuntimeError("没有收到答卷照片，请先拍照上传。")
+        raise RuntimeError("No paper photos received. Please take/upload photos first.")
     rubric_block = build_rubric_prompt_text(rubric_text, rubric_items)
     if not rubric_block.strip():
-        raise RuntimeError("该任务还没有设置 rubric，请先到任务设置页录入评分规则。")
+        raise RuntimeError("No rubric has been set for this assignment. Please enter the grading rules on the assignment setup page first.")
 
     user_content = []
     for p in reference_image_paths or []:
         user_content.append(
             {"type": "image_url", "image_url": {"url": _data_url(p)}}
         )
-    ref_note = "上面是参考答案/标准答案，" if reference_image_paths else ""
+    ref_note = "Above are the reference/answer-key images; " if reference_image_paths else ""
     user_content.append(
         {
             "type": "text",
-            "text": f"{ref_note}下面是学生的答卷照片。请按以下 rubric 逐题判分：\n\n{rubric_block}",
+            "text": f"{ref_note}below are photos of the student's paper. Grade each question according to this rubric:\n\n{rubric_block}",
         }
     )
     for p in image_paths:
@@ -165,7 +167,7 @@ def grade_paper(rubric_text, rubric_items, image_paths, reference_image_paths=No
 
     data = _chat_json(GRADER_SYSTEM, user_content, max_tokens=4096)
 
-    # 规范化 + 兜底校验
+    # Normalize + safety checks.
     questions = []
     for q in data.get("questions", []):
         try:
@@ -176,7 +178,7 @@ def grade_paper(rubric_text, rubric_items, image_paths, reference_image_paths=No
             s = float(q.get("score", 0))
         except (TypeError, ValueError):
             s = 0
-        s = max(0, min(s, max_s))  # 不超过满分、不为负
+        s = max(0, min(s, max_s))  # clamp: never above max, never negative
         questions.append(
             {
                 "q": str(q.get("q", "")),

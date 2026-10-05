@@ -1,29 +1,29 @@
 {% extends "base.html" %}
-{% block title %}首页 - AI 判卷{% endblock %}
+{% block title %}Home - AI Grader{% endblock %}
 {% block content %}
-<h2>我的班级</h2>
+<h2>My Classes</h2>
 
 <div class="card">
-  <h3>＋ 新建班级</h3>
+  <h3>＋ New Class</h3>
   <form method="post" action="{{ url_for('class_new') }}" class="inline-form">
-    <input type="text" name="name" placeholder="例如：初二(3)班" required maxlength="50">
-    <button type="submit" class="btn">创建</button>
+    <input type="text" name="name" placeholder="e.g. Grade 8, Class 3" required maxlength="50">
+    <button type="submit" class="btn">Create</button>
   </form>
 </div>
 
 <div class="card">
-  <h3>＋ 新建判卷任务</h3>
+  <h3>＋ New Grading Assignment</h3>
   <form method="post" action="{{ url_for('assignment_new') }}" class="inline-form">
     <select name="class_id" required>
-      <option value="">选择班级…</option>
+      <option value="">Select a class…</option>
       {% for c in classes %}
       <option value="{{ c.id }}">{{ c.name }}</option>
       {% endfor %}
     </select>
-    <input type="text" name="name" placeholder="例如：期中数学试卷" required maxlength="80">
-    <button type="submit" class="btn">创建并设置 rubric</button>
+    <input type="text" name="name" placeholder="e.g. Midterm Math Exam" required maxlength="80">
+    <button type="submit" class="btn">Create &amp; Set Up Rubric</button>
   </form>
-  {% if not classes %}<p class="muted">先创建一个班级，再建判卷任务。</p>{% endif %}
+  {% if not classes %}<p class="muted">Create a class first, then add a grading assignment.</p>{% endif %}
 </div>
 
 {% for c in classes %}
@@ -36,14 +36,14 @@
       <span class="task-name">{{ a.name }}</span>
       <span class="task-actions">
         <a class="btn btn-small" href="{{ url_for('assignment_page', assignment_id=a.id) }}">⚙️ Rubric</a>
-        <a class="btn btn-small" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 判卷</a>
-        <a class="btn btn-small" href="{{ url_for('results_page', assignment_id=a.id) }}">📊 成绩</a>
+        <a class="btn btn-small" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Grade</a>
+        <a class="btn btn-small" href="{{ url_for('results_page', assignment_id=a.id) }}">📊 Results</a>
       </span>
     </li>
     {% endfor %}
   </ul>
   {% else %}
-  <p class="muted">该班级还没有判卷任务。</p>
+  <p class="muted">This class has no grading assignments yet.</p>
   {% endif %}
 </div>
 {% endfor %}

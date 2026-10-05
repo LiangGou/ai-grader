@@ -1,21 +1,21 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>{% block title %}AI 判卷{% endblock %}</title>
+<title>{% block title %}AI Grader{% endblock %}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 <header class="topbar">
-  <a class="brand" href="{{ url_for('index') }}">📝 AI 判卷</a>
+  <a class="brand" href="{{ url_for('index') }}">📝 AI Grader</a>
   <nav>
-    <a href="{{ url_for('index') }}">首页</a>
-    <a href="{{ url_for('settings_page') }}">设置</a>
+    <a href="{{ url_for('index') }}">Home</a>
+    <a href="{{ url_for('settings_page') }}">Settings</a>
   </nav>
 </header>
 {% if env is defined and not env.key_set %}
-<div class="warn-banner">⚠️ 尚未配置 OpenAI API Key，判分功能不可用。<a href="{{ url_for('settings_page') }}">去设置 →</a></div>
+<div class="warn-banner">⚠️ No OpenAI API key configured — grading is unavailable. <a href="{{ url_for('settings_page') }}">Go to Settings →</a></div>
 {% endif %}
 <main class="container">
 {% block content %}{% endblock %}

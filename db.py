@@ -1,4 +1,4 @@
-"""SQLite 数据层：建表 + CRUD（只用标准库 sqlite3，无 ORM）。"""
+"""SQLite data layer: table setup + CRUD (stdlib sqlite3 only, no ORM)."""
 import json
 import os
 import sqlite3
@@ -54,7 +54,7 @@ def now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-# ---------- 班级 ----------
+# ---------- Classes ----------
 def create_class(name):
     conn = _connect()
     cur = conn.cursor()
@@ -79,7 +79,7 @@ def get_class(class_id):
     return dict(row) if row else None
 
 
-# ---------- 判卷任务 ----------
+# ---------- Grading assignments ----------
 def create_assignment(class_id, name):
     conn = _connect()
     cur = conn.cursor()
@@ -110,7 +110,7 @@ def get_assignment(assignment_id):
 
 
 def save_rubric(assignment_id, rubric_text, rubric_items):
-    """保存结构化 rubric（JSON）+ 自动拼出的纯文本版。"""
+    """Save the structured rubric (JSON) plus the auto-generated plain-text version."""
     conn = _connect()
     conn.execute(
         "UPDATE assignments SET rubric_text = ?, rubric_json = ? WHERE id = ?",
@@ -130,7 +130,7 @@ def save_reference_images(assignment_id, paths):
     conn.close()
 
 
-# ---------- 成绩 ----------
+# ---------- Grades ----------
 def save_grade(assignment_id, student_name, questions, total, max_total, overall_feedback):
     conn = _connect()
     cur = conn.cursor()

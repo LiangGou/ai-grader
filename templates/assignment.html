@@ -1,42 +1,42 @@
 {% extends "base.html" %}
-{% block title %}任务设置 - {{ a.name }}{% endblock %}
+{% block title %}Assignment Setup - {{ a.name }}{% endblock %}
 {% block content %}
 <h2>⚙️ {{ a.name }}</h2>
-<p class="muted">录入评分规则（rubric）。推荐流程：🎤 语音说出判分规则 → ✨ 生成结构化 rubric → 检查修改 → 保存。</p>
+<p class="muted">Enter the grading rubric. Recommended flow: 🎤 speak the rules → ✨ generate a structured rubric → review &amp; edit → save.</p>
 
 <div class="card">
-  <h3>方式一：语音录入（推荐）</h3>
-  <button type="button" id="voiceBtn" class="btn btn-voice">🎤 语音录入 rubric</button>
-  <button type="button" id="stopVoiceBtn" class="btn btn-small" style="display:none">⏹ 停止</button>
-  <p class="muted" id="voiceStatus">点按钮开始说话，内容会实时转写到下方文本框（需用 Chrome / Edge 浏览器）。</p>
-  <textarea id="transcript" rows="5" placeholder="例如：第一题5分，答对概念得3分，步骤完整得2分；第二题10分……"></textarea>
-  <button type="button" id="structureBtn" class="btn btn-primary" style="margin-top:10px">✨ 生成结构化 Rubric</button>
-  <p class="muted">AI 会把上面的口语记录整理成逐题的满分和得分规则，显示在下方表格里供你修改。</p>
+  <h3>Option 1: Voice input (recommended)</h3>
+  <button type="button" id="voiceBtn" class="btn btn-voice">🎤 Record rubric by voice</button>
+  <button type="button" id="stopVoiceBtn" class="btn btn-small" style="display:none">⏹ Stop</button>
+  <p class="muted" id="voiceStatus">Click to start speaking; your speech is transcribed live into the box below (use Chrome / Edge).</p>
+  <textarea id="transcript" rows="5" placeholder="e.g. Question 1, 5 points: 3 points for the correct concept, 2 for complete steps; Question 2, 10 points…"></textarea>
+  <button type="button" id="structureBtn" class="btn btn-primary" style="margin-top:10px">✨ Generate Structured Rubric</button>
+  <p class="muted">AI turns your spoken notes into per-question max scores and scoring rules, shown in the table below for review.</p>
 </div>
 
 <div class="card">
-  <h3>结构化 Rubric（可直接编辑）</h3>
+  <h3>Structured Rubric (editable)</h3>
   <div id="itemsBox">
     <div class="rubric-row rubric-head">
-      <span>题号</span><span>满分</span><span class="grow">得分 / 扣分规则</span><span></span>
+      <span>Question</span><span>Max pts</span><span class="grow">Scoring / deduction rules</span><span></span>
     </div>
     <div id="itemsRows"></div>
   </div>
-  <button type="button" id="addRowBtn" class="btn btn-small">＋ 加一题</button>
+  <button type="button" id="addRowBtn" class="btn btn-small">＋ Add a question</button>
 </div>
 
 <div class="card">
-  <h3>方式二：纯文本模式</h3>
-  <p class="muted">不想用语音/结构化？直接在这里打字写 rubric。注意：如果上方结构化表格有内容，保存时将以结构化表格为准。</p>
-  <textarea id="rawText" rows="5" placeholder="直接打字输入评分规则……">{{ a.rubric_text if not items else '' }}</textarea>
+  <h3>Option 2: Plain-text mode</h3>
+  <p class="muted">Prefer not to use voice/structure? Type the rubric here. Note: if the structured table above has rows, it takes precedence when saving.</p>
+  <textarea id="rawText" rows="5" placeholder="Type the grading rules directly…">{{ a.rubric_text if not items else '' }}</textarea>
 </div>
 
 <div class="card">
-  <h3>参考答案 / 标准答案（可选）</h3>
-  <p class="muted">上传参考答案照片，判分时 AI 会一并参考，判得更准。</p>
+  <h3>Reference answer / answer key (optional)</h3>
+  <p class="muted">Upload answer-key photos; the AI will use them as context for more accurate grading.</p>
   <form method="post" action="{{ url_for('assignment_upload_reference', assignment_id=a.id) }}" enctype="multipart/form-data" class="inline-form">
     <input type="file" name="images" accept="image/*" multiple>
-    <button type="submit" class="btn">上传</button>
+    <button type="submit" class="btn">Upload</button>
   </form>
   {% if refs %}
   <div class="thumbs">
@@ -46,8 +46,8 @@
 </div>
 
 <div class="sticky-bar">
-  <button type="button" id="saveRubricBtn" class="btn btn-primary btn-big">💾 保存 Rubric</button>
-  <a class="btn btn-big" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 去判卷</a>
+  <button type="button" id="saveRubricBtn" class="btn btn-primary btn-big">💾 Save Rubric</button>
+  <a class="btn btn-big" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Go to Grading</a>
 </div>
 
 <script>

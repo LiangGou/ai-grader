@@ -1,44 +1,44 @@
 {% extends "base.html" %}
-{% block title %}判卷 - {{ a.name }}{% endblock %}
+{% block title %}Grade - {{ a.name }}{% endblock %}
 {% block content %}
 <h2>📷 {{ a.name }}</h2>
 
 <div class="card">
-  <h3>学生</h3>
+  <h3>Student</h3>
   <div class="inline-form">
-    <input type="text" id="studentName" placeholder="学生姓名" maxlength="30" style="flex:1">
+    <input type="text" id="studentName" placeholder="Student name" maxlength="30" style="flex:1">
     <button type="button" id="nameVoiceBtn" class="btn btn-voice btn-small">🎤</button>
   </div>
 </div>
 
 <div class="card">
-  <h3>答卷照片</h3>
+  <h3>Paper photos</h3>
   <label class="file-label">
     <input type="file" id="photoInput" accept="image/*" capture="environment" multiple hidden>
-    <span class="btn btn-big">📸 拍照 / 上传答卷</span>
+    <span class="btn btn-big">📸 Take / Upload Paper Photos</span>
   </label>
-  <p class="muted">可多张连拍（整张试卷拍全、字迹清晰效果最好）。</p>
+  <p class="muted">You can snap multiple pages in a row (clear, full-page shots grade best).</p>
   <div id="preview" class="thumbs"></div>
 </div>
 
 <div class="sticky-bar">
-  <button type="button" id="gradeBtn" class="btn btn-primary btn-big">🚀 开始判分</button>
-  <a class="btn" href="{{ url_for('results_page', assignment_id=a.id) }}">📊 看成绩</a>
+  <button type="button" id="gradeBtn" class="btn btn-primary btn-big">🚀 Grade Now</button>
+  <a class="btn" href="{{ url_for('results_page', assignment_id=a.id) }}">📊 View Results</a>
 </div>
 
 <div id="gradeLoading" class="card" style="display:none">
-  <p>⏳ AI 正在看卷判分，请稍候…（通常 10～30 秒）</p>
+  <p>⏳ AI is reading the paper — this usually takes 10–30 seconds…</p>
 </div>
 
 <div id="gradeError" class="card error" style="display:none"></div>
 
 <div id="gradeResult" class="card" style="display:none">
-  <h3>判分结果 <span class="muted" id="resultStudent"></span></h3>
+  <h3>Grading result <span class="muted" id="resultStudent"></span></h3>
   <div id="questionsBox"></div>
-  <p class="total-line">总分：<input type="number" id="totalInput" step="0.5" min="0" class="score-input"> / <span id="maxTotal"></span></p>
-  <p><strong>整体评语</strong></p>
+  <p class="total-line">Total: <input type="number" id="totalInput" step="0.5" min="0" class="score-input"> / <span id="maxTotal"></span></p>
+  <p><strong>Overall feedback</strong></p>
   <textarea id="overallFeedback" rows="3"></textarea>
-  <button type="button" id="saveGradeBtn" class="btn btn-primary btn-big" style="margin-top:10px">💾 保存成绩</button>
+  <button type="button" id="saveGradeBtn" class="btn btn-primary btn-big" style="margin-top:10px">💾 Save Grade</button>
   <p class="muted" id="saveMsg"></p>
 </div>
 

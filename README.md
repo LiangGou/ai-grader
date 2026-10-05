@@ -1,84 +1,92 @@
-# AI 判卷（AI Grader）
+# AI Grader
 
-给老师用的 AI 判卷 / 判作业 Web App（MVP）。
+A web app for teachers to grade homework and exams with AI (MVP).
 
-**核心流程**：手机拍学生试卷/作业照片 → 老师用**语音**说出判分规则（不用打字）→
-语音自动整理成**结构化 rubric**（可手动修改）→ 调用 **OpenAI API（GPT-4o 看图）**
-按 rubric 逐题判分 → 自动统计总分 → 全班成绩统计 + 导出 CSV。
+**Core flow**: photograph a student's paper/homework with your phone → the teacher
+**speaks** the grading rules out loud (no typing needed) → speech is automatically
+structured into an **editable rubric** → **OpenAI API (GPT-4o vision)** grades each
+question against the rubric → totals are tallied → class-wide stats + CSV export.
 
-- UI 中文，移动端优先（老师用手机拍照上传）。
-- 技术栈：Python + Flask + SQLite（标准库），vanilla HTML/CSS/JS（无构建步骤）。
+- English UI, mobile-first (teachers photograph papers on their phones).
+- Stack: Python + Flask + SQLite (stdlib), vanilla HTML/CSS/JS (no build step).
 
 ---
 
-## 功能
+## Features
 
-1. **班级 / 任务管理**：创建班级 → 在班级下创建判卷任务（作业/试卷名称）。
-2. **Rubric 录入**（任务设置页）：
-   - 🎤 语音录入：Web Speech API（`zh-CN`）实时转写进"原始记录"文本框（需 Chrome/Edge）；
-   - ✨ 生成结构化 Rubric：后端调 OpenAI 把口语记录整理成逐题「题号 / 满分 / 得分规则」JSON；
-   - 结构化表格可直接编辑：增删行、改题号/满分/规则；
-   - 也支持纯文本模式：跳过语音，直接打字写 rubric；
-   - 可选上传参考答案/标准答案照片，判分时一并作为上下文。
-3. **拍照判卷**：输入学生姓名（支持语音）→ 多张答卷照片上传（移动端直接调相机）
-   → 后端把 rubric + 参考答案图 + 答卷图发给 GPT-4o，要求输出严格 JSON
-   （每题：识别到的答案简述、得分、满分、给分理由；总分；整体评语）→
-   老师可手动修改每题分数后保存入库。
-4. **成绩统计**：全班成绩表、平均分/最高/最低、分数段分布直方图（纯 CSS/JS）、导出 CSV。
-5. **设置页**：填写 OpenAI API Key（写入本机 `.env`），模型名可配置（默认 `gpt-4o`）。
+1. **Classes / assignments**: create a class → create grading assignments under it (homework/exam name).
+2. **Rubric entry** (assignment setup page):
+   - 🎤 Voice input: Web Speech API (`en-US`) transcribes live into the notes box (needs Chrome/Edge);
+   - ✨ Generate structured rubric: the backend asks OpenAI to turn the spoken notes into per-question JSON (`question label / max score / scoring rules`);
+   - The structured table is fully editable: add/remove rows, change labels, max scores, rules;
+   - Plain-text mode also supported: skip voice and just type the rubric;
+   - Optional reference/answer-key photos, sent along as grading context.
+3. **Photo grading**: enter the student name (voice supported) → upload multiple paper photos (mobile opens the camera directly)
+   → the backend sends the rubric + answer-key images + paper photos to GPT-4o, which must return strict JSON
+   (per question: detected answer summary, score, max score, scoring rationale; total; overall feedback) →
+   the teacher can adjust any score before saving.
+4. **Results**: full class score table, average/highest/lowest, score-distribution histogram (pure CSS/JS), CSV export.
+5. **Settings page**: enter the OpenAI API key (written to the local `.env`), model name configurable (default `gpt-4o`).
 
-## 安装与运行
+## Install & run
 
 ```bash
 cd ai-grader
 ./run.sh
-# 或手动：
+# or manually:
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 flask --app app run --host=0.0.0.0 --port=5000
 ```
 
-浏览器打开 http://localhost:5000。
+Open http://localhost:5000 in a browser.
 
-## 配置 OpenAI Key
+## Configure the OpenAI key
 
-1. 打开 https://platform.openai.com 登录，进入 **API keys** 页面；
-2. 点 **Create new secret key**，复制生成的 key（以 `sk-` 开头，只显示一次）；
-3. 在本应用「设置」页粘贴保存（或复制 `.env.example` 为 `.env` 后填入）。
+1. Sign in at https://platform.openai.com and open the **API keys** page;
+2. Click **Create new secret key** and copy the generated key (starts with `sk-`, shown only once);
+3. Paste it on the app's **Settings** page and save (or copy `.env.example` to `.env` and fill it in).
 
-建议在 OpenAI 后台给 key 设置用量限额（Limits），避免意外超支。
-模型通过环境变量 `OPENAI_MODEL` 配置，默认 `gpt-4o`（看图判分质量优先）。
+Tip: set usage limits (Limits) on your key in the OpenAI dashboard to avoid surprise spend.
+The model is configured via the `OPENAI_MODEL` environment variable, default `gpt-4o`
+(vision quality prioritized for grading).
 
-> 🔒 安全：Key 只保存在服务器本机 `.env` 文件中；`.env` 已在 `.gitignore` 中，
-> 不会提交到 git；请求只发往 `api.openai.com`。
+> 🔒 Security: the key lives only in the server's local `.env` file; `.env` is in
+> `.gitignore` and is never committed to git; requests go only to `api.openai.com`.
 
-## Replit 部署备注
+## Deployment
 
-1. 把本目录代码上传到 Replit（可直接拖 zip / 从 GitHub import）；
-2. 在 Replit 的 **Secrets**（环境变量）里添加 `OPENAI_API_KEY`（和可选的 `OPENAI_MODEL`），
-   不要把 key 写进代码；
-3. Replit 会自动识别 `requirements.txt` 安装依赖，Run 命令用 `python app.py`
-   或 `flask --app app run --host=0.0.0.0 --port=5000`；
-4. 数据存在 `ai_grader.db`（SQLite 单文件），答卷照片存在 `uploads/`，
-   Replit 重启/休眠可能丢失文件，正式使用建议定期导出 CSV 备份。
+Run it on any machine with Python 3.11+:
 
-## 目录结构
+```bash
+cd ai-grader
+./run.sh   # creates .venv, installs deps, serves http://localhost:5000
+```
+
+To run it for other devices on the same network (e.g. your phone), the Flask
+command in `run.sh` already binds `0.0.0.0` — open `http://<server-ip>:5000` on
+the phone. The OpenAI key goes in the local `.env` (via the Settings page);
+data lives in `ai_grader.db` and paper photos in `uploads/` — back up the
+directory (or export CSVs) regularly.
+
+## Project layout
 
 ```
 ai-grader/
-  app.py            Flask 路由（页面 + API）
-  grader.py         调 OpenAI API：rubric 结构化、看图判分
-  db.py             SQLite 建表 + CRUD（标准库 sqlite3）
+  app.py            Flask routes (pages + API)
+  grader.py         OpenAI calls: rubric structuring, vision grading
+  db.py             SQLite schema + CRUD (stdlib sqlite3)
+  DESIGN.md         Design doc (English)
   templates/        base / index / assignment / grade / results / settings
-  static/           style.css（移动端优先）/ app.js（语音、拍照、判分交互）
-  uploads/          上传的答卷/参考答案照片（git 忽略）
+  static/           style.css (mobile-first) / app.js (voice, camera, grading UI)
+  uploads/          uploaded paper / answer-key photos (git-ignored)
   requirements.txt  flask / openai / python-dotenv
-  .env.example      环境变量模板（占位符）
-  run.sh            一键启动
+  .env.example      environment variable template (placeholders only)
+  run.sh            one-command startup
 ```
 
-## 已知限制（MVP）
+## Known limitations (MVP)
 
-- 语音转写依赖浏览器 Web Speech API（Chrome/Edge 最稳，Safari 支持有限）；
-- 超大照片可能超出模型单图大小限制，拍照时尽量拍清晰但不过度放大；
-- SQLite 单文件，多老师并发量大时建议换 Postgres。
+- Voice transcription depends on the browser's Web Speech API (most reliable in Chrome/Edge; Safari support is limited);
+- Oversized photos may exceed the model's per-image limits — take clear but not excessively zoomed shots;
+- Single-file SQLite: switch to Postgres if many teachers use it concurrently.

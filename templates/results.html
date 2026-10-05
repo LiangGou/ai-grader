@@ -1,28 +1,28 @@
 {% extends "base.html" %}
-{% block title %}成绩统计 - {{ a.name }}{% endblock %}
+{% block title %}Results - {{ a.name }}{% endblock %}
 {% block content %}
 <h2>📊 {{ a.name }}</h2>
 
 {% if stats %}
 <div class="stats-grid">
-  <div class="stat"><span class="stat-num">{{ stats.count }}</span><span class="stat-label">已判人数</span></div>
-  <div class="stat"><span class="stat-num">{{ stats.avg }}</span><span class="stat-label">平均分</span></div>
-  <div class="stat"><span class="stat-num">{{ stats.max }}</span><span class="stat-label">最高分</span></div>
-  <div class="stat"><span class="stat-num">{{ stats.min }}</span><span class="stat-label">最低分</span></div>
+  <div class="stat"><span class="stat-num">{{ stats.count }}</span><span class="stat-label">Graded</span></div>
+  <div class="stat"><span class="stat-num">{{ stats.avg }}</span><span class="stat-label">Average</span></div>
+  <div class="stat"><span class="stat-num">{{ stats.max }}</span><span class="stat-label">Highest</span></div>
+  <div class="stat"><span class="stat-num">{{ stats.min }}</span><span class="stat-label">Lowest</span></div>
 </div>
 
 <div class="card">
-  <h3>分数段分布</h3>
+  <h3>Score distribution</h3>
   <div id="histogram"></div>
 </div>
 
 <div class="card">
   <div class="row-between">
-    <h3>全班成绩表</h3>
-    <a class="btn btn-small" href="{{ url_for('results_csv', assignment_id=a.id) }}">⬇️ 导出 CSV</a>
+    <h3>Full class results</h3>
+    <a class="btn btn-small" href="{{ url_for('results_csv', assignment_id=a.id) }}">⬇️ Export CSV</a>
   </div>
   <table class="score-table">
-    <thead><tr><th>姓名</th><th>总分</th><th>满分</th><th>时间</th></tr></thead>
+    <thead><tr><th>Name</th><th>Total</th><th>Max</th><th>Time</th></tr></thead>
     <tbody>
     {% for g in grades %}
       <tr><td>{{ g.student_name }}</td><td><strong>{{ g.total }}</strong></td><td>{{ g.max_total }}</td><td class="muted">{{ g.created_at }}</td></tr>
@@ -36,11 +36,11 @@ window.GRADE_TOTALS = {{ grades | map(attribute='total') | list | tojson }};
 window.GRADE_MAX = {{ (grades | map(attribute='max_total') | list | first) or 100 }};
 </script>
 {% else %}
-<div class="card"><p class="muted">还没有成绩。先去 <a href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 判卷</a> 给学生判分吧。</p></div>
+<div class="card"><p class="muted">No grades yet. Go to <a href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Grading</a> to grade students first.</p></div>
 {% endif %}
 
 <div class="sticky-bar">
-  <a class="btn btn-big" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 继续判卷</a>
-  <a class="btn" href="{{ url_for('index') }}">← 首页</a>
+  <a class="btn btn-big" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Continue Grading</a>
+  <a class="btn" href="{{ url_for('index') }}">← Home</a>
 </div>
 {% endblock %}

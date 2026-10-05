@@ -1,4 +1,4 @@
-"""AI 判卷 / 判作业 web app（Flask 后端）。"""
+"""AI Grader web app for teachers (Flask backend)."""
 import csv
 import io
 import json
@@ -20,7 +20,7 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 单次请求最多 32MB
+app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # max 32MB per request
 
 db.init_db()
 
@@ -44,7 +44,7 @@ def _env_status():
     }
 
 
-# ---------- 首页：班级 / 任务 ----------
+# ---------- Home: classes / assignments ----------
 @app.route("/")
 def index():
     classes = db.list_classes()
@@ -71,7 +71,7 @@ def assignment_new():
     return redirect(url_for("index"))
 
 
-# ---------- 任务设置：rubric 录入 ----------
+# ---------- Assignment setup: rubric entry ----------
 @app.route("/assignment/<int:assignment_id>")
 def assignment_page(assignment_id):
     a = db.get_assignment(assignment_id)
@@ -90,13 +90,13 @@ def api_structure_rubric():
     data = request.get_json(force=True, silent=True) or {}
     transcript = (data.get("transcript") or "").strip()
     if not transcript:
-        return jsonify({"ok": False, "error": "语音记录是空的，请先录入或输入判分规则。"}), 400
+        return jsonify({"ok": False, "error": "The voice notes are empty. Please record or type the grading rules first."}), 400
     try:
         result = grader.structure_rubric(transcript)
     except RuntimeError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"整理 rubric 失败：{e}"}), 500
+        return jsonify({"ok": False, "error": f"Failed to structure rubric: {e}"}), 500
     return jsonify({"ok": True, "items": result["items"]})
 
 
@@ -109,7 +109,7 @@ def assignment_save_rubric(assignment_id):
         rubric_text = (data.get("raw_text") or "").strip()
         items = []
     else:
-        # 结构化模式：以表单里的 items 为准（老师可能已手动修改）
+        # Structured mode: the form's items win (the teacher may have edited them).
         clean = []
         for it in items:
             q = str(it.get("q", "")).strip()
@@ -123,7 +123,7 @@ def assignment_save_rubric(assignment_id):
         items = clean
         rubric_text = grader.rubric_items_to_text(items)
     if not rubric_text.strip():
-        return jsonify({"ok": False, "error": "rubric 是空的，请先录入评分规则。"}), 400
+        return jsonify({"ok": False, "error": "The rubric is empty. Please enter the grading rules first."}), 400
     db.save_rubric(assignment_id, rubric_text, items)
     return jsonify({"ok": True, "rubric_text": rubric_text, "items": items})
 
@@ -142,7 +142,7 @@ def assignment_upload_reference(assignment_id):
     return redirect(url_for("assignment_page", assignment_id=assignment_id))
 
 
-# ---------- 判卷 ----------
+# ---------- Grading ----------
 @app.route("/grade/<int:assignment_id>")
 def grade_page(assignment_id):
     a = db.get_assignment(assignment_id)
@@ -156,12 +156,12 @@ def api_grade():
     assignment_id = request.form.get("assignment_id")
     student_name = (request.form.get("student_name") or "").strip()
     if not assignment_id:
-        return jsonify({"ok": False, "error": "缺少任务 ID。"}), 400
+        return jsonify({"ok": False, "error": "Missing assignment ID."}), 400
     if not student_name:
-        return jsonify({"ok": False, "error": "请先填写学生姓名。"}), 400
+        return jsonify({"ok": False, "error": "Please enter the student name first."}), 400
     a = db.get_assignment(int(assignment_id))
     if not a:
-        return jsonify({"ok": False, "error": "任务不存在。"}), 404
+        return jsonify({"ok": False, "error": "Assignment not found."}), 404
 
     files = request.files.getlist("images")
     paths = []
@@ -169,7 +169,7 @@ def api_grade():
         if f and f.filename:
             paths.append(_save_upload(f, "paper"))
     if not paths:
-        return jsonify({"ok": False, "error": "没有收到答卷照片，请先拍照上传。"}), 400
+        return jsonify({"ok": False, "error": "No paper photos received. Please take/upload photos first."}), 400
 
     items = json.loads(a["rubric_json"] or "[]")
     ref_paths = [p for p in json.loads(a["reference_images"] or "[]") if os.path.exists(p)]
@@ -178,7 +178,7 @@ def api_grade():
     except RuntimeError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"判分失败：{e}"}), 500
+        return jsonify({"ok": False, "error": f"Grading failed: {e}"}), 500
     return jsonify({"ok": True, "result": result, "photos": [os.path.basename(p) for p in paths]})
 
 
@@ -195,11 +195,11 @@ def api_save_grade():
             data.get("overall_feedback") or "",
         )
     except (KeyError, TypeError, ValueError) as e:
-        return jsonify({"ok": False, "error": f"保存失败，数据不完整：{e}"}), 400
+        return jsonify({"ok": False, "error": f"Save failed, incomplete data: {e}"}), 400
     return jsonify({"ok": True, "id": gid})
 
 
-# ---------- 成绩统计 ----------
+# ---------- Results & stats ----------
 @app.route("/results/<int:assignment_id>")
 def results_page(assignment_id):
     a = db.get_assignment(assignment_id)
@@ -226,16 +226,16 @@ def results_csv(assignment_id):
     grades = db.list_grades(assignment_id)
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["姓名", "总分", "满分", "整体评语", "判卷时间"])
+    w.writerow(["Name", "Total", "Max", "Overall feedback", "Graded at"])
     for g in grades:
         w.writerow([g["student_name"], g["total"], g["max_total"], g["overall_feedback"], g["created_at"]])
     mem = io.BytesIO(buf.getvalue().encode("utf-8-sig"))
     mem.seek(0)
-    filename = f"成绩_{a['name']}_{datetime.now().strftime('%Y%m%d')}.csv"
+    filename = f"grades_{a['name']}_{datetime.now().strftime('%Y%m%d')}.csv"
     return send_file(mem, mimetype="text/csv", as_attachment=True, download_name=filename)
 
 
-# ---------- 设置 ----------
+# ---------- Settings ----------
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
     msg = ""
@@ -243,16 +243,16 @@ def settings_page():
         api_key = (request.form.get("api_key") or "").strip()
         model = (request.form.get("model") or "").strip() or grader.DEFAULT_MODEL
         _write_env(api_key, model)
-        # 让当前进程也生效
+        # Apply to the current process as well.
         if api_key:
             os.environ["OPENAI_API_KEY"] = api_key
         os.environ["OPENAI_MODEL"] = model
-        msg = "已保存。"
+        msg = "Saved."
     return render_template("settings.html", env=_env_status(), msg=msg)
 
 
 def _write_env(api_key, model):
-    """把 key 写进项目根目录的 .env（只存服务器本地，不进 git）。"""
+    """Write the key into the project-root .env (server-local only, never committed to git)."""
     env_path = os.path.join(BASE_DIR, ".env")
     lines = []
     if os.path.exists(env_path):

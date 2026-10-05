@@ -1,21 +1,21 @@
-/* AI 判卷前端交互：语音转写、结构化 rubric、拍照判分、成绩统计直方图 */
+/* AI Grader frontend: voice transcription, structured rubric, photo grading, results histogram */
 (function () {
   "use strict";
 
   function $(id) { return document.getElementById(id); }
 
-  /* ---------- Web Speech API 语音转写（zh-CN） ---------- */
+  /* ---------- Web Speech API transcription (en-US) ---------- */
   function bindVoice(btnId, textareaId, statusId) {
     var btn = $(btnId), stopBtn = $("stopVoiceBtn"), ta = $(textareaId);
     if (!btn || !ta) return;
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
       btn.disabled = true;
-      btn.textContent = "🎤 当前浏览器不支持语音输入";
+      btn.textContent = "🎤 Voice input not supported in this browser";
       return;
     }
     var rec = new SR();
-    rec.lang = "zh-CN";
+    rec.lang = "en-US";
     rec.interimResults = true;
     rec.continuous = true;
     var baseText = "";
@@ -31,10 +31,10 @@
     rec.onend = function () {
       btn.style.display = "";
       if (stopBtn) stopBtn.style.display = "none";
-      setStatus("转写结束，可继续点按钮补充，或直接编辑文本框。");
+      setStatus("Transcription ended — click the button again to add more, or edit the box directly.");
     };
     rec.onerror = function (e) {
-      setStatus("语音识别出错：" + e.error + "，请检查麦克风权限后重试。");
+      setStatus("Speech recognition error: " + e.error + ". Please check microphone permission and try again.");
       btn.style.display = "";
       if (stopBtn) stopBtn.style.display = "none";
     };
@@ -43,25 +43,25 @@
       if (s) s.textContent = msg;
     }
     btn.addEventListener("click", function () {
-      baseText = ta.value ? ta.value.trim() + "，" : "";
+      baseText = ta.value ? ta.value.trim() + " " : "";
       try {
         rec.start();
         btn.style.display = "none";
         if (stopBtn) { stopBtn.style.display = ""; stopBtn.onclick = function () { rec.stop(); }; }
-        setStatus("🎙 正在聆听…说完后点「停止」。");
-      } catch (err) { setStatus("启动语音识别失败：" + err.message); }
+        setStatus("🎙 Listening… click “Stop” when done.");
+      } catch (err) { setStatus("Failed to start speech recognition: " + err.message); }
     });
   }
 
-  /* ---------- 任务设置页：结构化 rubric ---------- */
+  /* ---------- Assignment setup page: structured rubric ---------- */
   function rubricRow(item) {
     item = item || { q: "", max_score: "", criteria: "" };
     var row = document.createElement("div");
     row.className = "rubric-row";
     row.innerHTML =
-      '<input class="q" type="text" placeholder="题号" value="' + escapeHtml(item.q) + '">' +
-      '<input class="ms" type="number" step="0.5" min="0" placeholder="满分" value="' + escapeHtml(item.max_score) + '">' +
-      '<input class="cr grow" type="text" placeholder="得分/扣分规则" value="' + escapeHtml(item.criteria) + '">' +
+      '<input class="q" type="text" placeholder="Question" value="' + escapeHtml(item.q) + '">' +
+      '<input class="ms" type="number" step="0.5" min="0" placeholder="Max pts" value="' + escapeHtml(item.max_score) + '">' +
+      '<input class="cr grow" type="text" placeholder="Scoring/deduction rules" value="' + escapeHtml(item.criteria) + '">' +
       '<button type="button" class="btn btn-small row-del">✕</button>';
     row.querySelector(".row-del").addEventListener("click", function () { row.remove(); });
     return row;
@@ -97,10 +97,10 @@
 
     $("structureBtn").addEventListener("click", function () {
       var transcript = $("transcript").value.trim();
-      if (!transcript) { alert("请先语音录入或输入判分规则。"); return; }
+      if (!transcript) { alert("Please record or type the grading rules first."); return; }
       var btn = $("structureBtn");
       btn.disabled = true;
-      btn.textContent = "⏳ AI 整理中…";
+      btn.textContent = "⏳ Structuring with AI…";
       fetch("/api/structure_rubric", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -109,17 +109,17 @@
         .then(function (r) { return r.json(); })
         .then(function (data) {
           btn.disabled = false;
-          btn.textContent = "✨ 生成结构化 Rubric";
-          if (!data.ok) { alert("整理失败：" + data.error); return; }
+          btn.textContent = "✨ Generate Structured Rubric";
+          if (!data.ok) { alert("Structuring failed: " + data.error); return; }
           rowsBox.innerHTML = "";
           (data.items || []).forEach(function (it) { rowsBox.appendChild(rubricRow(it)); });
-          if (!data.items || !data.items.length) alert("没能从记录中解析出题目，请检查记录内容或手动添加。");
-          else alert("已生成 " + data.items.length + " 题，请检查修改后保存。");
+          if (!data.items || !data.items.length) alert("Could not parse any questions from the notes. Please check the notes or add rows manually.");
+          else alert("Generated " + data.items.length + " question(s) — please review, edit, then save.");
         })
         .catch(function (e) {
           btn.disabled = false;
-          btn.textContent = "✨ 生成结构化 Rubric";
-          alert("请求失败：" + e.message);
+          btn.textContent = "✨ Generate Structured Rubric";
+          alert("Request failed: " + e.message);
         });
     });
 
@@ -130,12 +130,12 @@
         payload = { mode: "structured", items: items };
       } else {
         var raw = $("rawText").value.trim();
-        if (!raw) { alert("rubric 是空的：请语音生成结构化表格，或在纯文本框里打字。"); return; }
+        if (!raw) { alert("The rubric is empty: generate the structured table by voice, or type in the plain-text box."); return; }
         payload = { mode: "text", raw_text: raw };
       }
       var btn = $("saveRubricBtn");
       btn.disabled = true;
-      btn.textContent = "保存中…";
+      btn.textContent = "Saving…";
       fetch("/assignment/" + window.ASSIGNMENT_ID + "/save_rubric", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -144,19 +144,19 @@
         .then(function (r) { return r.json(); })
         .then(function (data) {
           btn.disabled = false;
-          btn.textContent = "💾 保存 Rubric";
-          if (!data.ok) { alert("保存失败：" + data.error); return; }
-          alert("Rubric 已保存，判分将使用该版本。");
+          btn.textContent = "💾 Save Rubric";
+          if (!data.ok) { alert("Save failed: " + data.error); return; }
+          alert("Rubric saved — grading will use this version.");
         })
         .catch(function (e) {
           btn.disabled = false;
-          btn.textContent = "💾 保存 Rubric";
-          alert("请求失败：" + e.message);
+          btn.textContent = "💾 Save Rubric";
+          alert("Request failed: " + e.message);
         });
     });
   }
 
-  /* ---------- 判卷页 ---------- */
+  /* ---------- Grading page ---------- */
   if ($("gradeBtn") && typeof window.ASSIGNMENT_ID !== "undefined") {
     bindVoice("nameVoiceBtn", "studentName", null);
     var input = $("photoInput"), preview = $("preview");
@@ -174,8 +174,8 @@
 
     $("gradeBtn").addEventListener("click", function () {
       var name = $("studentName").value.trim();
-      if (!name) { alert("请先填写学生姓名。"); return; }
-      if (!input.files.length) { alert("请先拍照上传答卷。"); return; }
+      if (!name) { alert("Please enter the student name first."); return; }
+      if (!input.files.length) { alert("Please take/upload paper photos first."); return; }
       var fd = new FormData();
       fd.append("assignment_id", window.ASSIGNMENT_ID);
       fd.append("student_name", name);
@@ -191,7 +191,7 @@
           $("gradeBtn").disabled = false;
           if (!data.ok) {
             var eb = $("gradeError");
-            eb.textContent = "判分失败：" + data.error;
+            eb.textContent = "Grading failed: " + data.error;
             eb.style.display = "";
             return;
           }
@@ -202,7 +202,7 @@
           $("gradeLoading").style.display = "none";
           $("gradeBtn").disabled = false;
           var eb = $("gradeError");
-          eb.textContent = "请求失败：" + e.message;
+          eb.textContent = "Request failed: " + e.message;
           eb.style.display = "";
         });
     });
@@ -216,14 +216,14 @@
         div.className = "q-block";
         div.innerHTML =
           '<div class="q-head"><strong>' + escapeHtml(q.q) + '</strong>' +
-          '<span><input type="number" class="score-input" data-i="' + i + '" step="0.5" min="0" max="' + q.max_score + '" value="' + q.score + '"> / ' + q.max_score + ' 分</span></div>' +
-          (q.answer_seen ? '<p class="q-seen">识别到的作答：' + escapeHtml(q.answer_seen) + '</p>' : "") +
+          '<span><input type="number" class="score-input" data-i="' + i + '" step="0.5" min="0" max="' + q.max_score + '" value="' + q.score + '"> / ' + q.max_score + ' pts</span></div>' +
+          (q.answer_seen ? '<p class="q-seen">Answer detected: ' + escapeHtml(q.answer_seen) + '</p>' : "") +
           '<p class="q-feedback">' + escapeHtml(q.feedback) + '</p>';
         box.appendChild(div);
       });
       $("totalInput").value = result.total;
       $("totalInput").max = result.max_total;
-      $("maxTotal").textContent = result.max_total + " 分";
+      $("maxTotal").textContent = result.max_total + " pts";
       $("overallFeedback").value = result.overall_feedback || "";
       $("gradeResult").style.display = "";
       $("saveMsg").textContent = "";
@@ -239,7 +239,7 @@
       });
       $("totalInput").value = Math.round(sum * 100) / 100;
     }
-    $("totalInput").addEventListener("input", function () { /* 总分允许手动微调 */ });
+    $("totalInput").addEventListener("input", function () { /* total can be manually adjusted */ });
 
     $("saveGradeBtn").addEventListener("click", function () {
       if (!currentResult) return;
@@ -267,17 +267,17 @@
         .then(function (r) { return r.json(); })
         .then(function (data) {
           btn.disabled = false;
-          $("saveMsg").textContent = data.ok ? "✅ 已保存，可继续判下一位学生。" : "保存失败：" + data.error;
+          $("saveMsg").textContent = data.ok ? "✅ Saved — you can grade the next student." : "Save failed: " + data.error;
           if (data.ok) { $("studentName").value = ""; input.value = ""; preview.innerHTML = ""; $("gradeResult").style.display = "none"; currentResult = null; }
         })
         .catch(function (e) {
           btn.disabled = false;
-          $("saveMsg").textContent = "请求失败：" + e.message;
+          $("saveMsg").textContent = "Request failed: " + e.message;
         });
     });
   }
 
-  /* ---------- 成绩页直方图 ---------- */
+  /* ---------- Results page histogram ---------- */
   if ($("histogram") && window.GRADE_TOTALS) {
     var totals = window.GRADE_TOTALS, maxScore = window.GRADE_MAX || 100;
     var buckets = [0, 0, 0, 0, 0];
@@ -293,7 +293,7 @@
       var w = Math.round((c / maxB) * 100);
       html += '<div class="hist-row"><span class="hist-label">' + labels[i] + '</span>' +
         '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + w + '%"></div></div>' +
-        '<span class="hist-count">' + c + '人</span></div>';
+        '<span class="hist-count">' + c + ' students</span></div>';
     });
     $("histogram").innerHTML = html;
   }

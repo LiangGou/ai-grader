@@ -1,38 +1,38 @@
 {% extends "base.html" %}
-{% block title %}设置 - AI 判卷{% endblock %}
+{% block title %}Settings - AI Grader{% endblock %}
 {% block content %}
-<h2>⚙️ 设置</h2>
+<h2>⚙️ Settings</h2>
 
 <div class="card">
   <h3>OpenAI API Key</h3>
   {% if msg %}<p class="success">{{ msg }}</p>{% endif %}
   {% if env.key_set %}
-  <p class="success">✅ 已配置（…{{ env.key_hint }}），当前模型：<code>{{ env.model }}</code></p>
+  <p class="success">✅ Configured (…{{ env.key_hint }}), current model: <code>{{ env.model }}</code></p>
   {% else %}
-  <p class="error-text">⚠️ 尚未配置，判分与 rubric 结构化功能不可用。</p>
+  <p class="error-text">⚠️ Not configured — grading and rubric structuring are unavailable.</p>
   {% endif %}
   <form method="post" action="{{ url_for('settings_page') }}">
-    <label>API Key（以 sk- 开头）</label>
+    <label>API Key (starts with sk-)</label>
     <input type="password" name="api_key" placeholder="sk-…" autocomplete="off" style="width:100%">
-    <p class="muted">留空则保留现有 Key 不变。</p>
-    <label>模型（可配置，默认 gpt-4o，看图判分质量优先）</label>
+    <p class="muted">Leave blank to keep the existing key.</p>
+    <label>Model (configurable, default gpt-4o — best vision quality for grading)</label>
     <input type="text" name="model" value="{{ env.model }}" style="width:100%">
-    <button type="submit" class="btn btn-primary" style="margin-top:10px">💾 保存</button>
+    <button type="submit" class="btn btn-primary" style="margin-top:10px">💾 Save</button>
   </form>
   <div class="security-note">
-    🔒 <strong>安全说明</strong>：Key 只保存在本服务器项目目录的 <code>.env</code> 文件中；
-    <code>.env</code> 已加入 <code>.gitignore</code>，不会提交到 git；
-    请求只发往 <code>api.openai.com</code>。
+    🔒 <strong>Security</strong>: the key is stored only in this server's project-directory <code>.env</code> file;
+    <code>.env</code> is in <code>.gitignore</code> and is never committed to git;
+    requests go only to <code>api.openai.com</code>.
   </div>
 </div>
 
 <div class="card">
-  <h3>如何获取 Key</h3>
+  <h3>How to get a key</h3>
   <ol class="howto">
-    <li>打开 <code>platform.openai.com</code> 登录并进入 <strong>API keys</strong> 页面；</li>
-    <li>点 <strong>Create new secret key</strong>，复制生成的 key（只显示一次）；</li>
-    <li>粘贴到上方输入框并保存。</li>
+    <li>Open <code>platform.openai.com</code>, sign in, and go to the <strong>API keys</strong> page;</li>
+    <li>Click <strong>Create new secret key</strong> and copy the generated key (shown only once);</li>
+    <li>Paste it into the field above and save.</li>
   </ol>
-  <p class="muted">建议给 key 设置用量限额（Limits），避免意外超支。</p>
+  <p class="muted">Tip: set usage limits (Limits) on your key in the OpenAI dashboard to avoid surprise spend.</p>
 </div>
 {% endblock %}
