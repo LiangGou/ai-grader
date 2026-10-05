@@ -21,4 +21,7 @@ if [ ! -f ".env" ]; then
 fi
 
 echo "Starting server: http://localhost:5000"
+# Clean proxy bypass list (see app.py): bracketed IPv6 entries break httpx.
+export NO_PROXY="localhost,127.0.0.1,::1"
+export no_proxy="localhost,127.0.0.1,::1"
 exec flask --app app run --host=0.0.0.0 --port=5000

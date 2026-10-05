@@ -1,8 +1,19 @@
 """AI Grader web app for teachers (Flask backend)."""
+import os
+
+# Sanitize the proxy bypass list BEFORE anything imports httpx (via the OpenAI
+# SDK). Some sandboxes inject bracketed IPv6 entries like "[::1]" into
+# NO_PROXY/no_proxy, which httpx cannot parse and fails with
+# "Invalid port: ':1]'" on every API call. Keep a minimal, parseable list;
+# api.openai.com still goes through the egress proxy as intended.
+for _pv in ("NO_PROXY", "no_proxy"):
+    _vv = os.environ.get(_pv, "")
+    if "[::1]" in _vv or "*" in _vv:
+        os.environ[_pv] = "localhost,127.0.0.1,::1"
+
 import csv
 import io
 import json
-import os
 import random
 import time
 from datetime import datetime
