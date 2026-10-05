@@ -237,7 +237,7 @@
         .then(function (data) {
           btn.disabled = false;
           $("saveMsg").textContent = data.ok ? "✅ Saved — you can grade the next student." : "Save failed: " + data.error;
-          if (data.ok) { $("studentName").value = ""; input.value = ""; preview.innerHTML = ""; $("gradeResult").style.display = "none"; currentResult = null; }
+          if (data.ok) { $("studentName").value = ""; selectedFiles = []; renderPreviews(); $("gradeResult").style.display = "none"; currentResult = null; }
         })
         .catch(function (e) {
           btn.disabled = false;
