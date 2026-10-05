@@ -9,7 +9,7 @@
   {% if env.key_set %}
   <p class="success">✅ Configured (…{{ env.key_hint }}), current model: <code>{{ env.model }}</code></p>
   {% else %}
-  <p class="error-text">⚠️ Not configured — grading and rubric structuring are unavailable.</p>
+  <p class="error-text">⚠️ Not configured — rubric generation and grading are unavailable.</p>
   {% endif %}
   <form method="post" action="{{ url_for('settings_page') }}">
     <label>API Key (starts with sk-)</label>

@@ -1,7 +1,7 @@
-"""Call the OpenAI API for three jobs:
-1. Turn the teacher's colloquial voice transcript into a structured rubric;
-2. Grade photos of a student's paper question-by-question against the rubric;
-3. Transcribe recorded voice memos with Whisper (record-then-transcribe flow).
+"""Call the OpenAI API for two jobs:
+1. Read the teacher's reference example (a hand-graded paper, answer key, or
+   scoring guide photo) with vision and generate a structured rubric from it;
+2. Grade photos of a student's paper question-by-question against the rubric.
 
 Images are sent as base64 data URLs; supports multiple paper photos plus
 optional reference/answer-key images.
@@ -17,12 +17,14 @@ load_dotenv()
 
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 
-STRUCTURE_SYSTEM = """You are an experienced grading lead who turns a teacher's spoken grading rules into a clear, structured rubric.
-The teacher gives you a voice transcript (possibly colloquial, with repetitions and filler words). Extract, for each question: the question label, the max score, and the scoring/deduction rules.
+EXAMPLE_RUBRIC_SYSTEM = """You are an experienced grading lead who studies a teacher's reference example and writes the grading rubric the teacher used.
+The teacher gives you one or more photos of a reference example: this may be a paper the teacher already graded by hand (with check marks, crosses, circled mistakes, and handwritten point annotations like "-2"), an answer key, or a printed scoring guide.
+Study it carefully and reconstruct the grading rubric: for each question, the question label, the max score, and the scoring/deduction rules you can infer from the teacher's markings and the reference answers.
+For example, if the teacher wrote "-2" next to a missing unit, include "deduct 2 points for a missing/wrong unit" in that question's criteria. If the example shows partial credit given for a correct method with an arithmetic slip, capture that rule.
 Output ONLY a JSON object, no explanations, in this format:
-{"items": [{"q": "Question 1", "max_score": 5, "criteria": "3 points for the correct concept, 2 points for complete steps"}, ...]}
-If the transcript does not state a max score for a question, assign a reasonable default based on the question type and note "Max score set by AI default — please confirm" in criteria.
-If the transcript yields no questions at all, output {"items": []}.
+{"items": [{"q": "Question 1", "max_score": 5, "criteria": "3 points for the correct concept, 2 points for complete steps; deduct 2 for a missing unit"}, ...]}
+If you cannot determine a max score for a question, assign a reasonable default based on the question type and note "Max score set by AI default — please confirm" in criteria.
+If the photos yield no questions at all, output {"items": []}.
 """
 
 GRADER_SYSTEM = """You are a strict grader who scores exactly by the rubric. Rules:
@@ -100,30 +102,24 @@ def _chat_json(system, user_content, max_tokens):
     return _parse_json_loose(text)
 
 
-def transcribe_audio(path):
-    """Transcribe a recorded voice memo with OpenAI Whisper. Returns the transcript string.
+def rubric_from_example(image_paths):
+    """Generate a structured rubric from the teacher's reference example photos.
 
-    Raises RuntimeError for missing API key (caller maps to 400); other API
-    errors propagate for the caller to report.
+    Returns {"items": [...]} with q / max_score / criteria per question.
     """
-    client = _get_client()
-    with open(path, "rb") as f:
-        text = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=f,
-            language="en",
-            response_format="text",
+    if not image_paths:
+        raise RuntimeError("No example photos received. Please take or upload a reference example first.")
+    user_content = [
+        {
+            "type": "text",
+            "text": "These photos show the teacher's reference example (a hand-graded paper, answer key, or scoring guide). Reconstruct the grading rubric the teacher used.",
+        }
+    ]
+    for p in image_paths:
+        user_content.append(
+            {"type": "image_url", "image_url": {"url": _data_url(p)}}
         )
-    return (text or "").strip()
-
-
-def structure_rubric(transcript):
-    """Turn a colloquial transcript into a structured rubric. Returns {"items": [...]}."""
-    data = _chat_json(
-        STRUCTURE_SYSTEM,
-        f"The teacher's spoken grading rules:\n\n{transcript}",
-        max_tokens=2048,
-    )
+    data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=2048)
     items = data.get("items", [])
     norm = []
     for it in items:

@@ -3,9 +3,11 @@
 ## 1. Product overview
 
 **AI Grader** is a mobile-first web app that helps teachers grade homework and
-exams. The teacher photographs students' papers with a phone, **speaks** the
-grading rules out loud (no typing required), and the app calls the OpenAI API
-to grade every question against those rules, tally totals, and produce
+exams. The teacher photographs a reference example — a paper they already
+graded by hand, an answer key, or a scoring guide — and the app's vision AI
+reconstructs the grading rubric from the teacher's markings. Then the teacher
+photographs students' papers with a phone, and the app calls the OpenAI API
+to grade every question against that rubric, tally totals, and produce
 class-wide statistics with CSV export.
 
 **Target user:** K-12 and college teachers who grade paper homework/exams and
@@ -16,8 +18,9 @@ AI score is reviewable and adjustable before it is saved.
 
 - The teacher stays in control: AI proposes, the teacher disposes. Scores are
   editable; nothing is final until saved.
-- Voice-first rubric entry: speaking is faster than typing a rubric, and the
-  spoken rules are normalized into a structured, editable form.
+- Rubric by example: the teacher shows one graded example and the AI
+  reconstructs the rubric from it — no need to write out rules from scratch.
+  The generated rubric is always shown as an editable table before use.
 - Zero build step: the whole app is plain Flask + vanilla JS so a teacher (or
   a school IT volunteer) can run it with one command.
 
@@ -37,8 +40,8 @@ OpenAI API (api.openai.com) — model configurable via OPENAI_MODEL (default gpt
 - **Frontend:** vanilla JS in `static/app.js`; no framework, no bundler.
   Photo capture uses `<input type="file" accept="image/*" capture="environment" multiple>`.
 - **Backend:** Flask routes for pages plus JSON/multipart API endpoints.
-- **AI layer:** `grader.py` — two OpenAI calls (rubric structuring, paper
-  grading), both with `response_format: {"type": "json_object"}` and a
+- **AI layer:** `grader.py` — two OpenAI vision calls (rubric-from-example,
+  paper grading), both with `response_format: {"type": "json_object"}` and a
   loose-JSON fallback parser (strips markdown fences, extracts outermost braces).
 - **Storage:** SQLite (`classes`, `assignments`, `grades` tables); uploaded
   photos in `uploads/`.
@@ -49,27 +52,31 @@ OpenAI API (api.openai.com) — model configurable via OPENAI_MODEL (default gpt
 Home (`/`) → create a class → create a grading assignment under it → land on
 the assignment setup page (`/assignment/<id>`).
 
-### 3.2 Enter the rubric (voice → structure → edit → save)
-1. Enter the grading rules — either **🎤 Record rubric by voice** (a recording
-   panel appears with an animated waveform, a pulsing red dot, and a timer;
-   tap **⏹ Stop** when done; the audio is POSTed to `/api/transcribe` and
-   transcribed by OpenAI Whisper (`whisper-1`, English), then appended to the
-   notes box; Cancel discards the recording; microphone permission required)
-   or just type directly into the notes box, which stays editable.
-2. Click **✨ Generate Structured Rubric** — `POST /api/structure_rubric`
-   sends the notes to OpenAI, which returns per-question
-   `{q, max_score, criteria}` items.
+### 3.2 Enter the rubric (example → generate → edit → save)
+1. Provide the reference example — **📸 Take Photo** (camera) or **🖼️ Photo
+   Library** (existing photos): a paper you already graded by hand (with your
+   check marks, crosses, circled mistakes, and handwritten point notes like
+   "−2"), an answer key, or a printed scoring guide. Multiple pages supported;
+   thumbnails preview the selection.
+2. Click **✨ Generate Rubric from Example** — `POST /api/rubric_from_example`
+   sends the photos to OpenAI's vision API (GPT-4o), which studies your
+   markings and reconstructs the rubric as per-question
+   `{q, max_score, criteria}` items (e.g. a "−2" next to a missing unit becomes
+   a deduction rule).
 3. The items render as an editable table: add/remove rows, change the question
    label, max score, or scoring rules by typing.
 4. Click **💾 Save Rubric** — `POST /assignment/<id>/save_rubric` stores both
    the structured JSON and an auto-generated plain-text rendering. Saving
-   requires at least one table row; there is no plain-text-only path.
+   requires at least one table row; the rubric always comes from the example
+   (there is no free-text rubric path).
 5. Optionally upload reference/answer-key photos (`POST
    /assignment/<id>/upload_reference`) — they are sent along as grading context.
 
 ### 3.3 Grade papers
-1. Open **📷 Grade** (`/grade/<id>`), enter the student name (🎤 records a
-   voice memo and Whisper fills the name field), take/upload one or more paper photos.
+1. Open **📷 Grade** (`/grade/<id>`), type the student name, then **📸 Take
+   Photo** (camera) or **🖼️ Photo Library** (existing photos) — multiple
+   pages supported, both sources can be mixed; thumbnails preview the
+   selection.
 2. Click **🚀 Grade Now** — `POST /api/grade` sends rubric + answer-key images
    + paper photos to GPT-4o, which returns per-question scores with rationales,
    detected answers, total, and overall feedback.
@@ -90,9 +97,8 @@ histogram (pure CSS/JS); the full score table; and **⬇️ Export CSV**
 | POST | `/class/new` | Create a class (form: `name`) |
 | POST | `/assignment/new` | Create an assignment (form: `class_id`, `name`) |
 | GET | `/assignment/<id>` | Assignment setup page (rubric editor) |
-| POST | `/api/structure_rubric` | Transcript → structured rubric items (JSON: `{transcript}` → `{ok, items}`) |
-| POST | `/api/transcribe` | Voice memo (multipart `audio`) → Whisper transcript (`{ok, text}`) |
-| POST | `/assignment/<id>/save_rubric` | Save rubric (JSON: `{mode:"structured", items}`; requires ≥1 row) |
+| POST | `/api/rubric_from_example` | Example photos (multipart `images`) → vision-generated rubric items (`{ok, items}`) |
+| POST | `/assignment/<id>/save_rubric` | Save rubric (JSON: `{items}`; requires ≥1 row) |
 | POST | `/assignment/<id>/upload_reference` | Upload answer-key photos (multipart `images`) |
 | GET | `/grade/<id>` | Grading page |
 | POST | `/api/grade` | Grade photos (multipart: `assignment_id`, `student_name`, `images`) → `{ok, result, photos}` |
@@ -121,9 +127,12 @@ grades(id INTEGER PK, assignment_id INTEGER → assignments,
 
 ## 6. Grading prompt design (`grader.py`)
 
-**Rubric structuring** (`STRUCTURE_SYSTEM`): frames the model as a grading lead;
-input is the raw transcript; output is JSON-only `{"items": [...]}`. If a max
-score is missing, the model assigns a reasonable default and flags it
+**Rubric from example** (`EXAMPLE_RUBRIC_SYSTEM`): frames the model as a
+grading lead studying the teacher's reference example; input is the example
+photos (hand-graded paper, answer key, or scoring guide); output is JSON-only
+`{"items": [...]}`. Teacher markings are turned into rules — e.g. a "−2" next
+to a missing unit becomes a deduction rule. If a max score is missing, the
+model assigns a reasonable default and flags it
 ("Max score set by AI default — please confirm") so the teacher reviews it.
 Unparseable input yields `{"items": []}` and the UI asks the teacher to check
 or add rows manually.
@@ -147,25 +156,20 @@ The rubric sent for grading **prefers the structured version**
 (`build_rubric_prompt_text`): structured `{q, max_score, criteria}` rows
 rendered as `"Question 1 (max 5 pts): …"` lines — more precise than free text.
 
-## 7. Voice input approach
+## 7. Rubric-from-example approach
 
-- **Record → Whisper transcribe** (replaced the earlier Web Speech API live
-  transcription, whose accuracy was not good enough). Frontend
-  (`window.recordAndTranscribe` in `static/app.js`): `getUserMedia` →
-  `MediaRecorder` (prefers `audio/webm;codecs=opus`, falls back through
-  `audio/mp4` for iOS Safari) → live waveform via `AudioContext` +
-  `AnalyserNode` frequency bars on a `<canvas>`, pulsing red dot, elapsed
-  timer → on Stop, the blob is POSTed as multipart `audio` to
-  `POST /api/transcribe`.
-- Backend (`grader.transcribe_audio`): OpenAI Whisper `whisper-1`,
-  `language="en"`, `response_format="text"` (~$0.006/min). The temp upload is
-  deleted in a `finally` block. Missing audio → 400; missing API key →
-  400 (same `RuntimeError` convention as other endpoints).
-- Used in two places: the rubric notes box (transcript **appended**) and the
-  student-name field (transcript **set**).
-- **Manual fallback everywhere**: the transcript lands in editable fields;
-  mic denial / unsupported browsers show a friendly error instead of a
-  silent failure, and typing always works.
+- The teacher provides a reference example (hand-graded paper, answer key, or
+  scoring guide) via **📸 Take Photo** / **🖼️ Photo Library**; `POST
+  /api/rubric_from_example` saves the uploads to temp files and calls
+  `grader.rubric_from_example`, which sends them to OpenAI's vision API
+  (GPT-4o) with a prompt to reconstruct the rubric from the teacher's markings
+  (checks, crosses, "−2" notes → deduction rules). Temp files are deleted in a
+  `finally` block. Missing photos → 400; missing API key → 400 (same
+  `RuntimeError` convention as other endpoints).
+- The generated rubric always renders as an editable table before saving —
+  the teacher reviews and corrects every row.
+- There is no voice input and no free-text rubric path: the rubric comes only
+  from the example (or manual table edits).
 
 ## 8. Security notes
 
@@ -198,7 +202,7 @@ Local run only:
 ## 10. Known limitations & future work
 
 **Limitations (MVP)**
-- Voice transcription needs microphone permission and an OpenAI key (Whisper `whisper-1`); transcription quality depends on recording clarity.
+- Rubric generation reads your example photos with OpenAI vision (GPT-4o) — clear, well-lit shots of your markings give the best results.
 - Very large photos may hit per-image model limits — clear, full-page shots
   work best.
 - Single-file SQLite won't suit many concurrent teachers (→ Postgres).

@@ -16,11 +16,11 @@ question against the rubric → totals are tallied → class-wide stats + CSV ex
 
 1. **Classes / assignments**: create a class → create grading assignments under it (homework/exam name).
 2. **Rubric entry** (assignment setup page):
-   - 🎤 Voice input: tap record → animated waveform + timer while recording → tap Stop → the audio is sent to the server and transcribed by OpenAI Whisper (`whisper-1`, English, ~$0.006/min), then appended to the notes box (the notes box stays editable — typing directly works too);
-   - ✨ Generate structured rubric: the backend asks OpenAI to turn the notes into per-question JSON (`question label / max score / scoring rules`); structuring is required — saving needs at least one table row;
+   - 📝 Reference example: take a photo or upload existing photos of a reference — a paper you already graded by hand (with your check marks, crosses, and point notes), an answer key, or a printed scoring guide;
+   - ✨ Generate rubric from example: the backend sends the example photos to OpenAI's vision API (GPT-4o), which studies your markings and reconstructs the rubric as per-question JSON (`question label / max score / scoring rules`); generating is required — saving needs at least one table row;
    - The structured table is fully editable: add/remove rows, change labels, max scores, rules;
    - Optional reference/answer-key photos, sent along as grading context.
-3. **Photo grading**: enter the student name (voice supported) → upload multiple paper photos (mobile opens the camera directly)
+3. **Photo grading**: enter the student name → take photos or pick from the photo library (multiple pages supported, can mix both)
    → the backend sends the rubric + answer-key images + paper photos to GPT-4o, which must return strict JSON
    (per question: detected answer summary, score, max score, scoring rationale; total; overall feedback) →
    the teacher can adjust any score before saving.
@@ -73,11 +73,11 @@ directory (or export CSVs) regularly.
 ```
 ai-grader/
   app.py            Flask routes (pages + API)
-  grader.py         OpenAI calls: rubric structuring, vision grading
+  grader.py         OpenAI calls: rubric-from-example vision, paper grading
   db.py             SQLite schema + CRUD (stdlib sqlite3)
   DESIGN.md         Design doc (English)
   templates/        base / index / assignment / grade / results / settings
-  static/           style.css (mobile-first) / app.js (voice, camera, grading UI)
+  static/           style.css (mobile-first) / app.js (camera, grading UI)
   uploads/          uploaded paper / answer-key photos (git-ignored)
   requirements.txt  flask / openai / python-dotenv
   .env.example      environment variable template (placeholders only)
@@ -86,6 +86,6 @@ ai-grader/
 
 ## Known limitations (MVP)
 
-- Voice transcription uses OpenAI Whisper (`whisper-1`, ~$0.006/min) via a record → Stop → server-side transcribe flow; needs microphone permission and an API key;
+- Rubric generation reads your example photos with OpenAI vision (GPT-4o) — clear, well-lit shots of your markings give the best results;
 - Oversized photos may exceed the model's per-image limits — take clear but not excessively zoomed shots;
 - Single-file SQLite: switch to Postgres if many teachers use it concurrently.

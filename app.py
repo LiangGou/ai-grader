@@ -96,75 +96,56 @@ def assignment_page(assignment_id):
     )
 
 
-@app.route("/api/structure_rubric", methods=["POST"])
-def api_structure_rubric():
-    data = request.get_json(force=True, silent=True) or {}
-    transcript = (data.get("transcript") or "").strip()
-    if not transcript:
-        return jsonify({"ok": False, "error": "The voice notes are empty. Please record or type the grading rules first."}), 400
-    try:
-        result = grader.structure_rubric(transcript)
-    except RuntimeError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
-    except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"Failed to structure rubric: {e}"}), 500
-    return jsonify({"ok": True, "items": result["items"]})
-
-
-@app.route("/api/transcribe", methods=["POST"])
-def api_transcribe():
-    audio = request.files.get("audio")
-    if audio is None or not (audio.filename or "").strip():
-        return jsonify({"ok": False, "error": "No audio received. Please record a voice memo first."}), 400
-    ext = os.path.splitext(audio.filename or "")[1].lower() or ".webm"
-    if ext not in (".webm", ".ogg", ".mp3", ".m4a", ".wav", ".mp4"):
-        ext = ".webm"
-    tmp_path = None
+@app.route("/api/rubric_from_example", methods=["POST"])
+def api_rubric_from_example():
+    files = request.files.getlist("images")
+    files = [f for f in files if f and f.filename]
+    if not files:
+        return jsonify({"ok": False, "error": "No example photos received. Please take or upload a reference example first."}), 400
+    tmp_paths = []
     try:
         import tempfile
-        fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix="voice_")
-        os.close(fd)
-        audio.save(tmp_path)
-        if os.path.getsize(tmp_path) == 0:
-            return jsonify({"ok": False, "error": "The recording is empty. Please try recording again."}), 400
-        text = grader.transcribe_audio(tmp_path)
+        for f in files:
+            ext = os.path.splitext(f.filename or "")[1].lower()
+            if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                ext = ".jpg"
+            fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix="example_")
+            os.close(fd)
+            f.save(tmp_path)
+            tmp_paths.append(tmp_path)
+        result = grader.rubric_from_example(tmp_paths)
     except RuntimeError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"Transcription failed: {e}"}), 500
+        return jsonify({"ok": False, "error": f"Failed to generate rubric: {e}"}), 500
     finally:
-        if tmp_path:
+        for p in tmp_paths:
             try:
-                os.remove(tmp_path)
+                os.remove(p)
             except OSError:
                 pass
-    return jsonify({"ok": True, "text": text})
+    return jsonify({"ok": True, "items": result["items"]})
 
 
 @app.route("/assignment/<int:assignment_id>/save_rubric", methods=["POST"])
 def assignment_save_rubric(assignment_id):
     data = request.get_json(force=True, silent=True) or {}
-    mode = data.get("mode", "structured")  # structured | text
     items = data.get("items") or []
-    if mode == "text":
-        rubric_text = (data.get("raw_text") or "").strip()
-        items = []
-    else:
-        # Structured mode: the form's items win (the teacher may have edited them).
-        clean = []
-        for it in items:
-            q = str(it.get("q", "")).strip()
-            if not q:
-                continue
-            try:
-                ms = float(it.get("max_score", 0))
-            except (TypeError, ValueError):
-                ms = 0
-            clean.append({"q": q, "max_score": ms, "criteria": str(it.get("criteria", "")).strip()})
-        items = clean
-        rubric_text = grader.rubric_items_to_text(items)
+    # The form's items win (the teacher may have edited them after AI generation).
+    clean = []
+    for it in items:
+        q = str(it.get("q", "")).strip()
+        if not q:
+            continue
+        try:
+            ms = float(it.get("max_score", 0))
+        except (TypeError, ValueError):
+            ms = 0
+        clean.append({"q": q, "max_score": ms, "criteria": str(it.get("criteria", "")).strip()})
+    items = clean
+    rubric_text = grader.rubric_items_to_text(items)
     if not rubric_text.strip():
-        return jsonify({"ok": False, "error": "The rubric is empty. Please enter the grading rules first."}), 400
+        return jsonify({"ok": False, "error": "The rubric is empty. Please generate it from a reference example in Step 1 first."}), 400
     db.save_rubric(assignment_id, rubric_text, items)
     return jsonify({"ok": True, "rubric_text": rubric_text, "items": items})
 

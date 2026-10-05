@@ -1,166 +1,8 @@
-/* AI Grader frontend: voice transcription, structured rubric, photo grading, results histogram */
+/* AI Grader frontend: example-based rubric generation, structured rubric, photo grading, results histogram */
 (function () {
   "use strict";
 
   function $(id) { return document.getElementById(id); }
-
-  /* ---------- Record-then-transcribe voice memos (Whisper) ----------
-     window.recordAndTranscribe({container, onText, onError, onCancel}):
-     tap record -> animated waveform + timer -> tap stop -> audio POSTed to
-     /api/transcribe -> onText(transcript). Manual typing always stays available. */
-  window.recordAndTranscribe = function (options) {
-    options = options || {};
-    var container = options.container;
-    var onText = options.onText || function () {};
-    var onError = options.onError || function () {};
-    var onCancel = options.onCancel || function () {};
-    if (!container) { onError("Voice recorder: no container element."); return null; }
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      onError("This browser cannot access the microphone. Please type instead.");
-      return null;
-    }
-    if (typeof MediaRecorder === "undefined") {
-      onError("Audio recording is not supported in this browser. Please type instead.");
-      return null;
-    }
-
-    var panel = document.createElement("div");
-    panel.className = "rec-panel";
-    panel.innerHTML =
-      '<div class="rec-top"><span class="rec-dot"></span>' +
-      '<span class="rec-timer">0:00</span>' +
-      '<span class="rec-hint">Recording… tap Stop when done</span></div>' +
-      '<canvas class="rec-wave" width="600" height="120"></canvas>' +
-      '<div class="rec-actions">' +
-      '<button type="button" class="btn btn-primary btn-small rec-stop">⏹ Stop</button>' +
-      '<button type="button" class="btn btn-small rec-cancel">Cancel</button></div>';
-    container.innerHTML = "";
-    container.appendChild(panel);
-    var canvas = panel.querySelector(".rec-wave");
-    var timerEl = panel.querySelector(".rec-timer");
-    var hintEl = panel.querySelector(".rec-hint");
-    var stopBtn = panel.querySelector(".rec-stop");
-    var cancelBtn = panel.querySelector(".rec-cancel");
-
-    var stream = null, recorder = null, audioCtx = null, analyser = null;
-    var rafId = null, timerId = null, chunks = [], startTime = 0, finished = false;
-
-    function cleanup() {
-      finished = true;
-      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-      if (timerId) { clearInterval(timerId); timerId = null; }
-      try { if (audioCtx) audioCtx.close(); } catch (e) { /* noop */ }
-      audioCtx = null;
-      if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
-    }
-    function fail(msg) {
-      cleanup();
-      panel.innerHTML = "";
-      onError(msg);
-    }
-    function pickMime() {
-      var cands = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus", "audio/mp4;codecs=mp4a"];
-      for (var i = 0; i < cands.length; i++) {
-        try { if (MediaRecorder.isTypeSupported(cands[i])) return cands[i]; } catch (e) { /* noop */ }
-      }
-      return "";
-    }
-    function draw() {
-      if (finished || !analyser) return;
-      var ctx = canvas.getContext("2d");
-      var W = canvas.width, H = canvas.height;
-      ctx.clearRect(0, 0, W, H);
-      var data = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteFrequencyData(data);
-      var n = data.length, bw = W / n;
-      for (var i = 0; i < n; i++) {
-        var v = data[i] / 255, h = Math.max(3, v * H);
-        ctx.fillStyle = "hsl(" + (210 - Math.round(v * 60)) + ", 80%, 55%)";
-        ctx.fillRect(i * bw + 1, (H - h) / 2, Math.max(1, bw - 2), h);
-      }
-      rafId = requestAnimationFrame(draw);
-    }
-    function tick() {
-      var s = Math.floor((Date.now() - startTime) / 1000);
-      timerEl.textContent = Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2);
-    }
-    function send(blob) {
-      hintEl.textContent = "Transcribing…";
-      stopBtn.disabled = true;
-      cancelBtn.disabled = true;
-      var fd = new FormData();
-      var ext = (blob.type.indexOf("mp4") !== -1 || blob.type.indexOf("m4a") !== -1) ? "m4a" : "webm";
-      fd.append("audio", blob, "memo." + ext);
-      fetch("/api/transcribe", { method: "POST", body: fd })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          cleanup();
-          panel.innerHTML = "";
-          if (!data.ok) { onError(data.error || "Transcription failed. Please try again."); return; }
-          onText(data.text || "");
-        })
-        .catch(function (e) {
-          cleanup();
-          panel.innerHTML = "";
-          onError("Transcription request failed: " + e.message);
-        });
-    }
-
-    stopBtn.addEventListener("click", function () {
-      if (finished || !recorder) return;
-      finished = true;
-      try { recorder.stop(); }
-      catch (e) { fail("Could not stop the recording. Please try again."); }
-    });
-    cancelBtn.addEventListener("click", function () {
-      cleanup();
-      panel.innerHTML = "";
-      onCancel();
-    });
-
-    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (s) {
-      stream = s;
-      var mime = pickMime();
-      try {
-        recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-      } catch (e) { fail("Could not start the recorder: " + e.message); return; }
-      recorder.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
-      recorder.onstop = function () {
-        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-        if (timerId) { clearInterval(timerId); timerId = null; }
-        try { if (audioCtx) audioCtx.close(); } catch (e2) { /* noop */ }
-        audioCtx = null;
-        var blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-        stream.getTracks().forEach(function (t) { t.stop(); });
-        stream = null;
-        if (!blob.size) { panel.innerHTML = ""; onError("The recording is empty. Please try again."); return; }
-        send(blob);
-      };
-      recorder.onerror = function () { fail("Recording error. Please check the microphone and try again."); };
-      try {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        var src = audioCtx.createMediaStreamSource(stream);
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 64;
-        analyser.smoothingTimeConstant = 0.75;
-        src.connect(analyser);
-      } catch (e) { fail("Could not read microphone audio: " + e.message); return; }
-      chunks = [];
-      try { recorder.start(250); }
-      catch (e) { fail("Could not start the recorder: " + e.message); return; }
-      startTime = Date.now();
-      tick();
-      timerId = setInterval(tick, 250);
-      draw();
-    }).catch(function (e) {
-      var msg = "Microphone access was denied. Please allow microphone access and try again.";
-      if (e && e.name === "NotFoundError") msg = "No microphone found on this device.";
-      else if (e && e.name === "NotAllowedError") msg = "Microphone access was denied. Please allow it in the browser settings and try again.";
-      fail(msg);
-    });
-
-    return { cancel: function () { if (!finished) { cleanup(); panel.innerHTML = ""; onCancel(); } } };
-  };
 
   /* ---------- Assignment setup page: structured rubric ---------- */
   function rubricRow(item) {
@@ -194,62 +36,54 @@
     return items;
   }
 
-  if ($("itemsRows") && typeof window.ASSIGNMENT_ID !== "undefined" && $("structureBtn")) {
+  if ($("itemsRows") && typeof window.ASSIGNMENT_ID !== "undefined" && $("generateRubricBtn")) {
     var rowsBox = $("itemsRows");
     (window.EXISTING_ITEMS || []).forEach(function (it) { rowsBox.appendChild(rubricRow(it)); });
 
-    function setVoiceStatus(msg, isError) {
-      var s = $("voiceStatus");
-      if (s) {
-        s.textContent = msg;
-        s.classList.toggle("error-text", !!isError);
-      }
-    }
-    $("voiceBtn").addEventListener("click", function () {
-      var btn = this;
-      btn.disabled = true;
-      setVoiceStatus("Starting recorder…", false);
-      window.recordAndTranscribe({
-        container: $("recPanel"),
-        onText: function (text) {
-          btn.disabled = false;
-          setVoiceStatus(text ? "Transcribed — review the notes below, then generate the structured rubric." : "Got empty transcription — please try again.", !text);
-          var ta = $("transcript");
-          ta.value = ta.value ? ta.value.replace(/\s+$/, "") + "\n" + text : text;
-        },
-        onError: function (msg) { btn.disabled = false; setVoiceStatus(msg, true); },
-        onCancel: function () { btn.disabled = false; setVoiceStatus("Recording cancelled.", false); }
+    var exampleFiles = [];
+    function renderExamplePreviews() {
+      var preview = $("examplePreview");
+      preview.innerHTML = "";
+      exampleFiles.forEach(function (f) {
+        var img = document.createElement("img");
+        img.className = "thumb";
+        img.src = URL.createObjectURL(f);
+        preview.appendChild(img);
       });
-    });
+    }
+    function handleExamplePicked(input) {
+      Array.prototype.forEach.call(input.files, function (f) { exampleFiles.push(f); });
+      input.value = "";
+      renderExamplePreviews();
+    }
+    $("examplePhotoInput").addEventListener("change", function () { handleExamplePicked(this); });
+    $("exampleLibraryInput").addEventListener("change", function () { handleExamplePicked(this); });
 
     $("addRowBtn").addEventListener("click", function () {
       rowsBox.appendChild(rubricRow());
     });
 
-    $("structureBtn").addEventListener("click", function () {
-      var transcript = $("transcript").value.trim();
-      if (!transcript) { alert("Please record or type the grading rules first."); return; }
-      var btn = $("structureBtn");
+    $("generateRubricBtn").addEventListener("click", function () {
+      if (!exampleFiles.length) { alert("Please take or upload a reference example first (a hand-graded paper, answer key, or scoring guide)."); return; }
+      var btn = $("generateRubricBtn");
       btn.disabled = true;
-      btn.textContent = "⏳ Structuring with AI…";
-      fetch("/api/structure_rubric", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: transcript })
-      })
+      btn.textContent = "⏳ Reading example with AI…";
+      var fd = new FormData();
+      exampleFiles.forEach(function (f) { fd.append("images", f); });
+      fetch("/api/rubric_from_example", { method: "POST", body: fd })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           btn.disabled = false;
-          btn.textContent = "✨ Generate Structured Rubric";
-          if (!data.ok) { alert("Structuring failed: " + data.error); return; }
+          btn.textContent = "✨ Generate Rubric from Example";
+          if (!data.ok) { alert("Rubric generation failed: " + data.error); return; }
           rowsBox.innerHTML = "";
           (data.items || []).forEach(function (it) { rowsBox.appendChild(rubricRow(it)); });
-          if (!data.items || !data.items.length) alert("Could not parse any questions from the notes. Please check the notes or add rows manually.");
+          if (!data.items || !data.items.length) alert("Could not read any questions from the example. Try clearer photos, or add rows manually.");
           else alert("Generated " + data.items.length + " question(s) — please review, edit, then save.");
         })
         .catch(function (e) {
           btn.disabled = false;
-          btn.textContent = "✨ Generate Structured Rubric";
+          btn.textContent = "✨ Generate Rubric from Example";
           alert("Request failed: " + e.message);
         });
     });
@@ -257,10 +91,10 @@
     $("saveRubricBtn").addEventListener("click", function () {
       var items = collectItems();
       if (items.length === 0) {
-        alert("The structured rubric is empty. Record or type the grading rules in Step 1, then click “✨ Generate Structured Rubric” first.");
+        alert("The structured rubric is empty. Add a reference example in Step 1, then click “✨ Generate Rubric from Example” first.");
         return;
       }
-      var payload = { mode: "structured", items: items };
+      var payload = { items: items };
       var btn = $("saveRubricBtn");
       btn.disabled = true;
       btn.textContent = "Saving…";
@@ -286,19 +120,6 @@
 
   /* ---------- Grading page ---------- */
   if ($("gradeBtn") && typeof window.ASSIGNMENT_ID !== "undefined") {
-    $("nameVoiceBtn").addEventListener("click", function () {
-      var btn = this;
-      btn.disabled = true;
-      window.recordAndTranscribe({
-        container: $("nameRecPanel"),
-        onText: function (text) {
-          btn.disabled = false;
-          $("studentName").value = (text || "").trim();
-        },
-        onError: function (msg) { btn.disabled = false; alert(msg); },
-        onCancel: function () { btn.disabled = false; }
-      });
-    });
     var selectedFiles = [];
     function renderPreviews() {
       var preview = $("preview");

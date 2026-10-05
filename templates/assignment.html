@@ -2,16 +2,24 @@
 {% block title %}Assignment Setup - {{ a.name }}{% endblock %}
 {% block content %}
 <h2>⚙️ {{ a.name }}</h2>
-<p class="muted">Enter the grading rubric. Recommended flow: 🎤 speak the rules → ✨ generate a structured rubric → review &amp; edit → save.</p>
+<p class="muted">Set up the grading rubric. Recommended flow: 📝 provide a reference example → ✨ generate the rubric with AI → review &amp; edit → save.</p>
 
 <div class="card">
-  <h3>Step 1: Grading rules (voice or typing)</h3>
-  <button type="button" id="voiceBtn" class="btn btn-voice">🎤 Record rubric by voice</button>
-  <div id="recPanel"></div>
-  <p class="muted" id="voiceStatus">Tap record, speak your grading rules, then tap Stop — Whisper transcribes them into the box below. You can also just type directly.</p>
-  <textarea id="transcript" rows="5" placeholder="e.g. Question 1, 5 points: 3 points for the correct concept, 2 for complete steps; Question 2, 10 points…">{{ a.rubric_text if not items else '' }}</textarea>
-  <button type="button" id="structureBtn" class="btn btn-primary" style="margin-top:10px">✨ Generate Structured Rubric</button>
-  <p class="muted">AI turns your spoken notes into per-question max scores and scoring rules, shown in the table below for review.</p>
+  <h3>Step 1: Reference example</h3>
+  <p class="muted">Take or upload a photo of your reference: a paper you already graded by hand (with your marks and point notes), an answer key, or a printed scoring guide. The AI reads it and reconstructs your grading rubric.</p>
+  <div class="btn-row">
+    <label class="file-label">
+      <input type="file" id="examplePhotoInput" accept="image/*" capture="environment" multiple hidden>
+      <span class="btn btn-big">📸 Take Photo</span>
+    </label>
+    <label class="file-label">
+      <input type="file" id="exampleLibraryInput" accept="image/*" multiple hidden>
+      <span class="btn btn-big">🖼️ Photo Library</span>
+    </label>
+  </div>
+  <div id="examplePreview" class="thumbs"></div>
+  <button type="button" id="generateRubricBtn" class="btn btn-primary" style="margin-top:10px">✨ Generate Rubric from Example</button>
+  <p class="muted">AI studies your markings (checks, crosses, “−2” notes) and turns them into per-question max scores and scoring rules, shown in the table below for review.</p>
 </div>
 
 <div class="card">
