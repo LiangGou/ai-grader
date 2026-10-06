@@ -424,7 +424,9 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
     import subprocess
     import sys
     name = f"diagram_gen_{int(time.time())}_{random.randint(1000, 9999)}.png"
-    out_path = os.path.join(upload_dir, name)
+    # Absolute path: the subprocess runs with cwd=/tmp, so a relative
+    # uploads/ path would not resolve.
+    out_path = os.path.abspath(os.path.join(upload_dir, name))
     # The model only builds the figure; we do the savefig so the output path
     # is always correct (models sometimes redefine OUTPUT_PATH).
     runner = (
