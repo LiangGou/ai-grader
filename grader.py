@@ -145,6 +145,10 @@ def normalize_latex(text):
     """
     if not text:
         return text
+    # The model types literal \n (backslash + n) for line breaks between
+    # formulas. KaTeX has no \n command, so it renders red. Turn it into a
+    # real newline (whitespace outside math, harmless inside).
+    text = text.replace("\\n", "\n")
     # The model sometimes mixes delimiters like $\[...\]$ or $\(...\)$.
     # Drop a single $ hugging \[ \] \( \) first (a $$ pair is left alone),
     # then convert \[...\] -> $$...$$ and \(...\) -> $...$.
