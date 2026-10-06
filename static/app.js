@@ -84,6 +84,36 @@
   }
 
   /* ---------- Assignment setup page: digitized rubric ---------- */
+  // Auto-save helpers live at IIFE top level so rubricRow() can reference
+  // scheduleAutoSave (they were previously block-scoped inside the `if`,
+  // which made rubricRow throw "scheduleAutoSave is not defined").
+  var saveTimer = null;
+  function setSaveStatus(text, isError) {
+    var el = $("rubricSaveStatus");
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle("error", !!isError);
+  }
+  // Every rubric change auto-saves (debounced) — there is no save button.
+  function saveRubric() {
+    var items = collectItems(); // may be [] if the teacher deleted all rows
+    setSaveStatus("Saving…", false);
+    fetch("/assignment/" + window.ASSIGNMENT_ID + "/save_rubric", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: items })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok) { setSaveStatus("Save failed", true); return; }
+        setSaveStatus("Auto-saved ✓", false);
+      })
+      .catch(function () { setSaveStatus("Save failed", true); });
+  }
+  function scheduleAutoSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveRubric, 1500);
+  }
   function rubricRow(item) {
     item = item || {};
     var state = item.verified === "yes" ? "ok" : (item.verify_note ? "warn" : "manual");
@@ -380,7 +410,10 @@
             }
             finishGenerate(btn, data.items);
           })
-          .catch(function () {
+          .catch(function (err) {
+            // Never swallow errors silently: a bug here used to cause an
+            // infinite "Reading questions…" loop with no visible error.
+            if (window.console && console.error) console.error("Rubric poll failed:", err);
             // Transient network blip: keep polling unless we've waited too long.
             if (attempts >= maxAttempts) {
               clearInterval(timer); activeRubricPoll = null;
@@ -423,33 +456,8 @@
         });
     });
 
-    var saveTimer = null;
-    function setSaveStatus(text, isError) {
-      var el = $("rubricSaveStatus");
-      if (!el) return;
-      el.textContent = text;
-      el.classList.toggle("error", !!isError);
-    }
-    // Every rubric change auto-saves (debounced) — there is no save button.
-    function saveRubric() {
-      var items = collectItems(); // may be [] if the teacher deleted all rows
-      setSaveStatus("Saving…", false);
-      fetch("/assignment/" + window.ASSIGNMENT_ID + "/save_rubric", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: items })
-      })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          if (!data.ok) { setSaveStatus("Save failed", true); return; }
-          setSaveStatus("Auto-saved ✓", false);
-        })
-        .catch(function () { setSaveStatus("Save failed", true); });
-    }
-    function scheduleAutoSave() {
-      clearTimeout(saveTimer);
-      saveTimer = setTimeout(saveRubric, 1500);
-    }
+    /* Poll loop, streaming, and generation click handler below use the
+       top-level saveRubric / scheduleAutoSave defined above. */
   }
 
   /* ---------- Grading page ---------- */
