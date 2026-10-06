@@ -56,10 +56,12 @@ the assignment setup page (`/assignment/<id>`).
 1. Provide the reference example — **📸 Take Photo** (camera) or **🖼️ Photo
    Library** (existing photos): a paper you already graded by hand (with your
    check marks, crosses, circled mistakes, and handwritten point notes like
-   "−2"), an answer key, or a printed scoring guide. Multiple pages supported;
-   thumbnails preview the selection.
+   "−2"), an answer key, or a printed scoring guide. Uploads are **saved**
+   immediately to the assignment's example library (`uploads/`, tracked in
+   the DB); revisit them any time, check/uncheck which ones feed the next
+   generation, or delete and replace them.
 2. Click **✨ Generate Rubric from Example** — `POST /api/rubric_from_example`
-   sends the photos to OpenAI's vision API (GPT-4o), which studies your
+   sends the **checked** saved examples to OpenAI's vision API (GPT-4o), which studies your
    markings and reconstructs the rubric as per-question
    `{q, max_score, criteria}` items (e.g. a "−2" next to a missing unit becomes
    a deduction rule).
@@ -97,7 +99,9 @@ histogram (pure CSS/JS); the full score table; and **⬇️ Export CSV**
 | POST | `/class/new` | Create a class (form: `name`) |
 | POST | `/assignment/new` | Create an assignment (form: `class_id`, `name`) |
 | GET | `/assignment/<id>` | Assignment setup page (rubric editor) |
-| POST | `/api/rubric_from_example` | Example photos (multipart `images`) → vision-generated rubric items (`{ok, items}`) |
+| POST | `/api/rubric_from_example` | Saved example filenames (JSON `{assignment_id, include:[names]}`) → vision-generated rubric items (`{ok, items}`) |
+| POST | `/assignment/<id>/upload_rubric_example` | Save rubric example photos (multipart `images`) → `{ok, examples}` |
+| POST | `/assignment/<id>/delete_rubric_example` | Delete a saved example (JSON `{filename}`) → `{ok, examples}` |
 | POST | `/assignment/<id>/save_rubric` | Save rubric (JSON: `{items}`; requires ≥1 row) |
 | POST | `/assignment/<id>/upload_reference` | Upload answer-key photos (multipart `images`) |
 | GET | `/grade/<id>` | Grading page |
@@ -159,13 +163,14 @@ rendered as `"Question 1 (max 5 pts): …"` lines — more precise than free tex
 ## 7. Rubric-from-example approach
 
 - The teacher provides a reference example (hand-graded paper, answer key, or
-  scoring guide) via **📸 Take Photo** / **🖼️ Photo Library**; `POST
-  /api/rubric_from_example` saves the uploads to temp files and calls
-  `grader.rubric_from_example`, which sends them to OpenAI's vision API
-  (GPT-4o) with a prompt to reconstruct the rubric from the teacher's markings
-  (checks, crosses, "−2" notes → deduction rules). Temp files are deleted in a
-  `finally` block. Missing photos → 400; missing API key → 400 (same
-  `RuntimeError` convention as other endpoints).
+  scoring guide) via **📸 Take Photo** / **🖼️ Photo Library**; uploads are
+  saved immediately (`POST /assignment/<id>/upload_rubric_example` → `uploads/`
+  + `assignments.rubric_example_images`) and shown as a checkable, deletable
+  library. `POST /api/rubric_from_example` takes the **checked** saved
+  filenames (validated against the assignment's library to block path
+  traversal) and calls `grader.rubric_from_example`, which sends them to
+  OpenAI's vision API (GPT-4o) with a prompt to reconstruct the rubric from
+  the teacher's markings (checks, crosses, "−2" notes → deduction rules).
 - The generated rubric always renders as an editable table before saving —
   the teacher reviews and corrects every row.
 - There is no voice input and no free-text rubric path: the rubric comes only

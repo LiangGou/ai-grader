@@ -40,37 +40,96 @@
     var rowsBox = $("itemsRows");
     (window.EXISTING_ITEMS || []).forEach(function (it) { rowsBox.appendChild(rubricRow(it)); });
 
-    var exampleFiles = [];
-    function renderExamplePreviews() {
-      var preview = $("examplePreview");
-      preview.innerHTML = "";
-      exampleFiles.forEach(function (f) {
+    var savedExamples = (window.SAVED_EXAMPLES || []).map(function (name) {
+      return { name: name, checked: true };
+    });
+    function renderExampleList() {
+      var list = $("exampleList");
+      list.innerHTML = "";
+      savedExamples.forEach(function (ex) {
+        var item = document.createElement("div");
+        item.className = "example-item";
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = ex.checked;
+        cb.title = "Include in rubric generation";
+        cb.addEventListener("change", function () { ex.checked = cb.checked; });
         var img = document.createElement("img");
         img.className = "thumb";
-        img.src = URL.createObjectURL(f);
-        preview.appendChild(img);
+        img.src = "/uploads/" + encodeURIComponent(ex.name);
+        var del = document.createElement("button");
+        del.type = "button";
+        del.className = "btn btn-small example-del";
+        del.textContent = "✕";
+        del.title = "Delete this example";
+        del.addEventListener("click", function () { deleteExample(ex.name); });
+        item.appendChild(cb);
+        item.appendChild(img);
+        item.appendChild(del);
+        list.appendChild(item);
       });
+      $("noExamplesMsg").style.display = savedExamples.length ? "none" : "";
+      $("exampleCount").textContent = savedExamples.length ? "(" + savedExamples.length + ")" : "";
     }
-    function handleExamplePicked(input) {
-      Array.prototype.forEach.call(input.files, function (f) { exampleFiles.push(f); });
-      input.value = "";
-      renderExamplePreviews();
+    function uploadExamples(fileList) {
+      var fd = new FormData();
+      Array.prototype.forEach.call(fileList, function (f) { fd.append("images", f); });
+      $("exampleUploading").style.display = "";
+      fetch("/assignment/" + window.ASSIGNMENT_ID + "/upload_rubric_example", { method: "POST", body: fd })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          $("exampleUploading").style.display = "none";
+          if (!data.ok) { alert("Upload failed: " + (data.error || "unknown error")); return; }
+          var prevChecked = {};
+          savedExamples.forEach(function (ex) { prevChecked[ex.name] = ex.checked; });
+          savedExamples = (data.examples || []).map(function (name) {
+            return { name: name, checked: prevChecked.hasOwnProperty(name) ? prevChecked[name] : true };
+          });
+          renderExampleList();
+        })
+        .catch(function (e) {
+          $("exampleUploading").style.display = "none";
+          alert("Upload failed: " + e.message);
+        });
     }
-    $("examplePhotoInput").addEventListener("change", function () { handleExamplePicked(this); });
-    $("exampleLibraryInput").addEventListener("change", function () { handleExamplePicked(this); });
+    function deleteExample(name) {
+      if (!confirm("Delete this saved example?")) return;
+      fetch("/assignment/" + window.ASSIGNMENT_ID + "/delete_rubric_example", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: name })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.ok) { alert("Delete failed: " + (data.error || "unknown error")); return; }
+          var prevChecked = {};
+          savedExamples.forEach(function (ex) { prevChecked[ex.name] = ex.checked; });
+          savedExamples = (data.examples || []).map(function (n) {
+            return { name: n, checked: prevChecked.hasOwnProperty(n) ? prevChecked[n] : true };
+          });
+          renderExampleList();
+        })
+        .catch(function (e) { alert("Delete failed: " + e.message); });
+    }
+    $("examplePhotoInput").addEventListener("change", function () { uploadExamples(this.files); this.value = ""; });
+    $("exampleLibraryInput").addEventListener("change", function () { uploadExamples(this.files); this.value = ""; });
+    renderExampleList();
 
     $("addRowBtn").addEventListener("click", function () {
       rowsBox.appendChild(rubricRow());
     });
 
     $("generateRubricBtn").addEventListener("click", function () {
-      if (!exampleFiles.length) { alert("Please take or upload a reference example first (a hand-graded paper, answer key, or scoring guide)."); return; }
+      var include = savedExamples.filter(function (ex) { return ex.checked; }).map(function (ex) { return ex.name; });
+      if (!include.length) { alert("Please take or upload a reference example first, and make sure at least one saved example is checked."); return; }
       var btn = $("generateRubricBtn");
       btn.disabled = true;
       btn.textContent = "⏳ Reading example with AI…";
-      var fd = new FormData();
-      exampleFiles.forEach(function (f) { fd.append("images", f); });
-      fetch("/api/rubric_from_example", { method: "POST", body: fd })
+      fetch("/api/rubric_from_example", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assignment_id: window.ASSIGNMENT_ID, include: include })
+      })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           btn.disabled = false;

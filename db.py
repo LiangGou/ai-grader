@@ -46,6 +46,10 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    # Migration: rubric example images library (added after initial release).
+    cols = [r[1] for r in cur.execute("PRAGMA table_info(assignments)").fetchall()]
+    if "rubric_example_images" not in cols:
+        cur.execute("ALTER TABLE assignments ADD COLUMN rubric_example_images TEXT DEFAULT '[]'")
     conn.commit()
     conn.close()
 
@@ -169,3 +173,23 @@ def get_grade(grade_id):
     row = conn.execute("SELECT * FROM grades WHERE id = ?", (grade_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_rubric_example_images(assignment_id):
+    a = get_assignment(assignment_id)
+    if not a:
+        return []
+    try:
+        return json.loads(a["rubric_example_images"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def save_rubric_example_images(assignment_id, paths):
+    conn = _connect()
+    conn.execute(
+        "UPDATE assignments SET rubric_example_images = ? WHERE id = ?",
+        (json.dumps(paths, ensure_ascii=False), assignment_id),
+    )
+    conn.commit()
+    conn.close()
