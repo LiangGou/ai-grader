@@ -20,7 +20,7 @@ DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 EXAMPLE_RUBRIC_SYSTEM = """You are digitizing a teacher's reference example (a hand-graded paper, answer key, or scoring guide) into structured data.
 For each question, transcribe and extract:
 - "q": the question label (e.g. "Question 1").
-- "question_text": the question itself, transcribed faithfully. Write ALL mathematics in LaTeX: use $...$ for inline math (e.g. $2x + 6 = 14$) and $$...$$ for display math (e.g. $$\\int_0^1 x^2 dx$$). EVERY math fragment MUST be wrapped in $ delimiters — never leave LaTeX commands like \\frac outside $...$.
+- "question_text": the question itself, transcribed faithfully. Write ALL mathematics in LaTeX: use $...$ for inline math (e.g. $2x + 6 = 14$) and $$...$$ for display math (e.g. $$\\int_0^1 x^2 dx$$). EVERY math fragment MUST be wrapped in $ delimiters — never leave LaTeX commands like \\frac outside $...$. NEVER use \\[...\\] or \\(...\\) delimiters, only $...$ and $$...$$.
 - "reference_solution": the teacher's correct solution / working / final answer, transcribed faithfully, with mathematics in LaTeX as above (every fragment wrapped in $...$). Capture the final answer at minimum; include key working steps if shown, separating distinct steps with a line break.
 - "max_score": the max points for the question.
 - "criteria": the scoring/deduction rules you can infer from the teacher's markings (check marks, crosses, circled mistakes, handwritten notes like "-2"). For example, if the teacher wrote "-2" next to a missing unit, include "deduct 2 points for a missing/wrong unit".
@@ -125,18 +125,47 @@ def _digits_of(text):
 
 
 def normalize_latex(text):
-    """Normalize LaTeX math delimiters in digitized/AI-generated text.
+    r"""Normalize LaTeX math delimiters in digitized/AI-generated text.
 
-    The vision model often emits LaTeX with inconsistent $...$ delimiters and
-    uses \\\\ as a formula separator, which leaves fragments like \\frac{5}{n}
-    unrendered by KaTeX. This pass:
-    1. Keeps already-delimited $...$ / $$...$$ spans untouched.
-    2. Splits the rest on \\\\ separators (which become line breaks); wraps
-       any segment containing a LaTeX command (\\<letter>) in $...$.
-    3. Plain English without LaTeX commands passes through unchanged.
+    The vision model emits LaTeX with inconsistent delimiters: bare fragments,
+    \\\\-separated formulas, and mixed forms like $\\[...\\]$. Any of these
+    leave KaTeX unable to render (or worse, mis-pair $ delimiters so a huge
+    span fails to parse and shows red). This pass:
+    1. Fixes mixed delimiters like $\[...\]$: drops a single $ hugging
+       \[ \] \( \), then converts \[...\] -> $$...$$ and \(...\) -> $...$,
+       so they can't mis-pair into a broken $...$ span.
+    2. Drops a stray lone $ (odd count): auto-render would pair it with a
+       far-away $ and swallow everything between into a broken math span.
+    3. Keeps already-delimited $...$ / $$...$$ spans untouched.
+    4. Splits the rest on \\\\ separators; wraps any segment containing a
+       LaTeX command (\\<letter>) in $...$.
+    Plain English without LaTeX commands passes through unchanged.
     """
     if not text:
         return text
+    # The model sometimes mixes delimiters like $\[...\]$ or $\(...\)$.
+    # Drop a single $ hugging \[ \] \( \) first (a $$ pair is left alone),
+    # then convert \[...\] -> $$...$$ and \(...\) -> $...$.
+    text = re.sub(r"(?<!\$)\$(?=\\\[)", "", text)
+    text = re.sub(r"(?<=\\\])\$(?!\$)", "", text)
+    text = re.sub(r"(?<!\\)\\\[(.+?)(?<!\\)\\\]", r"$$\1$$", text, flags=re.DOTALL)
+    text = re.sub(r"(?<!\$)\$(?=\\\()", "", text)
+    text = re.sub(r"(?<=\\\))\$(?!\$)", "", text)
+    text = re.sub(r"(?<!\\)\\\((.+?)(?<!\\)\\\)", r"$\1$", text, flags=re.DOTALL)
+    spans = []
+
+    def _save(m):
+        spans.append(m.group(0))
+        return "\x00%d\x00" % len(spans)
+
+    protected = re.sub(r"\$\$.+?\$\$", _save, text, flags=re.DOTALL)
+    positions = [m.start() for m in re.finditer(r"(?<!\\)\$", protected)]
+    if len(positions) % 2 == 1:
+        i = positions[-1]
+        protected = protected[:i] + protected[i + 1 :]
+    for i, s in enumerate(spans, start=1):
+        protected = protected.replace("\x00%d\x00" % i, s)
+    text = protected
     tokens = re.split(r"(\$\$.+?\$\$|\$.+?\$)", text, flags=re.DOTALL)
     segs = []  # strings; "\n" marks a hard break from a \\ separator
     for tok in tokens:
