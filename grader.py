@@ -814,18 +814,34 @@ def transcribe_questions_only(image_paths):
     return questions
 
 
-def solve_and_rubric(question_text, max_score, q_label=""):
+def solve_and_rubric(question_text, max_score, q_label="", image_paths=None):
     """Reasoning-model pass: solve the question and generate an AP-style rubric.
 
     Returns {solution, ap_points, notes}. The ap_points sum to exactly max_score.
+    When image_paths is given, the model also sees the original photos so it
+    can read the PRINTED question directly (guarding against transcription
+    errors); it must still ignore all handwriting.
     """
     prompt = (
         f"Question {q_label} (worth {max_score:g} points):\n{question_text}\n\n"
         "Solve it and create the AP-style rubric."
     )
+    user_content = [{"type": "text", "text": prompt}]
+    if image_paths:
+        user_content[0]["text"] += (
+            "\n\nThe attached photos show the printed question. Read the PRINTED "
+            "question text from the photos to double-check the transcription above "
+            "(in particular, read exponents and fractions very carefully). "
+            "IGNORE all handwriting in the photos."
+        )
+        for p in image_paths:
+            try:
+                user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
+            except Exception:
+                pass
     data = _chat_json(
         SOLVE_RUBRIC_SYSTEM,
-        [{"type": "text", "text": prompt}],
+        user_content,
         max_tokens=4096,
         model=REASONING_MODEL,
     )
@@ -914,8 +930,24 @@ def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
             default_note = "Max score set by AI default — please confirm."
         else:
             default_note = ""
-        solved = solve_and_rubric(q.get("question_text", ""), max_score, q_label)
-        verdict = verify_solution(q.get("question_text", ""), solved["solution"])
+        try:
+            solved = solve_and_rubric(q.get("question_text", ""), max_score, q_label,
+                                      image_paths=image_paths)
+            verdict = verify_solution(q.get("question_text", ""), solved["solution"])
+        except Exception as e:  # noqa: BLE001
+            # Never silently drop a question: surface the error for teacher review.
+            return {
+                "idx": idx,
+                "q": q_label,
+                "question_text": q.get("question_text", ""),
+                "reference_solution": "",
+                "max_score": max_score,
+                "criteria": "",
+                "has_diagram": q.get("has_diagram", False),
+                "verified": "review",
+                "verify_note": f"AI solving failed ({e}). Please solve manually or retry.",
+                "graph": None,
+            }
         verified = "yes" if verdict["verdict"] == "confirmed" else "review"
         criteria = "; ".join(
             f"{p.get('points', 1)} pt: {p.get('for', '')}"
