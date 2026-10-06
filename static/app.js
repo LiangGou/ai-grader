@@ -294,17 +294,36 @@
       scheduleAutoSave();
     });
 
+    var renderedGenIdx = {}; // idx -> true for the in-progress streaming generation
+
+    // Insert a freshly-validated question row in idx order among generated rows.
+    function insertGenRow(item) {
+      var row = rubricRow(item);
+      row.dataset.genIdx = item.idx;
+      var kids = rowsBox.children;
+      for (var i = 0; i < kids.length; i++) {
+        var k = kids[i];
+        if (k.dataset && k.dataset.genIdx !== undefined && parseInt(k.dataset.genIdx, 10) > item.idx) {
+          rowsBox.insertBefore(row, k);
+          return;
+        }
+      }
+      rowsBox.appendChild(row);
+    }
+
     function finishGenerate(btn, items) {
-      rowsBox.innerHTML = "";
-      (items || []).forEach(function (it) { rowsBox.appendChild(rubricRow(it)); });
       btn.disabled = false;
       btn.textContent = "✨ Generate Rubric from Example";
+      // Make sure every item is on screen (in case some arrived with the final poll).
+      (items || []).forEach(function (it) {
+        if (!renderedGenIdx[it.idx]) { insertGenRow(it); renderedGenIdx[it.idx] = true; }
+      });
+      saveRubric(); // final auto-save of the complete rubric
       if (!items || !items.length) {
         alert("Could not read any questions from the example. Try clearer photos, or add rows manually.");
       } else {
         var okCount = items.filter(function (it) { return it.verified === "yes"; }).length;
         var needCount = items.length - okCount;
-        saveRubric();  // auto-save so a refresh never loses the generated rubric
         alert("Digitized " + items.length + " question(s): " + okCount + " verified ✅" +
           (needCount ? ", " + needCount + " need your review ⚠️" : "") +
           " — auto-saved. Every edit auto-saves too.");
@@ -333,7 +352,20 @@
               failGenerate(btn, "Generation was interrupted (" + (data.error || "job not found") + "). Please tap Generate again.");
               return;
             }
+            // Stream newly-validated questions: render each and auto-save.
+            var fresh = false;
+            (data.done || []).forEach(function (it) {
+              if (!renderedGenIdx[it.idx]) {
+                insertGenRow(it);
+                renderedGenIdx[it.idx] = true;
+                fresh = true;
+              }
+            });
+            if (fresh) saveRubric();
+            var nDone = Object.keys(renderedGenIdx).length;
+            var total = data.total || 0;
             if (data.status === "running") {
+              btn.textContent = total > 0 ? "⏳ Validated " + nDone + "/" + total + " questions…" : "⏳ Reading questions…";
               if (attempts >= maxAttempts) {
                 clearInterval(timer); activeRubricPoll = null;
                 failGenerate(btn, "Generation is taking longer than expected. Please try again.");
@@ -369,7 +401,9 @@
       if (!include.length) { alert("Please take or upload a reference example first, and make sure at least one saved example is checked."); return; }
       var btn = $("generateRubricBtn");
       btn.disabled = true;
-      btn.textContent = "⏳ Digitizing & verifying… (about a minute)";
+      btn.textContent = "⏳ Reading questions…";
+      rowsBox.innerHTML = ""; // fresh list; validated questions stream in one by one
+      renderedGenIdx = {};
       fetch("/api/rubric_from_example", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

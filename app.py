@@ -149,7 +149,10 @@ def api_rubric_job(job_id):
         job = _rubric_jobs.get(job_id)
     if not job:
         return jsonify({"ok": False, "error": "Job not found. The server may have restarted — please tap Generate again."}), 404
-    out = {"ok": True, "status": job["status"]}
+    # While running, "done" carries the questions validated so far (each with
+    # "idx"); the client renders and saves them incrementally.
+    out = {"ok": True, "status": job["status"], "total": job.get("total", 0),
+           "done": job.get("done", [])}
     if job["status"] == "done":
         out["items"] = job["items"]
     elif job["status"] == "error":
@@ -158,10 +161,25 @@ def api_rubric_job(job_id):
 
 
 def _run_rubric_job(job_id, paths):
+    def _on_total(total):
+        with _rubric_jobs_lock:
+            if job_id in _rubric_jobs:
+                _rubric_jobs[job_id]["total"] = total
+
+    def _on_item(item):
+        with _rubric_jobs_lock:
+            if job_id in _rubric_jobs:
+                _rubric_jobs[job_id]["done"].append(item)
+
     try:
-        result = grader.rubric_from_example(paths, upload_dir=UPLOAD_DIR)
+        with _rubric_jobs_lock:
+            _rubric_jobs[job_id]["done"] = []
+            _rubric_jobs[job_id]["total"] = 0
+        result = grader.build_example_rubric_streaming(
+            paths, upload_dir=UPLOAD_DIR, on_total=_on_total, on_item=_on_item)
         with _rubric_jobs_lock:
             _rubric_jobs[job_id] = {"status": "done", "items": result["items"],
+                                   "done": result["items"], "total": len(result["items"]),
                                    "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
     except RuntimeError as e:
         with _rubric_jobs_lock:

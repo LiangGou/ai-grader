@@ -389,30 +389,62 @@ def validate_question(question_text, reference_solution):
     return {"verdict": "unsure", "note": note or "Could not confidently validate the reference solution."}
 
 
-def build_example_rubric(image_paths, upload_dir=None, max_workers=5):
-    """Full pipeline: digitize the example, validate each reference solution
-    (independent re-solve + Python numeric check), retry failed questions once
-    with a correction hint, and flag anything still unresolved for the teacher.
+def build_example_rubric_streaming(image_paths, upload_dir=None, max_workers=5,
+                                   on_total=None, on_item=None):
+    """Full pipeline with per-question progress.
 
-    Returns {"items": [...]} where each item has q, question_text,
+    Digitizes the example, then validates each reference solution concurrently
+    (independent re-solve + Python numeric check). After each question is fully
+    validated (including the one retry pass for failures), on_item(item) is
+    called so the caller can stream it to the UI immediately. on_total(total)
+    is called once the question count is known.
+
+    Each item has idx (0-based original order), q, question_text,
     reference_solution, max_score, criteria, verified ("yes"|"review"),
-    verify_note, and graph (render-ready function plot / cropped image / None).
+    verify_note, and graph.
     """
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    questions = digitize_example(image_paths)
+    def _build(idx, q, verdict):
+        return {
+            "idx": idx,
+            "q": q["q"],
+            "question_text": q["question_text"],
+            "reference_solution": q["reference_solution"],
+            "max_score": q["max_score"],
+            "criteria": q["criteria"],
+            "verified": "yes" if verdict["verdict"] == "confirmed" else "review",
+            "verify_note": "" if verdict["verdict"] == "confirmed" else verdict["note"],
+            "graph": _process_graph(q, image_paths, upload_dir),
+        }
 
-    def _validate_one(q):
+    def _validate(q):
         return validate_question(q.get("question_text", ""), q.get("reference_solution", ""))
 
+    questions = digitize_example(image_paths)
+    total = len(questions)
+    if on_total:
+        on_total(total)
+
+    results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        verdicts = list(pool.map(_validate_one, questions))
+        futs = {pool.submit(_validate, q): i for i, q in enumerate(questions)}
+        verdicts = {}
+        for f in as_completed(futs):
+            i = futs[f]
+            v = f.result()
+            verdicts[i] = v
+            if v["verdict"] == "confirmed":
+                item = _build(i, questions[i], v)
+                results[i] = item
+                if on_item:
+                    on_item(item)
 
     # Retry the failures once: re-digitize with a correction hint, then re-validate.
-    failed_idx = [i for i, v in enumerate(verdicts) if v["verdict"] != "confirmed"]
-    if failed_idx:
+    failed = [i for i, v in verdicts.items() if v["verdict"] != "confirmed"]
+    if failed:
         hint_bits = []
-        for i in failed_idx:
+        for i in failed:
             q = questions[i]
             hint_bits.append(
                 f'{q["q"]}: you transcribed the solution as "{q["reference_solution"]}", '
@@ -420,24 +452,32 @@ def build_example_rubric(image_paths, upload_dir=None, max_workers=5):
             )
         hint = "Some transcriptions failed validation:\n" + "\n".join(hint_bits)
         questions = digitize_example(image_paths, hint=hint)
+        if on_total:
+            on_total(len(questions))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            verdicts = list(pool.map(_validate_one, questions))
+            futs = {pool.submit(_validate, questions[i]): i for i in failed if i < len(questions)}
+            for f in as_completed(futs):
+                i = futs[f]
+                v = f.result()
+                item = _build(i, questions[i], v)
+                results[i] = item
+                if on_item:
+                    on_item(item)
 
-    items = []
-    for q, v in zip(questions, verdicts):
-        items.append(
-            {
-                "q": q["q"],
-                "question_text": q["question_text"],
-                "reference_solution": q["reference_solution"],
-                "max_score": q["max_score"],
-                "criteria": q["criteria"],
-                "verified": "yes" if v["verdict"] == "confirmed" else "review",
-                "verify_note": "" if v["verdict"] == "confirmed" else v["note"],
-                "graph": _process_graph(q, image_paths, upload_dir),
-            }
-        )
-    return {"items": items}
+    return {"items": [results[i] for i in sorted(results)]}
+
+
+def build_example_rubric(image_paths, upload_dir=None, max_workers=5):
+    """Full pipeline: digitize the example, validate each reference solution
+    (independent re-solve + Python numeric check), retry failed questions once
+    with a correction hint, and flag anything still unresolved for the teacher.
+
+    Returns {"items": [...]} where each item has idx, q, question_text,
+    reference_solution, max_score, criteria, verified ("yes"|"review"),
+    verify_note, and graph (render-ready function plot / cropped image / None).
+    """
+    return build_example_rubric_streaming(image_paths, upload_dir=upload_dir,
+                                         max_workers=max_workers)
 
 
 def rubric_from_example(image_paths, upload_dir=None):
