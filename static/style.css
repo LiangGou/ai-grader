@@ -54,6 +54,20 @@ label { font-size: 14px; font-weight: bold; }
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 0; border-top: 1px solid #f0f0f0; gap: 8px; flex-wrap: wrap;
 }
+/* Swipe-to-delete rows (home page) */
+.task-list li.swipe-row { display: block; padding: 0; position: relative; overflow: hidden; }
+.swipe-content {
+  position: relative; z-index: 1; background: #fff;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 0; gap: 8px; flex-wrap: wrap;
+  transition: transform 0.18s ease-out; touch-action: pan-y;
+}
+.swipe-delete {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 88px;
+  background: #e5484d; color: #fff; border: 0; font-size: 15px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.btn-del { background: none; border: 1px solid #eee; }
 .task-name { font-weight: bold; }
 .task-actions { display: flex; gap: 6px; }
 

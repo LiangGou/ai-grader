@@ -250,6 +250,67 @@
       rowsBox.appendChild(rubricRow());
     });
 
+    function finishGenerate(btn, items) {
+      rowsBox.innerHTML = "";
+      (items || []).forEach(function (it) { rowsBox.appendChild(rubricRow(it)); });
+      btn.disabled = false;
+      btn.textContent = "✨ Generate Rubric from Example";
+      if (!items || !items.length) {
+        alert("Could not read any questions from the example. Try clearer photos, or add rows manually.");
+      } else {
+        var okCount = items.filter(function (it) { return it.verified === "yes"; }).length;
+        var needCount = items.length - okCount;
+        saveRubric(true);  // auto-save so a refresh never loses the generated rubric
+        alert("Digitized " + items.length + " question(s): " + okCount + " verified ✅" +
+          (needCount ? ", " + needCount + " need your review ⚠️" : "") +
+          " — auto-saved. Review and edit any time; edits save with 💾 Save Rubric.");
+      }
+    }
+
+    function failGenerate(btn, msg) {
+      btn.disabled = false;
+      btn.textContent = "✨ Generate Rubric from Example";
+      alert(msg);
+    }
+
+    // Generation runs as a background job (~1 min). We poll for the result so
+    // a slow/flaky connection can't kill it mid-flight.
+    function pollRubricJob(jobId, btn) {
+      var attempts = 0, maxAttempts = 100; // ~5 minutes
+      var timer = setInterval(function () {
+        attempts++;
+        fetch("/api/rubric_job/" + jobId)
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data.ok) { // job lost, e.g. server restarted
+              clearInterval(timer);
+              failGenerate(btn, "Generation was interrupted (" + (data.error || "job not found") + "). Please tap Generate again.");
+              return;
+            }
+            if (data.status === "running") {
+              if (attempts >= maxAttempts) {
+                clearInterval(timer);
+                failGenerate(btn, "Generation is taking longer than expected. Please try again.");
+              }
+              return;
+            }
+            clearInterval(timer);
+            if (data.status === "error") {
+              failGenerate(btn, "Rubric generation failed: " + (data.error || "unknown error"));
+              return;
+            }
+            finishGenerate(btn, data.items);
+          })
+          .catch(function () {
+            // Transient network blip: keep polling unless we've waited too long.
+            if (attempts >= maxAttempts) {
+              clearInterval(timer);
+              failGenerate(btn, "Lost connection to the server. Please try again.");
+            }
+          });
+      }, 3000);
+    }
+
     $("generateRubricBtn").addEventListener("click", function () {
       var include = savedExamples.filter(function (ex) { return ex.checked; }).map(function (ex) { return ex.name; });
       if (!include.length) { alert("Please take or upload a reference example first, and make sure at least one saved example is checked."); return; }
@@ -263,26 +324,14 @@
       })
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          btn.disabled = false;
-          btn.textContent = "✨ Generate Rubric from Example";
-          if (!data.ok) { alert("Rubric generation failed: " + data.error); return; }
-          rowsBox.innerHTML = "";
-          (data.items || []).forEach(function (it) { rowsBox.appendChild(rubricRow(it)); });
-          if (!data.items || !data.items.length) {
-            alert("Could not read any questions from the example. Try clearer photos, or add rows manually.");
-          } else {
-            var okCount = data.items.filter(function (it) { return it.verified === "yes"; }).length;
-            var needCount = data.items.length - okCount;
-            saveRubric(true);  // auto-save so a refresh never loses the generated rubric
-            alert("Digitized " + data.items.length + " question(s): " + okCount + " verified ✅" +
-              (needCount ? ", " + needCount + " need your review ⚠️" : "") +
-              " — auto-saved. Review and edit any time; edits save with 💾 Save Rubric.");
+          if (!data.ok || !data.job_id) {
+            failGenerate(btn, "Rubric generation failed: " + (data.error || "unknown error"));
+            return;
           }
+          pollRubricJob(data.job_id, btn);
         })
         .catch(function (e) {
-          btn.disabled = false;
-          btn.textContent = "✨ Generate Rubric from Example";
-          alert("Request failed: " + e.message);
+          failGenerate(btn, "Request failed: " + e.message);
         });
     });
 
@@ -463,5 +512,64 @@
         '<span class="hist-count">' + c + ' students</span></div>';
     });
     $("histogram").innerHTML = html;
+  }
+
+  /* ---------- Home: swipe to delete assignments ---------- */
+  if (document.querySelector(".swipe-row")) {
+    var SWIPE_W = 88; // matches .swipe-delete width in CSS
+    var openRow = null;
+    function closeOpenRow(except) {
+      if (openRow && openRow !== except) {
+        openRow.querySelector(".swipe-content").style.transform = "";
+        openRow = null;
+      }
+    }
+    function deleteAssignment(id, row) {
+      var name = row.querySelector(".task-name").textContent.trim();
+      if (!confirm("Delete \"" + name + "\" and all its saved grades? This cannot be undone.")) return;
+      fetch("/api/assignment/" + id + "/delete", { method: "POST" })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.ok) { alert("Delete failed: " + (data.error || "unknown error")); return; }
+          if (openRow === row) openRow = null;
+          row.remove();
+        })
+        .catch(function (e) { alert("Request failed: " + e.message); });
+    }
+    document.querySelectorAll(".swipe-row").forEach(function (row) {
+      var content = row.querySelector(".swipe-content");
+      var startX = 0, dx = 0, dragging = false;
+      row.addEventListener("touchstart", function (e) {
+        closeOpenRow(row);
+        startX = e.touches[0].clientX; dx = 0; dragging = true;
+      }, { passive: true });
+      row.addEventListener("touchmove", function (e) {
+        if (!dragging) return;
+        dx = e.touches[0].clientX - startX;
+        content.style.transform = dx < 0 ? "translateX(" + Math.max(dx, -SWIPE_W) + "px)" : "";
+      }, { passive: true });
+      row.addEventListener("touchend", function () {
+        dragging = false;
+        if (dx < -SWIPE_W / 2) {
+          content.style.transform = "translateX(" + (-SWIPE_W) + "px)";
+          openRow = row;
+        } else {
+          content.style.transform = "";
+        }
+        dx = 0;
+      });
+    });
+    // Tapping outside closes an open row.
+    document.addEventListener("touchstart", function (e) {
+      if (!e.target.closest(".swipe-row")) closeOpenRow(null);
+    }, { passive: true });
+    // Both the revealed Delete button and the 🗑️ button delete.
+    document.querySelectorAll(".swipe-delete, .btn-del").forEach(function (b) {
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var row = b.closest(".swipe-row");
+        deleteAssignment(b.getAttribute("data-id"), row);
+      });
+    });
   }
 })();

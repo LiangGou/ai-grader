@@ -193,3 +193,12 @@ def save_rubric_example_images(assignment_id, paths):
     )
     conn.commit()
     conn.close()
+
+
+def delete_assignment(assignment_id):
+    """Delete an assignment and all of its saved grades."""
+    conn = _connect()
+    conn.execute("DELETE FROM grades WHERE assignment_id = ?", (assignment_id,))
+    conn.execute("DELETE FROM assignments WHERE id = ?", (assignment_id,))
+    conn.commit()
+    conn.close()

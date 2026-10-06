@@ -32,13 +32,17 @@
   {% if c.assignments %}
   <ul class="task-list">
     {% for a in c.assignments %}
-    <li>
-      <span class="task-name">{{ a.name }}</span>
-      <span class="task-actions">
-        <a class="btn btn-small" href="{{ url_for('assignment_page', assignment_id=a.id) }}">⚙️ Rubric</a>
-        <a class="btn btn-small" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Grade</a>
-        <a class="btn btn-small" href="{{ url_for('results_page', assignment_id=a.id) }}">📊 Results</a>
-      </span>
+    <li class="swipe-row" data-assignment-id="{{ a.id }}">
+      <div class="swipe-content">
+        <span class="task-name">{{ a.name }}</span>
+        <span class="task-actions">
+          <a class="btn btn-small" href="{{ url_for('assignment_page', assignment_id=a.id) }}">⚙️ Rubric</a>
+          <a class="btn btn-small" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Grade</a>
+          <a class="btn btn-small" href="{{ url_for('results_page', assignment_id=a.id) }}">📊 Results</a>
+          <button class="btn btn-small btn-del" data-id="{{ a.id }}" title="Delete assignment">🗑️</button>
+        </span>
+      </div>
+      <button class="swipe-delete" data-id="{{ a.id }}">Delete</button>
     </li>
     {% endfor %}
   </ul>

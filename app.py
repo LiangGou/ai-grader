@@ -15,7 +15,9 @@ import csv
 import io
 import json
 import random
+import threading
 import time
+import uuid
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -104,8 +106,21 @@ def assignment_page(assignment_id):
     )
 
 
+# Background rubric-digitization jobs: digitizing + validating takes ~1 minute,
+# too long for one fragile HTTP request. POST /api/rubric_from_example starts
+# a job and returns immediately; the client polls /api/rubric_job/<job_id>.
+_rubric_jobs = {}
+_rubric_jobs_lock = threading.Lock()
+
+
 @app.route("/api/rubric_from_example", methods=["POST"])
 def api_rubric_from_example():
+    """Start rubric digitization as a background job; returns immediately.
+
+    Digitizing + validating takes ~1 minute, too long for one fragile HTTP
+    request (a restart or tunnel blip kills it). The client polls
+    /api/rubric_job/<job_id> for the result instead.
+    """
     data = request.get_json(force=True, silent=True) or {}
     assignment_id = data.get("assignment_id")
     include = data.get("include") or []
@@ -118,13 +133,44 @@ def api_rubric_from_example():
     paths = [saved_names[n] for n in include if n in saved_names]
     if not paths:
         return jsonify({"ok": False, "error": "No example photos selected. Please add a reference example first."}), 400
+    job_id = uuid.uuid4().hex[:12]
+    with _rubric_jobs_lock:
+        now = time.time()
+        for jid in [j for j, j in _rubric_jobs.items() if now - j.get("created", now) > 1800]:
+            del _rubric_jobs[jid]
+        _rubric_jobs[job_id] = {"status": "running", "created": now}
+    threading.Thread(target=_run_rubric_job, args=(job_id, paths), daemon=True).start()
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/api/rubric_job/<job_id>")
+def api_rubric_job(job_id):
+    with _rubric_jobs_lock:
+        job = _rubric_jobs.get(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found. The server may have restarted — please tap Generate again."}), 404
+    out = {"ok": True, "status": job["status"]}
+    if job["status"] == "done":
+        out["items"] = job["items"]
+    elif job["status"] == "error":
+        out["error"] = job.get("error", "Unknown error.")
+    return jsonify(out)
+
+
+def _run_rubric_job(job_id, paths):
     try:
         result = grader.rubric_from_example(paths, upload_dir=UPLOAD_DIR)
+        with _rubric_jobs_lock:
+            _rubric_jobs[job_id] = {"status": "done", "items": result["items"],
+                                   "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
     except RuntimeError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
+        with _rubric_jobs_lock:
+            _rubric_jobs[job_id] = {"status": "error", "error": str(e),
+                                   "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
     except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"Failed to generate rubric: {e}"}), 500
-    return jsonify({"ok": True, "items": result["items"]})
+        with _rubric_jobs_lock:
+            _rubric_jobs[job_id] = {"status": "error", "error": f"Failed to generate rubric: {e}",
+                                   "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
 
 
 @app.route("/assignment/<int:assignment_id>/upload_rubric_example", methods=["POST"])
@@ -207,6 +253,14 @@ def assignment_upload_reference(assignment_id):
 
 
 # ---------- Grading ----------
+@app.route("/api/assignment/<int:assignment_id>/delete", methods=["POST"])
+def api_assignment_delete(assignment_id):
+    if not db.get_assignment(assignment_id):
+        return jsonify({"ok": False, "error": "Assignment not found."}), 404
+    db.delete_assignment(assignment_id)
+    return jsonify({"ok": True})
+
+
 @app.route("/grade/<int:assignment_id>")
 def grade_page(assignment_id):
     a = db.get_assignment(assignment_id)
