@@ -23,7 +23,7 @@ REASONING_MODEL = os.environ.get("OPENAI_REASONING_MODEL", "o3")
 
 EXAMPLE_RUBRIC_SYSTEM = """You are digitizing a teacher's reference example (a hand-graded paper, answer key, or scoring guide) into structured data.
 For each question, transcribe and extract:
-- "q": the question label (e.g. "Question 1").
+- "q": the question label, use short format like "Q1", "Q2", "Q3" (not "Question 1").
 - "question_text": the question itself, transcribed faithfully. Write ALL mathematics in LaTeX: use $...$ for inline math (e.g. $2x + 6 = 14$) and $$...$$ for display math (e.g. $$\\int_0^1 x^2 dx$$). EVERY math fragment MUST be wrapped in $ delimiters — never leave LaTeX commands like \\frac outside $...$. NEVER use \\[...\\] or \\(...\\) delimiters, only $...$ and $$...$$.
 - "reference_solution": the teacher's correct solution / working / final answer, transcribed faithfully, with mathematics in LaTeX as above (every fragment wrapped in $...$). Capture the final answer at minimum; include key working steps if shown, separating distinct steps with a line break.
 - "max_score": the max points for the question.
