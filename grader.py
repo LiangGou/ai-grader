@@ -727,6 +727,240 @@ def rubric_from_example(image_paths, upload_dir=None):
     return build_example_rubric(image_paths, upload_dir=upload_dir)
 
 
+# ---------------------------------------------------------------------------
+# Solve-first flow: the teacher uploads question photos with NO answer key
+# (or untrusted student work). The AI solves each question itself, verifies
+# the solution, and generates an AP-style rubric.
+# ---------------------------------------------------------------------------
+
+QUESTIONS_ONLY_SYSTEM = """You are digitizing quiz/exam questions from photos into structured data.
+For each question, extract:
+- "q": the question label, use short format like "Q1", "Q2", "Q3".
+- "question_text": the PRINTED/TYPED question text, transcribed faithfully. Write ALL mathematics in LaTeX: use $...$ for inline math and $$...$$ for display math. EVERY math fragment MUST be wrapped in $ delimiters.
+- "max_score": the point value printed for the question (e.g. "[4 pts]" -> 4). If no point value is printed, use 0.
+- "has_diagram": true or false — REQUIRED. Does this question show ANY diagram, graph, plot, coordinate system, or geometric figure?
+- "diagram_hint": REQUIRED when has_diagram is true, omitted otherwise. One sentence describing what the diagram shows.
+
+CRITICAL: IGNORE ALL HANDWRITING. The photos may contain handwritten student work or teacher markings — do NOT transcribe them, do NOT treat them as the answer. Transcribe ONLY the printed/typed question.
+
+Output ONLY a JSON object, no explanations: {"questions": [{"q": "Q1", "question_text": "...", "max_score": 4, "has_diagram": false}, ...]}
+If the photos yield no questions at all, output {"questions": []}.
+"""
+
+
+SOLVE_RUBRIC_SYSTEM = """You are an expert AP Calculus teacher creating an answer key and scoring rubric from scratch.
+Given a question and its point value:
+
+1. SOLVE the question completely and correctly. Show every step. This is the answer key — it must be right.
+2. CREATE an AP-style scoring rubric: break the total points into specific, observable criteria following AP free-response conventions:
+   - Award points for specific steps (setup, correct mathematical work, final answer), not just the final answer.
+   - Typical: 1 point for correct setup, 1-2 points for correct work/computation, 1 point for the final answer (with correct units or justification where applicable).
+   - Each criterion must state exactly what earns the point.
+
+CRITICAL: The point breakdown MUST sum to EXACTLY the given max_score. You are distributing exactly that many points — never more, never fewer.
+
+Output ONLY a JSON object, no explanations:
+{
+  "solution": "<complete worked solution, mathematics in LaTeX with $...$ delimiters, steps separated by line breaks>",
+  "ap_points": [{"points": 1, "for": "<what earns this point>"}, ...],
+  "notes": "<any ambiguity in the question, or empty>"
+}
+"""
+
+
+VERIFY_SOLUTION_SYSTEM = """You are a careful, independent checker. You are given a calculus question and a proposed solution (an AI-generated answer key).
+Your job:
+1. Solve the question yourself, step by step, WITHOUT trusting the proposed solution.
+2. Compare your final answer with the proposed solution.
+3. If the question is a numerical computation, also provide a single Python expression (using only arithmetic operators and the math module, e.g. "math.pi * 3**2") that computes the answer. Leave it empty if not numerical.
+Output ONLY a JSON object, no explanations:
+{"your_answer": "<your final answer, concise>", "agrees": true/false, "confidence": "high/medium/low", "note": "<one sentence on any discrepancy, or empty>", "python_check": "<expression or empty>"}
+Set "agrees" to true only if you are confident the two answers match (allowing equivalent forms, e.g. 0.5 = 1/2).
+"""
+
+
+def transcribe_questions_only(image_paths):
+    """Vision pass: read ONLY the printed questions and point values.
+
+    Handwriting in the photos is ignored. Returns a list of
+    {q, question_text, max_score, has_diagram, diagram_hint}.
+    """
+    if not image_paths:
+        raise RuntimeError("No question photos received. Please take or upload the questions first.")
+    user_content = [
+        {
+            "type": "text",
+            "text": "These photos show quiz/exam questions. Transcribe ONLY the printed questions and their point values. Ignore all handwriting.",
+        }
+    ]
+    for p in image_paths:
+        user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
+    data = _chat_json(QUESTIONS_ONLY_SYSTEM, user_content, max_tokens=4096)
+    questions = []
+    for it in data.get("questions", []):
+        try:
+            ms = float(it.get("max_score", 0))
+        except (TypeError, ValueError):
+            ms = 0
+        questions.append(
+            {
+                "q": str(it.get("q", "")).strip(),
+                "question_text": normalize_latex(str(it.get("question_text", "")).strip()),
+                "max_score": ms,
+                "has_diagram": bool(it.get("has_diagram", False)),
+                "diagram_hint": str(it.get("diagram_hint", "")).strip(),
+            }
+        )
+    return questions
+
+
+def solve_and_rubric(question_text, max_score, q_label=""):
+    """Reasoning-model pass: solve the question and generate an AP-style rubric.
+
+    Returns {solution, ap_points, notes}. The ap_points sum to exactly max_score.
+    """
+    prompt = (
+        f"Question {q_label} (worth {max_score:g} points):\n{question_text}\n\n"
+        "Solve it and create the AP-style rubric."
+    )
+    data = _chat_json(
+        SOLVE_RUBRIC_SYSTEM,
+        [{"type": "text", "text": prompt}],
+        max_tokens=4096,
+        model=REASONING_MODEL,
+    )
+    pts = data.get("ap_points") or []
+    # Guard: force the breakdown to sum to exactly max_score.
+    target = int(round(max_score))
+    total = sum(int(p.get("points", 0) or 0) for p in pts if isinstance(p, dict))
+    diff = target - total
+    if diff != 0 and pts and isinstance(pts[-1], dict):
+        pts[-1]["points"] = int(pts[-1].get("points", 0) or 0) + diff
+    return {
+        "solution": normalize_latex(str(data.get("solution", "")).strip()),
+        "ap_points": pts,
+        "notes": str(data.get("notes", "")).strip(),
+    }
+
+
+def verify_solution(question_text, solution):
+    """Independently re-solve and compare with the generated answer key.
+
+    Returns {"verdict": "confirmed"|"mismatch"|"unsure", "note": str}.
+    """
+    if not (question_text or "").strip() or not (solution or "").strip():
+        return {"verdict": "unsure", "note": "No question or solution to verify."}
+    data = _chat_json(
+        VERIFY_SOLUTION_SYSTEM,
+        [{"type": "text", "text": f"Question:\n{question_text}\n\nProposed solution (AI-generated answer key):\n{solution}"}],
+        max_tokens=2048,
+        model=REASONING_MODEL,
+    )
+    agrees = data.get("agrees")
+    confidence = str(data.get("confidence", "")).lower()
+    note = str(data.get("note", "")).strip()
+    your_answer = str(data.get("your_answer", "")).strip()
+
+    py_expr = str(data.get("python_check", "")).strip()
+    if py_expr:
+        computed = _safe_eval(py_expr)
+        ref_nums = _digits_of(solution)
+        if computed is not None and ref_nums:
+            if any(abs(computed - n) <= max(1e-6, abs(n) * 1e-4) for n in ref_nums):
+                return {"verdict": "confirmed", "note": f"Python check passed ({py_expr} = {computed:g})."}
+            return {
+                "verdict": "mismatch",
+                "note": f"Python check: {py_expr} = {computed:g}, but the answer key says {solution!r}.",
+            }
+
+    if agrees is True and confidence in ("high", "medium"):
+        detail = f" Independent solution: {your_answer}." if your_answer else ""
+        return {"verdict": "confirmed", "note": (note + detail).strip()}
+    if agrees is False:
+        detail = f" Independent solution: {your_answer}." if your_answer else ""
+        return {"verdict": "mismatch", "note": (note + detail).strip() or "Independent solving disagrees with the answer key."}
+    return {"verdict": "unsure", "note": note or "Could not confidently verify the answer key."}
+
+
+def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
+                                on_total=None, on_item=None):
+    """Solve-first pipeline with per-question progress.
+
+    1. Transcribe printed questions + point values (handwriting ignored).
+    2. For each question (concurrently): solve with the reasoning model,
+       verify the solution with an independent re-solve, generate an
+       AP-style rubric, and generate a diagram when needed.
+    3. Stream each completed item via on_item(item).
+
+    Returns {"items": [...]} where each item has idx, q, question_text,
+    reference_solution, max_score, criteria, verified ("yes"|"review"),
+    verify_note, and graph.
+    """
+    questions = transcribe_questions_only(image_paths)
+    total = len(questions)
+    if on_total:
+        on_total(total)
+    if not questions:
+        return {"items": []}
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _build(idx, q):
+        q_label = q.get("q", f"Q{idx + 1}")
+        max_score = q.get("max_score", 0) or 0
+        # If no point value was printed, let the teacher confirm later.
+        if not max_score:
+            max_score = 5
+            default_note = "Max score set by AI default — please confirm."
+        else:
+            default_note = ""
+        solved = solve_and_rubric(q.get("question_text", ""), max_score, q_label)
+        verdict = verify_solution(q.get("question_text", ""), solved["solution"])
+        verified = "yes" if verdict["verdict"] == "confirmed" else "review"
+        criteria = "; ".join(
+            f"{p.get('points', 1)} pt: {p.get('for', '')}"
+            for p in solved["ap_points"] if isinstance(p, dict)
+        )
+        if default_note:
+            criteria = f"{criteria} ({default_note})" if criteria else default_note
+        item = {
+            "idx": idx,
+            "q": q_label,
+            "question_text": q.get("question_text", ""),
+            "reference_solution": solved["solution"],
+            "max_score": max_score,
+            "criteria": criteria,
+            "has_diagram": q.get("has_diagram", False),
+            "verified": verified,
+            "verify_note": verdict.get("note", ""),
+            "graph": None,
+        }
+        # Diagram for graph questions (best effort; never blocks the item).
+        try:
+            gq = dict(q)
+            gq["reference_solution"] = solved["solution"]
+            gq["criteria"] = criteria
+            item["graph"] = _process_graph(gq, image_paths, upload_dir)
+        except Exception:
+            item["graph"] = None
+        return item
+
+    items = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_build, idx, q) for idx, q in enumerate(questions)]
+        for f in futures:
+            try:
+                item = f.result()
+            except Exception as e:  # noqa: BLE001
+                item = None
+            if item and on_item:
+                on_item(item)
+            if item:
+                items.append(item)
+    items.sort(key=lambda it: it.get("idx", 0))
+    return {"items": items}
+
+
 AP_RUBRIC_SYSTEM = """You are an AP Calculus scoring expert. Given a teacher's rubric for calculus questions, you generate an AP-style scoring rubric for each question and compare it with the teacher's rubric.
 
 AP Calculus free-response scoring conventions:

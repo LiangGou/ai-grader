@@ -474,7 +474,7 @@
 
     function finishGenerate(btn, items) {
       btn.disabled = false;
-      btn.textContent = "✨ Generate Rubric from Example";
+      btn.textContent = btn.id === "solveRubricBtn" ? "🔑 Solve & Generate Rubric" : "✨ Generate Rubric from Example";
       // Make sure every item is on screen (in case some arrived with the final poll).
       (items || []).forEach(function (it) {
         if (!renderedGenIdx[it.idx]) { insertGenRow(it); renderedGenIdx[it.idx] = true; }
@@ -493,7 +493,7 @@
 
     function failGenerate(btn, msg) {
       btn.disabled = false;
-      btn.textContent = "✨ Generate Rubric from Example";
+      btn.textContent = btn.id === "solveRubricBtn" ? "🔑 Solve & Generate Rubric" : "✨ Generate Rubric from Example";
       alert(msg);
     }
 
@@ -578,6 +578,34 @@
         .then(function (data) {
           if (!data.ok || !data.job_id) {
             failGenerate(btn, "Rubric generation failed: " + (data.error || "unknown error"));
+            return;
+          }
+          pollRubricJob(data.job_id, btn);
+        })
+        .catch(function (e) {
+          failGenerate(btn, "Request failed: " + e.message);
+        });
+    });
+
+    // Solve-first flow: no answer key needed — AI solves each question itself
+    // and builds an AP-style rubric.
+    $("solveRubricBtn").addEventListener("click", function () {
+      var include = savedExamples.filter(function (ex) { return ex.checked; }).map(function (ex) { return ex.name; });
+      if (!include.length) { alert("Please take or upload the question photos first, and make sure at least one saved example is checked."); return; }
+      var btn = $("solveRubricBtn");
+      btn.disabled = true;
+      btn.textContent = "⏳ Solving questions…";
+      rowsBox.innerHTML = ""; // fresh list; solved questions stream in one by one
+      renderedGenIdx = {};
+      fetch("/api/solve_rubric", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assignment_id: window.ASSIGNMENT_ID, include: include })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.ok || !data.job_id) {
+            failGenerate(btn, "Solve failed: " + (data.error || "unknown error"));
             return;
           }
           pollRubricJob(data.job_id, btn);
