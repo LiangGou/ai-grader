@@ -17,6 +17,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+# Reasoning model for hard tasks (diagram code generation, complex math).
+# Simple tasks (transcription) use DEFAULT_MODEL to save cost/time.
+REASONING_MODEL = os.environ.get("OPENAI_REASONING_MODEL", "o3")
 
 EXAMPLE_RUBRIC_SYSTEM = """You are digitizing a teacher's reference example (a hand-graded paper, answer key, or scoring guide) into structured data.
 For each question, transcribe and extract:
@@ -26,9 +29,7 @@ For each question, transcribe and extract:
 - "max_score": the max points for the question.
 - "criteria": the scoring/deduction rules you can infer from the teacher's markings (check marks, crosses, circled mistakes, handwritten notes like "-2"). For example, if the teacher wrote "-2" next to a missing unit, include "deduct 2 points for a missing/wrong unit".
 - "has_diagram": true or false — REQUIRED. Look carefully at the example photo: does this question show ANY diagram, graph, plot, coordinate system, or geometric figure? You must answer this for every question.
-- "graph": REQUIRED when has_diagram is true, omitted otherwise. Describe the diagram ONE of these two ways:
-  * If it is the plot of a single mathematical function y = f(x): {"kind": "function", "expression": "<Python expression in x using only numbers, x, +, -, *, /, **, parentheses, and these functions: sqrt, sin, cos, tan, log, log10, exp, abs, pi, e. Example: 'x**2 - 3*x + 2'>", "x_min": <number>, "x_max": <number>} — choose an x range that matches what the graph shows.
-  * Otherwise (geometry figures, bar charts, hand-drawn diagrams, number lines, etc.): {"kind": "crop", "image_index": <0-based index of the example photo it appears in>} — a separate step will locate the diagram precisely; you only need to identify which photo it's in.
+- "diagram_hint": REQUIRED when has_diagram is true, omitted otherwise. One sentence describing what the diagram shows (e.g. "graph of a rational function with vertical asymptotes and a hole", "bar chart of test scores", "midpoint rectangles under a curve"). This helps regenerate the diagram accurately.
 Output ONLY a JSON object, no explanations, in this format:
 {"questions": [{"q": "Question 1", "question_text": "...", "reference_solution": "...", "max_score": 5, "criteria": "...", "graph": {...}}, ...]}
 If you cannot determine a max score for a question, assign a reasonable default based on the question type and note "Max score set by AI default — please confirm" in criteria.
@@ -105,17 +106,25 @@ def _data_url(path):
     return f"data:{media_type};base64,{data}"
 
 
-def _chat_json(system, user_content, max_tokens):
+def _chat_json(system, user_content, max_tokens, model=None):
     client = _get_client()
-    resp = client.chat.completions.create(
-        model=DEFAULT_MODEL,
-        max_tokens=max_tokens,
-        response_format={"type": "json_object"},
+    model = model or DEFAULT_MODEL
+    # Reasoning models (o1/o3) use max_completion_tokens and don't support
+    # response_format=json_object; ask for JSON in the prompt instead.
+    is_reasoning = model.startswith("o1") or model.startswith("o3")
+    kwargs = dict(
+        model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},
         ],
     )
+    if is_reasoning:
+        kwargs["max_completion_tokens"] = max_tokens
+    else:
+        kwargs["max_tokens"] = max_tokens
+        kwargs["response_format"] = {"type": "json_object"}
+    resp = client.chat.completions.create(**kwargs)
     text = (resp.choices[0].message.content or "").strip()
     if not text:
         raise ValueError("The model returned an empty response. Please try again.")
@@ -348,6 +357,99 @@ def _localize_diagram(image_path, question_text):
     return (x0, y0, x1, y1)
 
 
+DIAGRAM_GEN_SYSTEM = """You are a math diagram generator. Given a math problem and its solution, you write Python code using matplotlib that draws the diagram/figure for the problem.
+
+Output ONLY a JSON object in exactly this format (no markdown, no extra text):
+{"code": "<python code here>"}
+
+Rules for the code:
+- Use `import matplotlib; matplotlib.use("Agg")` then `import matplotlib.pyplot as plt` and `import numpy as np`.
+- The code MUST save the figure to the path in the OUTPUT_PATH variable (already defined) via `plt.savefig(OUTPUT_PATH, dpi=150, bbox_inches="tight")`. Do NOT call plt.show().
+- Solve the problem as needed to determine what to draw (find zeros, asymptotes, intercepts, etc. computationally with numpy).
+- Draw clean, labeled diagrams: axes with labels, key points marked and labeled, asymptotes as dashed lines, etc.
+- Keep the code self-contained. Only use: matplotlib, numpy, math. No file I/O except the savefig. No network. No os/sys/subprocess.
+- The figure should be clear at 800x600 pixels.
+"""
+
+# Patterns that must not appear in AI-generated diagram code.
+_DIAGRAM_CODE_BLOCKLIST = (
+    "os.", "sys.", "subprocess", "__import__", "eval(", "exec(",
+    "open(", "input(", "compile(", "globals(", "locals(",
+    "socket", "urllib", "requests", "shutil", "pathlib",
+)
+
+
+def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hint=""):
+    """Generate a diagram with Python/matplotlib via the reasoning model.
+
+    The reasoning model solves the problem and writes code that draws the
+    diagram. The code runs sandboxed (blocklist + subprocess timeout).
+    Returns {"kind": "image", "url": ...} or None.
+    """
+    if not upload_dir:
+        return None
+    hint_line = f"Diagram description: {diagram_hint}\n\n" if diagram_hint else ""
+    prompt = (
+        f"Problem:\n{question_text}\n\n"
+        f"Reference solution:\n{reference_solution}\n\n"
+        f"{hint_line}"
+        "Write Python code that draws the diagram for this problem."
+    )
+    try:
+        data = _chat_json(
+            DIAGRAM_GEN_SYSTEM,
+            [{"type": "text", "text": prompt}],
+            max_tokens=2000,
+            model=REASONING_MODEL,
+        )
+        code = data.get("code", "") if isinstance(data, dict) else ""
+        if not code or not isinstance(code, str):
+            # The model may return the code under a different key or as raw text.
+            code = str(data) if data else ""
+        # Strip markdown fences if the model added them despite instructions.
+        code = re.sub(r"^```(?:python)?\s*", "", code.strip())
+        code = re.sub(r"\s*```$", "", code.strip())
+    except Exception:
+        return None
+    if not code or len(code) > 8000:
+        return None
+    lowered = code.lower()
+    if any(b in lowered for b in _DIAGRAM_CODE_BLOCKLIST):
+        return None
+
+    import random
+    import time
+    import subprocess
+    import sys
+    name = f"diagram_gen_{int(time.time())}_{random.randint(1000, 9999)}.png"
+    out_path = os.path.join(upload_dir, name)
+    runner = (
+        "import matplotlib; matplotlib.use('Agg')\n"
+        f"OUTPUT_PATH = {out_path!r}\n"
+        + code
+        + "\n"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", runner],
+            capture_output=True,
+            timeout=45,
+            cwd=tempfile.gettempdir(),
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0 or not os.path.exists(out_path):
+        return None
+    # Sanity: must be a non-trivial PNG.
+    try:
+        if os.path.getsize(out_path) < 5000:
+            os.remove(out_path)
+            return None
+    except Exception:
+        return None
+    return {"kind": "image", "url": f"/uploads/{name}"}
+
+
 def _crop_graph(image_paths, spec, upload_dir, question_text=""):
     """Crop a diagram region from an example photo.
 
@@ -399,21 +501,38 @@ def _crop_graph(image_paths, spec, upload_dir, question_text=""):
 
 
 def _process_graph(question, image_paths, upload_dir):
-    """Turn a digitized graph spec into render-ready data (or None)."""
-    spec = question.get("graph")
-    if not isinstance(spec, dict):
+    """Turn a digitized diagram into render-ready data (or None).
+
+    Primary: generate the diagram with Python/matplotlib via the reasoning
+    model (it understands the problem context and solves as needed).
+    Fallbacks: legacy function-expression sampling, then photo crop.
+    """
+    if not question.get("has_diagram"):
         return None
-    kind = spec.get("kind")
-    if kind == "function":
-        expr = str(spec.get("expression", "")).strip()
-        if not expr:
-            return None
-        return _sample_function(expr, spec.get("x_min", -10), spec.get("x_max", 10))
-    if kind == "crop":
-        return _crop_graph(
-            image_paths, spec, upload_dir,
-            question_text=str(question.get("question_text", ""))[:300],
-        )
+    # Primary: AI-generated diagram from problem context.
+    gen = _generate_diagram(
+        str(question.get("question_text", "")),
+        str(question.get("reference_solution", "")),
+        upload_dir,
+        diagram_hint=str(question.get("diagram_hint", "")),
+    )
+    if gen:
+        return gen
+    # Fallback: legacy paths from older digitization specs.
+    spec = question.get("graph")
+    if isinstance(spec, dict):
+        kind = spec.get("kind")
+        if kind == "function":
+            expr = str(spec.get("expression", "")).strip()
+            if expr:
+                sampled = _sample_function(expr, spec.get("x_min", -10), spec.get("x_max", 10))
+                if sampled:
+                    return sampled
+        if kind == "crop":
+            return _crop_graph(
+                image_paths, spec, upload_dir,
+                question_text=str(question.get("question_text", ""))[:300],
+            )
     return None
 
 
@@ -445,6 +564,8 @@ def digitize_example(image_paths, hint=None):
                 "reference_solution": normalize_latex(str(it.get("reference_solution", "")).strip()),
                 "max_score": ms,
                 "criteria": normalize_latex(str(it.get("criteria", "")).strip()),
+                "has_diagram": bool(it.get("has_diagram", False)),
+                "diagram_hint": str(it.get("diagram_hint", "")).strip(),
                 "graph": it.get("graph") if isinstance(it.get("graph"), dict) else None,
             }
         )

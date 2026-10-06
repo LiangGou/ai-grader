@@ -176,7 +176,7 @@
       } else if (g.kind === "image" && g.url) {
         var cap2 = document.createElement("p");
         cap2.className = "graph-cap";
-        cap2.textContent = "🖼️ Diagram from your example";
+        cap2.textContent = "🤖 AI-generated diagram";
         var im = document.createElement("img");
         im.className = "graph-img";
         im.src = g.url;
