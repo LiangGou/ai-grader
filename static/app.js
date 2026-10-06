@@ -162,7 +162,7 @@
         '<textarea class="rs" rows="3" placeholder="Reference solution as read from the example">' + escapeHtml(item.reference_solution) + '</textarea>' +
         '<div class="math-preview"></div></label>' +
       '<label class="rubric-field"><span>Scoring / deduction rules</span>' +
-        '<input class="cr" type="text" placeholder="Scoring/deduction rules" value="' + escapeHtml(item.criteria) + '"></label>' +
+        '<textarea class="cr" rows="3" placeholder="Scoring/deduction rules">' + escapeHtml(item.criteria) + '</textarea></label>' +
       '<div class="graph-slot"></div>' +
       note;
     row._graph = item.graph || null;
