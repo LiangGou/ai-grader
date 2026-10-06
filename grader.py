@@ -377,6 +377,12 @@ def _crop_graph(image_paths, spec, upload_dir, question_text=""):
             return None
         box = (x0, y0, x1, y1)
     x0, y0, x1, y1 = box
+    # Zoom out slightly: pad the box ~10% on each side so the crop isn't
+    # uncomfortably tight (user feedback: previous crops cut too close).
+    pad_x = (x1 - x0) * 0.10
+    pad_y = (y1 - y0) * 0.10
+    x0, y0 = max(0.0, x0 - pad_x), max(0.0, y0 - pad_y)
+    x1, y1 = min(1000.0, x1 + pad_x), min(1000.0, y1 + pad_y)
     try:
         im = Image.open(src).convert("RGB")
         w, h = im.size
