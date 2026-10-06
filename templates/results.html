@@ -21,11 +21,15 @@
     <h3>Full class results</h3>
     <a class="btn btn-small" href="{{ url_for('results_csv', assignment_id=a.id) }}">⬇️ Export CSV</a>
   </div>
+  <p class="muted">Tap a student's name to revisit their per-question scores and rationale.</p>
   <table class="score-table">
     <thead><tr><th>Name</th><th>Total</th><th>Max</th><th>Time</th></tr></thead>
     <tbody>
     {% for g in grades %}
-      <tr><td>{{ g.student_name }}</td><td><strong>{{ g.total }}</strong></td><td>{{ g.max_total }}</td><td class="muted">{{ g.created_at }}</td></tr>
+      <tr>
+        <td><a href="{{ url_for('grade_detail_page', grade_id=g.id) }}">{{ g.student_name }}</a></td>
+        <td><strong>{{ g.total }}</strong></td><td>{{ g.max_total }}</td><td class="muted">{{ g.created_at }}</td>
+      </tr>
     {% endfor %}
     </tbody>
   </table>

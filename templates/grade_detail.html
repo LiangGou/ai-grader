@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Grade Detail - {{ g.student_name }}{% endblock %}
+{% block content %}
+<h2>📝 {{ g.student_name }}</h2>
+<p class="muted">{{ a.name if a else '' }} · Graded {{ g.created_at }}</p>
+
+<div class="card">
+  <p class="total-line">Total: <strong>{{ g.total }} / {{ g.max_total }} pts</strong></p>
+</div>
+
+{% for q in questions %}
+<div class="card">
+  <div class="row-between">
+    <h3 style="margin:0">{{ q.q }}</h3>
+    <span><strong>{{ q.score }}</strong> / {{ q.max_score }} pts</span>
+  </div>
+  {% if q.answer_seen %}
+  <p class="muted" style="margin-bottom:6px"><em>Answer detected:</em> {{ q.answer_seen }}</p>
+  {% endif %}
+  {% if q.feedback %}
+  <p style="margin-bottom:0"><strong>Why:</strong> {{ q.feedback }}</p>
+  {% endif %}
+</div>
+{% endfor %}
+
+<div class="card">
+  <p><strong>Overall feedback</strong></p>
+  <p style="margin-bottom:0">{{ g.overall_feedback }}</p>
+</div>
+
+<div class="sticky-bar">
+  <a class="btn btn-big" href="{{ url_for('results_page', assignment_id=g.assignment_id) }}">← Back to Results</a>
+  <a class="btn" href="{{ url_for('grade_page', assignment_id=g.assignment_id) }}">📷 Grade Next</a>
+</div>
+{% endblock %}

@@ -257,6 +257,19 @@ def results_csv(assignment_id):
     return send_file(mem, mimetype="text/csv", as_attachment=True, download_name=filename)
 
 
+@app.route("/graded/<int:grade_id>")
+def grade_detail_page(grade_id):
+    g = db.get_grade(grade_id)
+    if not g:
+        return redirect(url_for("index"))
+    a = db.get_assignment(g["assignment_id"])
+    try:
+        questions = json.loads(g["questions_json"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        questions = []
+    return render_template("grade_detail.html", a=a, g=g, questions=questions, env=_env_status())
+
+
 # ---------- Settings ----------
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():

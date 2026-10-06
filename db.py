@@ -162,3 +162,10 @@ def list_grades(assignment_id):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_grade(grade_id):
+    conn = _connect()
+    row = conn.execute("SELECT * FROM grades WHERE id = ?", (grade_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
