@@ -373,24 +373,62 @@
       });
     }
     function renderApComparison(box, comp) {
-      var html = "";
-      if (comp.overall) html += "<p><strong>Overall:</strong> " + escapeHtml(comp.overall) + "</p>";
+      // Clear any previous AP suggestions.
+      document.querySelectorAll(".ap-suggest").forEach(function (el) { el.remove(); });
+      box.style.display = "none";
+      if (comp.overall) {
+        box.style.display = "";
+        box.innerHTML = "<p><strong>Overall:</strong> " + escapeHtml(comp.overall) + "</p>";
+      } else {
+        box.innerHTML = "";
+      }
+      // Find teacher cards by question label.
+      function findCard(qlabel) {
+        var cards = rowsBox.querySelectorAll(".rubric-card");
+        for (var i = 0; i < cards.length; i++) {
+          var qInput = cards[i].querySelector(".q");
+          if (qInput && qInput.value.trim() === (qlabel || "").trim()) return cards[i];
+        }
+        return null;
+      }
       (comp.questions || []).forEach(function (q) {
-        html += "<div class='ap-q'><h4>" + escapeHtml(q.q || "") + "</h4>";
-        html += "<div class='ap-cols'>";
-        html += "<div class='ap-col'><strong>AP Standard (" + (q.ap_total || 0) + " pts)</strong><ul>";
+        var card = findCard(q.q);
+        if (!card) return;
+        var div = document.createElement("div");
+        div.className = "ap-suggest";
+        var html = "<div class='ap-suggest-head'>📊 <strong>AP Standard suggestion</strong> (" + (q.ap_total || 0) + " pts)</div>";
+        html += "<ul class='ap-pts'>";
         (q.ap_points || []).forEach(function (p) {
-          html += "<li>" + p.points + " pt — " + escapeHtml(p.for || "") + "</li>";
+          html += "<li><strong>" + p.points + " pt</strong> — " + escapeHtml(p.for || "") + "</li>";
         });
-        html += "</ul></div>";
-        html += "<div class='ap-col'><strong>Your Rubric (" + (q.teacher_total || 0) + " pts)</strong>";
-        html += "<p class='muted'>See rubric table above.</p></div>";
-        html += "</div>";
-        if (q.comparison) html += "<p><strong>Comparison:</strong> " + escapeHtml(q.comparison) + "</p>";
+        html += "</ul>";
         if (q.recommendation) html += "<p class='ap-rec'>💡 " + escapeHtml(q.recommendation) + "</p>";
-        html += "</div>";
+        html += "<button type='button' class='btn btn-small ap-accept'>✅ Accept AP version</button>";
+        html += " <button type='button' class='btn btn-small ap-dismiss'>Dismiss</button>";
+        div.innerHTML = html;
+        card.parentNode.insertBefore(div, card.nextSibling);
+        div.querySelector(".ap-accept").addEventListener("click", function () {
+          // Replace teacher's max_score and criteria with AP version.
+          var msInput = card.querySelector(".ms");
+          var crInput = card.querySelector(".cr");
+          if (msInput) msInput.value = q.ap_total || 0;
+          if (crInput) {
+            crInput.value = (q.ap_points || []).map(function (p) {
+              return p.points + " pt: " + (p.for || "");
+            }).join("; ");
+          }
+          // Mark as verified by teacher (they accepted it).
+          var badge = card.querySelector(".verify-badge");
+          if (badge) { badge.className = "verify-badge ok"; badge.textContent = "✅ Verified"; }
+          scheduleAutoSave();
+          div.remove();
+        });
+        div.querySelector(".ap-dismiss").addEventListener("click", function () { div.remove(); });
       });
-      box.innerHTML = html || "<p class='muted'>No comparison data.</p>";
+      if (!document.querySelector(".ap-suggest")) {
+        box.style.display = "";
+        box.innerHTML += "<p class='muted'>No matching questions found for AP suggestions.</p>";
+      }
     }
 
     var renderedGenIdx = {}; // idx -> true for the in-progress streaming generation
