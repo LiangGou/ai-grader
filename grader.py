@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import re
+import tempfile
 
 from dotenv import load_dotenv
 
@@ -27,7 +28,7 @@ For each question, transcribe and extract:
 - "has_diagram": true or false — REQUIRED. Look carefully at the example photo: does this question show ANY diagram, graph, plot, coordinate system, or geometric figure? You must answer this for every question.
 - "graph": REQUIRED when has_diagram is true, omitted otherwise. Describe the diagram ONE of these two ways:
   * If it is the plot of a single mathematical function y = f(x): {"kind": "function", "expression": "<Python expression in x using only numbers, x, +, -, *, /, **, parentheses, and these functions: sqrt, sin, cos, tan, log, log10, exp, abs, pi, e. Example: 'x**2 - 3*x + 2'>", "x_min": <number>, "x_max": <number>} — choose an x range that matches what the graph shows.
-  * Otherwise (geometry figures, bar charts, hand-drawn diagrams, number lines, etc.): {"kind": "crop", "image_index": <0-based index of the example photo it appears in>, "x_min": <0-1000>, "y_min": <0-1000>, "x_max": <0-1000>, "y_max": <0-1000>} — the bounding box of the diagram within that photo, in relative 0-1000 coordinates.
+  * Otherwise (geometry figures, bar charts, hand-drawn diagrams, number lines, etc.): {"kind": "crop", "image_index": <0-based index of the example photo it appears in>} — a separate step will locate the diagram precisely; you only need to identify which photo it's in.
 Output ONLY a JSON object, no explanations, in this format:
 {"questions": [{"q": "Question 1", "question_text": "...", "reference_solution": "...", "max_score": 5, "criteria": "...", "graph": {...}}, ...]}
 If you cannot determine a max score for a question, assign a reasonable default based on the question type and note "Max score set by AI default — please confirm" in criteria.
@@ -274,9 +275,86 @@ def _sample_function(expr, x_min, x_max, n=200):
     }
 
 
-def _crop_graph(image_paths, spec, upload_dir):
-    """Crop a diagram region from an example photo. `spec` carries image_index
-    and 0-1000 relative box coords. Returns {"kind": "image", "url": ...} or None."""
+def _localize_diagram(image_path, question_text):
+    """Locate a diagram's bounding box using grid-overlay visual prompting.
+
+    Overlays a labeled 0-1000 coordinate grid on the photo and makes a
+    dedicated vision call whose ONLY job is localization (far more accurate
+    than asking for coordinates in the busy digitization pass).
+    Returns (x_min, y_min, x_max, y_max) in 0-1000 coords, or None.
+    """
+    from PIL import Image, ImageDraw
+
+    try:
+        im = Image.open(image_path).convert("RGB")
+    except Exception:
+        return None
+    w, h = im.size
+    grid = im.copy()
+    draw = ImageDraw.Draw(grid, "RGBA")
+    # Grid lines every 100 units on the 0-1000 scale.
+    for v in range(0, 1001, 100):
+        x = int(w * v / 1000)
+        y = int(h * v / 1000)
+        draw.line([(x, 0), (x, h)], fill=(255, 0, 0, 160), width=max(1, w // 800))
+        draw.line([(0, y), (w, y)], fill=(255, 0, 0, 160), width=max(1, h // 800))
+        # Labels along the top and left edges.
+        for tx, ty in ((x + 3, 3), (3, y + 3)):
+            draw.rectangle([tx, ty, tx + 44, ty + 20], fill=(255, 255, 255, 220))
+            draw.text((tx + 4, ty + 2), str(v), fill=(200, 0, 0, 255))
+    tmp = os.path.join(tempfile.gettempdir(), f"grid_{os.path.basename(image_path)}")
+    try:
+        grid.save(tmp)
+    except Exception:
+        return None
+
+    system = (
+        "You locate diagrams in photos of math worksheets. The photo has a RED "
+        "coordinate grid overlay: numbers 0-1000 run left-to-right along the top "
+        "and top-to-bottom along the left edge. Read coordinates off the grid."
+    )
+    user_content = [
+        {
+            "type": "text",
+            "text": (
+                f"For this question: {question_text}\n\n"
+                "Find the DIAGRAM / figure / graph / plot associated with this question. "
+                "Ignore all text, handwriting, and other questions' diagrams. "
+                "Return ONLY a JSON object with the TIGHT bounding box of just the diagram, "
+                "using the grid coordinates: "
+                '{"x_min": <left>, "y_min": <top>, "x_max": <right>, "y_max": <bottom>}. '
+                "Be tight: exclude surrounding text and whitespace margins."
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": _data_url(tmp)}},
+    ]
+    try:
+        data = _chat_json(system, user_content, max_tokens=256)
+        x0, y0 = float(data.get("x_min", 0)), float(data.get("y_min", 0))
+        x1, y1 = float(data.get("x_max", 0)), float(data.get("y_max", 0))
+    except Exception:
+        return None
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+    if not (0 <= x0 < x1 <= 1000 and 0 <= y0 < y1 <= 1000):
+        return None
+    # Reject absurd boxes (tiny sliver or nearly the whole photo).
+    area = (x1 - x0) * (y1 - y0)
+    if area < 2000 or area > 900000:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def _crop_graph(image_paths, spec, upload_dir, question_text=""):
+    """Crop a diagram region from an example photo.
+
+    Uses a dedicated grid-overlay localization pass for accuracy; falls back
+    to spec coordinates if the model provided them and localization fails.
+    Returns {"kind": "image", "url": ...} or None.
+    """
     from PIL import Image
 
     if not upload_dir:
@@ -284,22 +362,31 @@ def _crop_graph(image_paths, spec, upload_dir):
     try:
         idx = int(spec.get("image_index", 0))
         src = image_paths[idx]
-        x0, y0 = float(spec.get("x_min", 0)), float(spec.get("y_min", 0))
-        x1, y1 = float(spec.get("x_max", 1000)), float(spec.get("y_max", 1000))
     except (TypeError, ValueError, IndexError):
         return None
-    if not (0 <= x0 < x1 <= 1000 and 0 <= y0 < y1 <= 1000):
-        return None
+
+    box = _localize_diagram(src, question_text)
+    if box is None:
+        # Fallback: coordinates from the digitization pass, if any.
+        try:
+            x0, y0 = float(spec.get("x_min", 0)), float(spec.get("y_min", 0))
+            x1, y1 = float(spec.get("x_max", 1000)), float(spec.get("y_max", 1000))
+        except (TypeError, ValueError):
+            return None
+        if not (0 <= x0 < x1 <= 1000 and 0 <= y0 < y1 <= 1000):
+            return None
+        box = (x0, y0, x1, y1)
+    x0, y0, x1, y1 = box
     try:
         im = Image.open(src).convert("RGB")
         w, h = im.size
-        box = (int(w * x0 / 1000), int(h * y0 / 1000), int(w * x1 / 1000), int(h * y1 / 1000))
-        if box[2] - box[0] < 20 or box[3] - box[1] < 20:
+        px = (int(w * x0 / 1000), int(h * y0 / 1000), int(w * x1 / 1000), int(h * y1 / 1000))
+        if px[2] - px[0] < 20 or px[3] - px[1] < 20:
             return None
         import random
         import time
         name = f"graph_crop_{int(time.time())}_{random.randint(1000, 9999)}.png"
-        im.crop(box).save(os.path.join(upload_dir, name))
+        im.crop(px).save(os.path.join(upload_dir, name))
         return {"kind": "image", "url": f"/uploads/{name}"}
     except Exception:
         return None
@@ -317,7 +404,10 @@ def _process_graph(question, image_paths, upload_dir):
             return None
         return _sample_function(expr, spec.get("x_min", -10), spec.get("x_max", 10))
     if kind == "crop":
-        return _crop_graph(image_paths, spec, upload_dir)
+        return _crop_graph(
+            image_paths, spec, upload_dir,
+            question_text=str(question.get("question_text", ""))[:300],
+        )
     return None
 
 
