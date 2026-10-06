@@ -256,6 +256,25 @@ def assignment_save_rubric(assignment_id):
     return jsonify({"ok": True, "rubric_text": rubric_text, "items": items})
 
 
+@app.route("/assignment/<int:assignment_id>/ap_compare", methods=["POST"])
+def assignment_ap_compare(assignment_id):
+    """Generate AP-aligned rubrics and compare with the teacher's rubric.
+
+    Returns per-question AP point breakdowns, comparisons, and recommendations.
+    Uses the reasoning model; may take ~30-60s.
+    """
+    a = db.get_assignment(assignment_id)
+    if not a:
+        return jsonify({"ok": False, "error": "Assignment not found."}), 404
+    items = json.loads(a["rubric_json"] or "[]")
+    if not items:
+        return jsonify({"ok": False, "error": "No rubric yet. Generate it from a reference example first."}), 400
+    # Run in a background thread so the request doesn't block; poll via job API.
+    # For simplicity, run synchronously with a generous client timeout.
+    result = grader.generate_ap_comparison(items)
+    return jsonify({"ok": True, "comparison": result})
+
+
 @app.route("/assignment/<int:assignment_id>/upload_reference", methods=["POST"])
 def assignment_upload_reference(assignment_id):
     files = request.files.getlist("images")

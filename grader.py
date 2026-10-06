@@ -727,6 +727,76 @@ def rubric_from_example(image_paths, upload_dir=None):
     return build_example_rubric(image_paths, upload_dir=upload_dir)
 
 
+AP_RUBRIC_SYSTEM = """You are an AP Calculus scoring expert. Given a teacher's rubric for calculus questions, you generate an AP-style scoring rubric for each question and compare it with the teacher's rubric.
+
+AP Calculus free-response scoring conventions:
+- Points are awarded for specific steps (setup, correct mathematical work, final answer), not just the final answer.
+- Typical breakdown: 1 point for correct setup (e.g., correct integral with limits), 1-2 points for correct work/computation, 1 point for the final answer (often requiring correct units or justification).
+- Justification and communication matter: AP awards points for explaining reasoning, not just calculations.
+- Partial credit is specific: each point has clear criteria for what earns it.
+
+Output ONLY a JSON object in this format:
+{
+  "questions": [
+    {
+      "q": "Q1",
+      "ap_points": [
+        {"points": 1, "for": "Correct setup, e.g., ..."},
+        {"points": 1, "for": "Correct computation, e.g., ..."},
+        {"points": 1, "for": "Final answer with ..."}
+      ],
+      "ap_total": 3,
+      "teacher_total": 4,
+      "comparison": "Brief comparison of teacher's rubric vs AP standard.",
+      "recommendation": "Specific suggestion, e.g., 'Consider adding 1 point for justification, as AP requires it.' or 'Your rubric is well-aligned with AP.'"
+    }
+  ],
+  "overall": "Overall assessment of alignment with AP standards."
+}
+
+Be specific and actionable in recommendations. If the teacher's rubric is already AP-aligned, say so.
+"""
+
+
+def generate_ap_comparison(teacher_questions):
+    """Generate AP-aligned rubrics and compare with the teacher's rubric.
+
+    `teacher_questions` is a list of {q, question_text, reference_solution,
+    max_score, criteria}. Returns a dict with per-question AP rubrics,
+    comparisons, and recommendations. Uses the reasoning model.
+    """
+    if not teacher_questions:
+        return {"questions": [], "overall": "No questions to compare."}
+    summary = []
+    for q in teacher_questions:
+        summary.append(
+            {
+                "q": q.get("q", ""),
+                "question_text": str(q.get("question_text", ""))[:500],
+                "reference_solution": str(q.get("reference_solution", ""))[:500],
+                "max_score": q.get("max_score", 0),
+                "criteria": str(q.get("criteria", ""))[:300],
+            }
+        )
+    prompt = (
+        "Teacher's rubric (from their hand-graded example):\n"
+        + json.dumps(summary, indent=1)
+        + "\n\nGenerate AP-style rubrics and compare."
+    )
+    try:
+        data = _chat_json(
+            AP_RUBRIC_SYSTEM,
+            [{"type": "text", "text": prompt}],
+            max_tokens=4000,
+            model=REASONING_MODEL,
+        )
+    except Exception as e:
+        return {"questions": [], "overall": f"AP comparison failed: {e}"}
+    if not isinstance(data, dict):
+        return {"questions": [], "overall": "AP comparison returned invalid data."}
+    return data
+
+
 def rubric_items_to_text(items):
     """Render the structured rubric as plain text (for teacher review / archiving)."""
     lines = []

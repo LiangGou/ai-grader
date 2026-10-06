@@ -346,6 +346,53 @@
       scheduleAutoSave();
     });
 
+    // AP Standard comparison: side-by-side teacher rubric vs AP-aligned rubric.
+    var apBtn = $("apCompareBtn"), apBox = $("apCompareBox");
+    if (apBtn && apBox) {
+      apBtn.addEventListener("click", function () {
+        apBtn.disabled = true;
+        apBtn.textContent = "⏳ Comparing with AP standard… (about 30s)";
+        apBox.style.display = "";
+        apBox.innerHTML = "<p class='muted'>Generating AP-aligned rubrics with the reasoning model…</p>";
+        fetch("/assignment/" + window.ASSIGNMENT_ID + "/ap_compare", { method: "POST" })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            apBtn.disabled = false;
+            apBtn.textContent = "📊 Compare with AP Standard";
+            if (!data.ok) {
+              apBox.innerHTML = "<p class='error'>AP comparison failed: " + escapeHtml(data.error || "unknown") + "</p>";
+              return;
+            }
+            renderApComparison(apBox, data.comparison);
+          })
+          .catch(function () {
+            apBtn.disabled = false;
+            apBtn.textContent = "📊 Compare with AP Standard";
+            apBox.innerHTML = "<p class='error'>AP comparison failed: network error.</p>";
+          });
+      });
+    }
+    function renderApComparison(box, comp) {
+      var html = "";
+      if (comp.overall) html += "<p><strong>Overall:</strong> " + escapeHtml(comp.overall) + "</p>";
+      (comp.questions || []).forEach(function (q) {
+        html += "<div class='ap-q'><h4>" + escapeHtml(q.q || "") + "</h4>";
+        html += "<div class='ap-cols'>";
+        html += "<div class='ap-col'><strong>AP Standard (" + (q.ap_total || 0) + " pts)</strong><ul>";
+        (q.ap_points || []).forEach(function (p) {
+          html += "<li>" + p.points + " pt — " + escapeHtml(p.for || "") + "</li>";
+        });
+        html += "</ul></div>";
+        html += "<div class='ap-col'><strong>Your Rubric (" + (q.teacher_total || 0) + " pts)</strong>";
+        html += "<p class='muted'>See rubric table above.</p></div>";
+        html += "</div>";
+        if (q.comparison) html += "<p><strong>Comparison:</strong> " + escapeHtml(q.comparison) + "</p>";
+        if (q.recommendation) html += "<p class='ap-rec'>💡 " + escapeHtml(q.recommendation) + "</p>";
+        html += "</div>";
+      });
+      box.innerHTML = html || "<p class='muted'>No comparison data.</p>";
+    }
+
     var renderedGenIdx = {}; // idx -> true for the in-progress streaming generation
 
     // Insert a freshly-validated question row in idx order among generated rows.
