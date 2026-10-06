@@ -133,7 +133,7 @@ code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 13p
 .rubric-card { border: 1px solid #ddd; border-radius: 10px; padding: 10px; margin-bottom: 10px; background: #fff; }
 .rubric-card.needs-review { border-color: #f0a020; background: #fffaf0; }
 .rubric-top { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
-.rubric-top input.q { width: 90px; flex: none; margin: 0; padding: 10px; }
+.rubric-top input.q { flex: 1 1 auto; min-width: 140px; margin: 0; padding: 10px; }
 .rubric-top input.ms { width: 64px; flex: none; margin: 0; padding: 10px; }
 .rubric-top .row-del { margin-left: auto; flex: none; }
 .verify-badge { font-size: 12px; font-weight: bold; padding: 4px 8px; border-radius: 999px; white-space: nowrap; }
