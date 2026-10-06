@@ -169,7 +169,15 @@ def assignment_save_rubric(assignment_id):
             ms = float(it.get("max_score", 0))
         except (TypeError, ValueError):
             ms = 0
-        clean.append({"q": q, "max_score": ms, "criteria": str(it.get("criteria", "")).strip()})
+        clean.append({
+            "q": q,
+            "max_score": ms,
+            "criteria": str(it.get("criteria", "")).strip(),
+            "question_text": str(it.get("question_text", "")).strip(),
+            "reference_solution": str(it.get("reference_solution", "")).strip(),
+            "verified": it.get("verified", "review") if it.get("verified") in ("yes", "review") else "review",
+            "verify_note": str(it.get("verify_note", "")).strip(),
+        })
     items = clean
     rubric_text = grader.rubric_items_to_text(items)
     if not rubric_text.strip():

@@ -4,17 +4,49 @@
 
   function $(id) { return document.getElementById(id); }
 
-  /* ---------- Assignment setup page: structured rubric ---------- */
+  /* ---------- Assignment setup page: digitized rubric ---------- */
   function rubricRow(item) {
-    item = item || { q: "", max_score: "", criteria: "" };
+    item = item || {};
+    var state = item.verified === "yes" ? "ok" : (item.verify_note ? "warn" : "manual");
     var row = document.createElement("div");
-    row.className = "rubric-row";
+    row.className = "rubric-card" + (state === "warn" ? " needs-review" : "");
+    var badge = state === "ok"
+      ? '<span class="verify-badge ok">✅ Verified</span>'
+      : state === "warn"
+        ? '<span class="verify-badge warn">⚠️ Needs your review</span>'
+        : '<span class="verify-badge manual">✏️ Manual</span>';
+    var note = (state === "warn" && item.verify_note)
+      ? '<p class="verify-note">' + escapeHtml(item.verify_note) + '</p>' : "";
     row.innerHTML =
-      '<input class="q" type="text" placeholder="Question" value="' + escapeHtml(item.q) + '">' +
-      '<input class="ms" type="number" step="0.5" min="0" placeholder="Max pts" value="' + escapeHtml(item.max_score) + '">' +
-      '<input class="cr grow" type="text" placeholder="Scoring/deduction rules" value="' + escapeHtml(item.criteria) + '">' +
-      '<button type="button" class="btn btn-small row-del">✕</button>';
+      '<div class="rubric-top">' +
+        '<input class="q" type="text" placeholder="Question" value="' + escapeHtml(item.q) + '">' +
+        '<input class="ms" type="number" step="0.5" min="0" placeholder="Max pts" value="' + escapeHtml(item.max_score) + '">' +
+        badge +
+        '<button type="button" class="btn btn-small row-del">✕</button>' +
+      '</div>' +
+      '<label class="rubric-field"><span>Question (digitized)</span>' +
+        '<input class="qt" type="text" placeholder="Question text as read from the example" value="' + escapeHtml(item.question_text) + '"></label>' +
+      '<label class="rubric-field"><span>Reference solution (digitized)</span>' +
+        '<input class="rs" type="text" placeholder="Reference solution as read from the example" value="' + escapeHtml(item.reference_solution) + '"></label>' +
+      '<label class="rubric-field"><span>Scoring / deduction rules</span>' +
+        '<input class="cr" type="text" placeholder="Scoring/deduction rules" value="' + escapeHtml(item.criteria) + '"></label>' +
+      note;
     row.querySelector(".row-del").addEventListener("click", function () { row.remove(); });
+    // If the teacher edits a flagged row, treat it as human-verified.
+    if (state === "warn") {
+      ["qt", "rs"].forEach(function (cls) {
+        row.querySelector("." + cls).addEventListener("input", function () {
+          var b = row.querySelector(".verify-badge");
+          if (b && b.classList.contains("warn")) {
+            b.className = "verify-badge ok";
+            b.textContent = "✅ Verified by you";
+            row.classList.remove("needs-review");
+            var n = row.querySelector(".verify-note");
+            if (n) n.remove();
+          }
+        });
+      });
+    }
     return row;
   }
   function escapeHtml(s) {
@@ -24,13 +56,21 @@
   }
   function collectItems() {
     var items = [];
-    document.querySelectorAll("#itemsRows .rubric-row").forEach(function (row) {
+    document.querySelectorAll("#itemsRows .rubric-card").forEach(function (row) {
       var q = row.querySelector(".q").value.trim();
       if (!q) return;
+      var badge = row.querySelector(".verify-badge");
       items.push({
         q: q,
         max_score: parseFloat(row.querySelector(".ms").value) || 0,
-        criteria: row.querySelector(".cr").value.trim()
+        criteria: row.querySelector(".cr").value.trim(),
+        question_text: row.querySelector(".qt").value.trim(),
+        reference_solution: row.querySelector(".rs").value.trim(),
+        verified: badge && badge.classList.contains("ok") ? "yes" : "review",
+        verify_note: (function () {
+          var n = row.querySelector(".verify-note");
+          return n ? n.textContent : "";
+        })()
       });
     });
     return items;
@@ -124,7 +164,7 @@
       if (!include.length) { alert("Please take or upload a reference example first, and make sure at least one saved example is checked."); return; }
       var btn = $("generateRubricBtn");
       btn.disabled = true;
-      btn.textContent = "⏳ Reading example with AI…";
+      btn.textContent = "⏳ Digitizing & verifying… (about a minute)";
       fetch("/api/rubric_from_example", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -137,8 +177,15 @@
           if (!data.ok) { alert("Rubric generation failed: " + data.error); return; }
           rowsBox.innerHTML = "";
           (data.items || []).forEach(function (it) { rowsBox.appendChild(rubricRow(it)); });
-          if (!data.items || !data.items.length) alert("Could not read any questions from the example. Try clearer photos, or add rows manually.");
-          else alert("Generated " + data.items.length + " question(s) — please review, edit, then save.");
+          if (!data.items || !data.items.length) {
+            alert("Could not read any questions from the example. Try clearer photos, or add rows manually.");
+          } else {
+            var okCount = data.items.filter(function (it) { return it.verified === "yes"; }).length;
+            var needCount = data.items.length - okCount;
+            alert("Digitized " + data.items.length + " question(s): " + okCount + " verified ✅" +
+              (needCount ? ", " + needCount + " need your review ⚠️" : "") +
+              " — please review, edit, then save.");
+          }
         })
         .catch(function (e) {
           btn.disabled = false;

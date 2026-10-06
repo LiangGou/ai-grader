@@ -113,3 +113,18 @@ code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 13p
 .example-item { position: relative; display: flex; align-items: flex-start; gap: 4px; }
 .example-item input[type="checkbox"] { width: 20px; height: 20px; margin-top: 6px; flex-shrink: 0; }
 .example-del { position: absolute; top: -8px; right: -8px; padding: 2px 8px; border-radius: 999px; }
+
+.rubric-card { border: 1px solid #ddd; border-radius: 10px; padding: 10px; margin-bottom: 10px; background: #fff; }
+.rubric-card.needs-review { border-color: #f0a020; background: #fffaf0; }
+.rubric-top { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+.rubric-top input.q { width: 90px; flex: none; margin: 0; padding: 10px; }
+.rubric-top input.ms { width: 64px; flex: none; margin: 0; padding: 10px; }
+.rubric-top .row-del { margin-left: auto; flex: none; }
+.verify-badge { font-size: 12px; font-weight: bold; padding: 4px 8px; border-radius: 999px; white-space: nowrap; }
+.verify-badge.ok { background: #e8f5e9; color: #2e7d32; }
+.verify-badge.warn { background: #fff3e0; color: #e65100; }
+.verify-badge.manual { background: #f0f0f0; color: #666; }
+.verify-note { font-size: 13px; color: #b26a00; background: #fff3e0; border-radius: 6px; padding: 6px 8px; margin: 8px 0 0; }
+.rubric-field { display: block; margin-bottom: 6px; }
+.rubric-field > span { display: block; font-size: 12px; color: #888; margin-bottom: 2px; }
+.rubric-field input { width: 100%; box-sizing: border-box; margin: 0; padding: 8px 10px; }

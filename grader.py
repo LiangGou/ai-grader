@@ -17,14 +17,27 @@ load_dotenv()
 
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 
-EXAMPLE_RUBRIC_SYSTEM = """You are an experienced grading lead who studies a teacher's reference example and writes the grading rubric the teacher used.
-The teacher gives you one or more photos of a reference example: this may be a paper the teacher already graded by hand (with check marks, crosses, circled mistakes, and handwritten point annotations like "-2"), an answer key, or a printed scoring guide.
-Study it carefully and reconstruct the grading rubric: for each question, the question label, the max score, and the scoring/deduction rules you can infer from the teacher's markings and the reference answers.
-For example, if the teacher wrote "-2" next to a missing unit, include "deduct 2 points for a missing/wrong unit" in that question's criteria. If the example shows partial credit given for a correct method with an arithmetic slip, capture that rule.
+EXAMPLE_RUBRIC_SYSTEM = """You are digitizing a teacher's reference example (a hand-graded paper, answer key, or scoring guide) into structured data.
+For each question, transcribe and extract:
+- "q": the question label (e.g. "Question 1").
+- "question_text": the question itself, transcribed as faithfully as you can.
+- "reference_solution": the teacher's correct solution / working / final answer, transcribed faithfully. Capture the final answer at minimum; include key working steps if shown.
+- "max_score": the max points for the question.
+- "criteria": the scoring/deduction rules you can infer from the teacher's markings (check marks, crosses, circled mistakes, handwritten notes like "-2"). For example, if the teacher wrote "-2" next to a missing unit, include "deduct 2 points for a missing/wrong unit".
 Output ONLY a JSON object, no explanations, in this format:
-{"items": [{"q": "Question 1", "max_score": 5, "criteria": "3 points for the correct concept, 2 points for complete steps; deduct 2 for a missing unit"}, ...]}
+{"questions": [{"q": "Question 1", "question_text": "...", "reference_solution": "...", "max_score": 5, "criteria": "..."}, ...]}
 If you cannot determine a max score for a question, assign a reasonable default based on the question type and note "Max score set by AI default — please confirm" in criteria.
-If the photos yield no questions at all, output {"items": []}.
+If the photos yield no questions at all, output {"questions": []}.
+"""
+
+VALIDATE_SYSTEM = """You are a careful, independent solver and checker. You are given a question and a teacher's reference solution that was transcribed from a photo (the transcription may contain errors).
+Your job:
+1. Solve the question yourself, step by step, WITHOUT trusting the reference solution.
+2. Compare your final answer with the teacher's reference solution.
+3. If the question is a numerical computation, also provide a single Python expression (using only arithmetic operators and the math module, e.g. "math.pi * 3**2") that computes the answer. Leave it empty if the question is not numerical.
+Output ONLY a JSON object, no explanations, in this format:
+{"your_answer": "<your final answer, concise>", "agrees": true/false, "confidence": "high/medium/low", "note": "<one sentence on any discrepancy, or empty>", "python_check": "<expression or empty>"}
+Set "agrees" to true only if you are confident the two answers match (allowing for equivalent forms, e.g. 0.5 = 1/2). If the reference solution is missing, garbled, or you cannot solve the question, set "agrees" to false and explain in "note".
 """
 
 GRADER_SYSTEM = """You are a strict grader who scores exactly by the rubric. Rules:
@@ -102,39 +115,175 @@ def _chat_json(system, user_content, max_tokens):
     return _parse_json_loose(text)
 
 
-def rubric_from_example(image_paths):
-    """Generate a structured rubric from the teacher's reference example photos.
+def _digits_of(text):
+    """Extract float numbers from a string for numeric comparison."""
+    return [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", text or "")]
 
-    Returns {"items": [...]} with q / max_score / criteria per question.
+
+def _safe_eval(expr):
+    """Evaluate a pure-arithmetic Python expression safely.
+
+    Only numbers, arithmetic operators, and whitelisted math functions are
+    allowed — no imports, attribute access, or names beyond the whitelist.
+    Returns the float result, or None if the expression is not allowed.
+    """
+    import ast
+    import math
+
+    allowed_names = {
+        "pi": math.pi, "e": math.e, "tau": math.tau,
+        "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+        "log": math.log, "log10": math.log10, "exp": math.exp,
+        "abs": abs, "round": round, "pow": pow, "min": min, "max": max,
+    }
+    allowed_nodes = (
+        ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call, ast.Name, ast.Load,
+        ast.Constant, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod,
+        ast.USub, ast.UAdd, ast.FloorDiv,
+    )
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except (SyntaxError, ValueError):
+        return None
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed_nodes):
+            return None
+        if isinstance(node, ast.Name) and node.id not in allowed_names:
+            return None
+        if isinstance(node, ast.Call) and not isinstance(node.func, ast.Name):
+            return None
+    try:
+        return float(eval(compile(tree, "<check>", "eval"), {"__builtins__": {}}, allowed_names))  # noqa: S307
+    except Exception:
+        return None
+
+
+def digitize_example(image_paths, hint=None):
+    """Vision pass: transcribe the example into per-question data.
+
+    Returns a list of {q, question_text, reference_solution, max_score, criteria}.
+    `hint` (optional) is appended when retrying, e.g. to flag a misread solution.
     """
     if not image_paths:
         raise RuntimeError("No example photos received. Please take or upload a reference example first.")
-    user_content = [
-        {
-            "type": "text",
-            "text": "These photos show the teacher's reference example (a hand-graded paper, answer key, or scoring guide). Reconstruct the grading rubric the teacher used.",
-        }
-    ]
+    text = "These photos show the teacher's reference example (a hand-graded paper, answer key, or scoring guide). Digitize every question, its reference solution, and the grading rubric."
+    if hint:
+        text += f"\n\nIMPORTANT CORRECTION HINT for this retry: {hint} Look at the photos again very carefully and fix the transcription."
+    user_content = [{"type": "text", "text": text}]
     for p in image_paths:
-        user_content.append(
-            {"type": "image_url", "image_url": {"url": _data_url(p)}}
-        )
-    data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=2048)
-    items = data.get("items", [])
-    norm = []
-    for it in items:
+        user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
+    data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=4096)
+    questions = []
+    for it in data.get("questions", []):
         try:
             ms = float(it.get("max_score", 0))
         except (TypeError, ValueError):
             ms = 0
-        norm.append(
+        questions.append(
             {
                 "q": str(it.get("q", "")).strip(),
+                "question_text": str(it.get("question_text", "")).strip(),
+                "reference_solution": str(it.get("reference_solution", "")).strip(),
                 "max_score": ms,
                 "criteria": str(it.get("criteria", "")).strip(),
             }
         )
-    return {"items": norm}
+    return questions
+
+
+def validate_question(question_text, reference_solution):
+    """Independently re-solve a question and compare with the reference solution.
+
+    Returns {"verdict": "confirmed"|"mismatch"|"unsure", "note": str}.
+    Uses an LLM re-solve plus a safe Python numeric check when applicable.
+    """
+    if not (question_text or "").strip() or not (reference_solution or "").strip():
+        return {"verdict": "unsure", "note": "No question text or reference solution to validate."}
+    data = _chat_json(
+        VALIDATE_SYSTEM,
+        f"Question:\n{question_text}\n\nTeacher's reference solution (transcribed from photo):\n{reference_solution}",
+        max_tokens=2048,
+    )
+    agrees = data.get("agrees")
+    confidence = str(data.get("confidence", "")).lower()
+    note = str(data.get("note", "")).strip()
+    your_answer = str(data.get("your_answer", "")).strip()
+
+    # Strong check: evaluate the model's python expression and compare numerically.
+    py_expr = str(data.get("python_check", "")).strip()
+    if py_expr:
+        computed = _safe_eval(py_expr)
+        ref_nums = _digits_of(reference_solution)
+        if computed is not None and ref_nums:
+            if any(abs(computed - n) <= max(1e-6, abs(n) * 1e-4) for n in ref_nums):
+                return {"verdict": "confirmed", "note": f"Python check passed ({py_expr} = {computed:g})."}
+            return {
+                "verdict": "mismatch",
+                "note": f"Python check: {py_expr} = {computed:g}, but the reference solution says {reference_solution!r}.",
+            }
+
+    if agrees is True and confidence in ("high", "medium"):
+        detail = f" Independent solution: {your_answer}." if your_answer else ""
+        return {"verdict": "confirmed", "note": (note + detail).strip()}
+    if agrees is False:
+        detail = f" Independent solution: {your_answer}." if your_answer else ""
+        return {"verdict": "mismatch", "note": (note + detail).strip() or "Independent solving disagrees with the reference solution."}
+    return {"verdict": "unsure", "note": note or "Could not confidently validate the reference solution."}
+
+
+def build_example_rubric(image_paths, max_workers=5):
+    """Full pipeline: digitize the example, validate each reference solution
+    (independent re-solve + Python numeric check), retry failed questions once
+    with a correction hint, and flag anything still unresolved for the teacher.
+
+    Returns {"items": [...]} where each item has q, question_text,
+    reference_solution, max_score, criteria, verified ("yes"|"review"),
+    and verify_note.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    questions = digitize_example(image_paths)
+
+    def _validate_one(q):
+        return validate_question(q.get("question_text", ""), q.get("reference_solution", ""))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        verdicts = list(pool.map(_validate_one, questions))
+
+    # Retry the failures once: re-digitize with a correction hint, then re-validate.
+    failed_idx = [i for i, v in enumerate(verdicts) if v["verdict"] != "confirmed"]
+    if failed_idx:
+        hint_bits = []
+        for i in failed_idx:
+            q = questions[i]
+            hint_bits.append(
+                f'{q["q"]}: you transcribed the solution as "{q["reference_solution"]}", '
+                f'but validation says: {verdicts[i]["note"]}'
+            )
+        hint = "Some transcriptions failed validation:\n" + "\n".join(hint_bits)
+        questions = digitize_example(image_paths, hint=hint)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            verdicts = list(pool.map(_validate_one, questions))
+
+    items = []
+    for q, v in zip(questions, verdicts):
+        items.append(
+            {
+                "q": q["q"],
+                "question_text": q["question_text"],
+                "reference_solution": q["reference_solution"],
+                "max_score": q["max_score"],
+                "criteria": q["criteria"],
+                "verified": "yes" if v["verdict"] == "confirmed" else "review",
+                "verify_note": "" if v["verdict"] == "confirmed" else v["note"],
+            }
+        )
+    return {"items": items}
+
+
+def rubric_from_example(image_paths):
+    """Legacy alias: build the full digitize+validate rubric from example photos."""
+    return build_example_rubric(image_paths)
 
 
 def rubric_items_to_text(items):
@@ -144,6 +293,9 @@ def rubric_items_to_text(items):
         ms = it.get("max_score", 0)
         ms_s = int(ms) if float(ms).is_integer() else ms
         lines.append(f"{it.get('q', '')} (max {ms_s} pts): {it.get('criteria', '')}")
+        sol = (it.get("reference_solution") or "").strip()
+        if sol:
+            lines.append(f"  Reference solution: {sol}")
     return "\n".join(lines)
 
 

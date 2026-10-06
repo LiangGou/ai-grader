@@ -52,7 +52,7 @@ OpenAI API (api.openai.com) — model configurable via OPENAI_MODEL (default gpt
 Home (`/`) → create a class → create a grading assignment under it → land on
 the assignment setup page (`/assignment/<id>`).
 
-### 3.2 Enter the rubric (example → generate → edit → save)
+### 3.2 Enter the rubric (example → digitize → validate → edit → save)
 1. Provide the reference example — **📸 Take Photo** (camera) or **🖼️ Photo
    Library** (existing photos): a paper you already graded by hand (with your
    check marks, crosses, circled mistakes, and handwritten point notes like
@@ -60,17 +60,29 @@ the assignment setup page (`/assignment/<id>`).
    immediately to the assignment's example library (`uploads/`, tracked in
    the DB); revisit them any time, check/uncheck which ones feed the next
    generation, or delete and replace them.
-2. Click **✨ Generate Rubric from Example** — `POST /api/rubric_from_example`
-   sends the **checked** saved examples to OpenAI's vision API (GPT-4o), which studies your
-   markings and reconstructs the rubric as per-question
-   `{q, max_score, criteria}` items (e.g. a "−2" next to a missing unit becomes
-   a deduction rule).
-3. The items render as an editable table: add/remove rows, change the question
-   label, max score, or scoring rules by typing.
+2. Click **✨ Generate Rubric from Example** — the pipeline runs:
+   a. **Digitize** (`POST /api/rubric_from_example` → `grader.digitize_example`):
+      GPT-4o vision transcribes every question into `{q, question_text,
+      reference_solution, max_score, criteria}`.
+   b. **Validate** (`grader.validate_question`, run in parallel): the model
+      re-solves each question independently from the digitized question text
+      and compares with the transcribed reference solution; for numerical
+      questions it also emits a Python expression that is evaluated in a
+      restricted sandbox (`grader._safe_eval` — arithmetic + whitelisted math
+      functions only, no imports/attribute access) and compared numerically.
+   c. **Retry**: questions that fail validation are re-digitized once with a
+      correction hint, then re-validated.
+   d. Anything still unresolved is returned with `verified: "review"` and a
+      `verify_note` explaining the discrepancy — the UI flags the row ⚠️ and
+      the teacher corrects it (editing a flagged row marks it "verified by
+      you"). This is the "ask the teacher" fallback.
+3. The items render as editable cards: question label, max score, the
+   digitized question text, the digitized reference solution, and the
+   scoring/deduction rules — plus a ✅/⚠️/✏️ badge per row.
 4. Click **💾 Save Rubric** — `POST /assignment/<id>/save_rubric` stores both
-   the structured JSON and an auto-generated plain-text rendering. Saving
-   requires at least one table row; the rubric always comes from the example
-   (there is no free-text rubric path).
+   the structured JSON and an auto-generated plain-text rendering (now
+   including each question's reference solution, which also feeds the grading
+   prompt as ground truth). Saving requires at least one row.
 5. Optionally upload reference/answer-key photos (`POST
    /assignment/<id>/upload_reference`) — they are sent along as grading context.
 
@@ -168,9 +180,19 @@ rendered as `"Question 1 (max 5 pts): …"` lines — more precise than free tex
   + `assignments.rubric_example_images`) and shown as a checkable, deletable
   library. `POST /api/rubric_from_example` takes the **checked** saved
   filenames (validated against the assignment's library to block path
-  traversal) and calls `grader.rubric_from_example`, which sends them to
-  OpenAI's vision API (GPT-4o) with a prompt to reconstruct the rubric from
-  the teacher's markings (checks, crosses, "−2" notes → deduction rules).
+  traversal) and runs the digitize → validate → retry pipeline
+  (`grader.build_example_rubric`).
+- **Digitize** (`grader.digitize_example`): GPT-4o vision transcribes each
+  question's text, reference solution, max score, and criteria.
+- **Validate** (`grader.validate_question`, parallel via ThreadPoolExecutor):
+  independent re-solve + compare, plus a restricted-sandbox Python numeric
+  check (`grader._safe_eval`) when the model emits a check expression.
+- **Retry**: one re-digitization with a correction hint for failures, then
+  re-validation; persistent failures return `verified: "review"` + `verify_note`
+  and the UI asks the teacher to correct the row (editing marks it verified
+  by the teacher).
+- There is no voice input and no free-text rubric path: the rubric comes only
+  from the example (or manual row edits).
 - The generated rubric always renders as an editable table before saving —
   the teacher reviews and corrects every row.
 - There is no voice input and no free-text rubric path: the rubric comes only
