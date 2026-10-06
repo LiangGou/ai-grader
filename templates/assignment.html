@@ -26,8 +26,8 @@
 </div>
 
 <div class="card">
-  <h3>Step 2: Digitized Rubric (editable)</h3>
-  <p class="muted">Each question shows what the AI read from your example, its reference solution, and whether the solution was <strong>independently verified</strong> (re-solved + Python-checked). Generating auto-saves, so a refresh never loses it. Fix any ⚠️ rows — editing one marks it verified by you.</p>
+  <h3>Step 2: Digitized Rubric (editable) <span id="rubricSaveStatus" class="save-status"></span></h3>
+  <p class="muted">Each question shows what the AI read from your example, its reference solution, and whether the solution was <strong>independently verified</strong> (re-solved + Python-checked). Everything auto-saves — generating, typing, adding or deleting rows — so a refresh never loses it. Fix any ⚠️ rows — editing one marks it verified by you.</p>
   <div id="itemsBox">
     <div id="itemsRows"></div>
   </div>
@@ -49,8 +49,7 @@
 </div>
 
 <div class="sticky-bar">
-  <button type="button" id="saveRubricBtn" class="btn btn-primary btn-big">💾 Save Rubric</button>
-  <a class="btn btn-big" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Go to Grading</a>
+  <a class="btn btn-big btn-primary" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Go to Grading</a>
 </div>
 
 <script>

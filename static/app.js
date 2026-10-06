@@ -81,7 +81,7 @@
       '<div class="graph-slot"></div>' +
       note;
     row._graph = item.graph || null;
-    row.querySelector(".row-del").addEventListener("click", function () { row.remove(); });
+    row.querySelector(".row-del").addEventListener("click", function () { row.remove(); scheduleAutoSave(); });
     // Live KaTeX previews under the digitized inputs.
     ["qt", "rs"].forEach(function (cls) {
       var inp = row.querySelector("." + cls);
@@ -137,6 +137,10 @@
         });
       });
     }
+    // Every keystroke auto-saves (debounced) — no save button needed.
+    row.querySelectorAll("input, textarea").forEach(function (inp) {
+      inp.addEventListener("input", scheduleAutoSave);
+    });
     return row;
   }
   function escapeHtml(s) {
@@ -248,6 +252,7 @@
 
     $("addRowBtn").addEventListener("click", function () {
       rowsBox.appendChild(rubricRow());
+      scheduleAutoSave();
     });
 
     function finishGenerate(btn, items) {
@@ -260,10 +265,10 @@
       } else {
         var okCount = items.filter(function (it) { return it.verified === "yes"; }).length;
         var needCount = items.length - okCount;
-        saveRubric(true);  // auto-save so a refresh never loses the generated rubric
+        saveRubric();  // auto-save so a refresh never loses the generated rubric
         alert("Digitized " + items.length + " question(s): " + okCount + " verified ✅" +
           (needCount ? ", " + needCount + " need your review ⚠️" : "") +
-          " — auto-saved. Review and edit any time; edits save with 💾 Save Rubric.");
+          " — auto-saved. Every edit auto-saves too.");
       }
     }
 
@@ -335,15 +340,17 @@
         });
     });
 
-    function saveRubric(quiet) {
-      var items = collectItems();
-      if (items.length === 0) {
-        if (!quiet) alert("The rubric is empty. Add a reference example in Step 1, then click “✨ Generate Rubric from Example” first.");
-        return;
-      }
-      var btn = $("saveRubricBtn");
-      btn.disabled = true;
-      btn.textContent = "Saving…";
+    var saveTimer = null;
+    function setSaveStatus(text, isError) {
+      var el = $("rubricSaveStatus");
+      if (!el) return;
+      el.textContent = text;
+      el.classList.toggle("error", !!isError);
+    }
+    // Every rubric change auto-saves (debounced) — there is no save button.
+    function saveRubric() {
+      var items = collectItems(); // may be [] if the teacher deleted all rows
+      setSaveStatus("Saving…", false);
       fetch("/assignment/" + window.ASSIGNMENT_ID + "/save_rubric", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -351,18 +358,15 @@
       })
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          btn.disabled = false;
-          btn.textContent = "💾 Save Rubric";
-          if (!data.ok) { alert("Save failed: " + data.error); return; }
-          if (!quiet) alert("Rubric saved — grading will use this version.");
+          if (!data.ok) { setSaveStatus("Save failed", true); return; }
+          setSaveStatus("Auto-saved ✓", false);
         })
-        .catch(function (e) {
-          btn.disabled = false;
-          btn.textContent = "💾 Save Rubric";
-          alert("Request failed: " + e.message);
-        });
+        .catch(function () { setSaveStatus("Save failed", true); });
     }
-    $("saveRubricBtn").addEventListener("click", function () { saveRubric(false); });
+    function scheduleAutoSave() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveRubric, 1500);
+    }
   }
 
   /* ---------- Grading page ---------- */
