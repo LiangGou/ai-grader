@@ -4,6 +4,39 @@
 
   function $(id) { return document.getElementById(id); }
 
+  /* Shrink a photo client-side before upload. Phone photos are multi-MB and
+     stall on slow connections; downscale to max 1600px as JPEG (~0.82).
+     Also converts HEIC etc. to real JPEG. Falls back to the original file. */
+  function shrinkImage(file) {
+    return new Promise(function (resolve) {
+      var done = function (f) { resolve(f); };
+      try {
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        img.onload = function () {
+          URL.revokeObjectURL(url);
+          try {
+            var MAX = 1600;
+            var scale = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight));
+            var w = Math.max(1, Math.round(img.naturalWidth * scale));
+            var h = Math.max(1, Math.round(img.naturalHeight * scale));
+            var c = document.createElement("canvas");
+            c.width = w; c.height = h;
+            c.getContext("2d").drawImage(img, 0, 0, w, h);
+            c.toBlob(function (blob) {
+              if (blob) {
+                var name = (file.name || "photo").replace(/\.[^.]+$/, "") + ".jpg";
+                done(new File([blob], name, { type: "image/jpeg" }));
+              } else { done(file); }
+            }, "image/jpeg", 0.82);
+          } catch (e) { done(file); }
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); done(file); };
+        img.src = url;
+      } catch (e) { done(file); }
+    });
+  }
+
   /* Render LaTeX ($...$ / $$...$$) inside an element with KaTeX when available. */
   function renderMath(el) {
     if (!el || typeof renderMathInElement !== "function") return;
@@ -207,10 +240,16 @@
       $("exampleCount").textContent = savedExamples.length ? "(" + savedExamples.length + ")" : "";
     }
     function uploadExamples(fileList) {
-      var fd = new FormData();
-      Array.prototype.forEach.call(fileList, function (f) { fd.append("images", f); });
+      var files = Array.prototype.slice.call(fileList);
+      if (!files.length) return;
       $("exampleUploading").style.display = "";
-      fetch("/assignment/" + window.ASSIGNMENT_ID + "/upload_rubric_example", { method: "POST", body: fd })
+      $("exampleUploading").textContent = "⏳ Preparing…";
+      Promise.all(files.map(shrinkImage)).then(function (shrunk) {
+        var fd = new FormData();
+        shrunk.forEach(function (f) { fd.append("images", f); });
+        $("exampleUploading").textContent = "⏳ Uploading…";
+        return fetch("/assignment/" + window.ASSIGNMENT_ID + "/upload_rubric_example", { method: "POST", body: fd });
+      })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           $("exampleUploading").style.display = "none";
@@ -383,9 +422,13 @@
       });
     }
     function handlePicked(input) {
-      Array.prototype.forEach.call(input.files, function (f) { selectedFiles.push(f); });
+      var files = Array.prototype.slice.call(input.files);
       input.value = "";  // allow picking the same file again
-      renderPreviews();
+      if (!files.length) return;
+      Promise.all(files.map(shrinkImage)).then(function (shrunk) {
+        shrunk.forEach(function (f) { selectedFiles.push(f); });
+        renderPreviews();
+      });
     }
     $("photoInput").addEventListener("change", function () { handlePicked(this); });
     $("libraryInput").addEventListener("change", function () { handlePicked(this); });
