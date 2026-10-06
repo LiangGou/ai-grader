@@ -364,6 +364,7 @@ Output ONLY a JSON object in exactly this format (no markdown, no extra text):
 
 Rules for the code:
 - Start with: import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt; import numpy as np
+- Create the figure with a reasonable size: plt.figure(figsize=(8, 6)) or plt.subplots(figsize=(8, 6)). Do NOT create very tall or very wide figures.
 - Do NOT define OUTPUT_PATH (it is already defined, just use it).
 - Do NOT call plt.savefig() or plt.show(). Just build the figure with plt.figure() / plt.subplots() and draw on it. The system will save it.
 - Solve the problem as needed to determine what to draw (find zeros, asymptotes, intercepts, etc. computationally with numpy).
@@ -447,12 +448,23 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
         return None
     if proc.returncode != 0 or not os.path.exists(out_path):
         return None
-    # Sanity: must be a non-trivial PNG.
+    # Sanity: must be a non-trivial PNG with sane dimensions.
     try:
         if os.path.getsize(out_path) < 5000:
             os.remove(out_path)
             return None
+        from PIL import Image as _PILImage
+        with _PILImage.open(out_path) as _im:
+            _w, _h = _im.size
+        # Reject absurd aspect ratios or giant images (model bug safeguard).
+        if _w < 200 or _h < 200 or _w > 3000 or _h > 3000 or max(_w, _h) / max(1, min(_w, _h)) > 4:
+            os.remove(out_path)
+            return None
     except Exception:
+        try:
+            os.remove(out_path)
+        except Exception:
+            pass
         return None
     return {"kind": "image", "url": f"/uploads/{name}"}
 
