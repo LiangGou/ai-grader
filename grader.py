@@ -735,6 +735,8 @@ AP Calculus free-response scoring conventions:
 - Justification and communication matter: AP awards points for explaining reasoning, not just calculations.
 - Partial credit is specific: each point has clear criteria for what earns it.
 
+CRITICAL: The AP point breakdown must sum to EXACTLY the teacher's original max_score for that question. You are only re-distributing the teacher's points using AP-style criteria — never change the total. So ap_total must always equal the teacher's max_score shown in the input.
+
 Output ONLY a JSON object in this format:
 {
   "questions": [
@@ -794,6 +796,19 @@ def generate_ap_comparison(teacher_questions):
         return {"questions": [], "overall": f"AP comparison failed: {e}"}
     if not isinstance(data, dict):
         return {"questions": [], "overall": "AP comparison returned invalid data."}
+    # Guard: AP totals must match the teacher's original max_score exactly.
+    teacher_totals = {q.get("q", ""): int(q.get("max_score", 0) or 0) for q in teacher_questions}
+    for aq in data.get("questions", []) or []:
+        target = teacher_totals.get(aq.get("q", ""), None)
+        if target is None:
+            continue
+        aq["teacher_total"] = target
+        aq["ap_total"] = target
+        pts = aq.get("ap_points") or []
+        total = sum(int(p.get("points", 0) or 0) for p in pts if isinstance(p, dict))
+        diff = target - total
+        if diff != 0 and pts and isinstance(pts[-1], dict):
+            pts[-1]["points"] = int(pts[-1].get("points", 0) or 0) + diff
     return data
 
 
