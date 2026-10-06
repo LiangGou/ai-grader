@@ -319,26 +319,28 @@
 
     // Generation runs as a background job (~1 min). We poll for the result so
     // a slow/flaky connection can't kill it mid-flight.
+    var activeRubricPoll = null; // re-poll when the tab becomes visible again
     function pollRubricJob(jobId, btn) {
       var attempts = 0, maxAttempts = 100; // ~5 minutes
-      var timer = setInterval(function () {
+      var timer = null;
+      function pollOnce() {
         attempts++;
         fetch("/api/rubric_job/" + jobId)
           .then(function (r) { return r.json(); })
           .then(function (data) {
             if (!data.ok) { // job lost, e.g. server restarted
-              clearInterval(timer);
+              clearInterval(timer); activeRubricPoll = null;
               failGenerate(btn, "Generation was interrupted (" + (data.error || "job not found") + "). Please tap Generate again.");
               return;
             }
             if (data.status === "running") {
               if (attempts >= maxAttempts) {
-                clearInterval(timer);
+                clearInterval(timer); activeRubricPoll = null;
                 failGenerate(btn, "Generation is taking longer than expected. Please try again.");
               }
               return;
             }
-            clearInterval(timer);
+            clearInterval(timer); activeRubricPoll = null;
             if (data.status === "error") {
               failGenerate(btn, "Rubric generation failed: " + (data.error || "unknown error"));
               return;
@@ -348,12 +350,19 @@
           .catch(function () {
             // Transient network blip: keep polling unless we've waited too long.
             if (attempts >= maxAttempts) {
-              clearInterval(timer);
+              clearInterval(timer); activeRubricPoll = null;
               failGenerate(btn, "Lost connection to the server. Please try again.");
             }
           });
-      }, 3000);
+      }
+      timer = setInterval(pollOnce, 3000);
+      activeRubricPoll = pollOnce;
+      pollOnce(); // check immediately, don't wait 3s for the first poll
     }
+    // iOS throttles timers in background tabs: re-check as soon as the user returns.
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden && activeRubricPoll) activeRubricPoll();
+    });
 
     $("generateRubricBtn").addEventListener("click", function () {
       var include = savedExamples.filter(function (ex) { return ex.checked; }).map(function (ex) { return ex.name; });
