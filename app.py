@@ -272,7 +272,25 @@ def assignment_ap_compare(assignment_id):
     # Run in a background thread so the request doesn't block; poll via job API.
     # For simplicity, run synchronously with a generous client timeout.
     result = grader.generate_ap_comparison(items)
+    db.save_ap_comparison(assignment_id, result)
     return jsonify({"ok": True, "comparison": result})
+
+
+@app.route("/assignment/<int:assignment_id>/ap_compare", methods=["GET"])
+def assignment_ap_compare_get(assignment_id):
+    """Return the saved AP comparison (survives page refresh)."""
+    comp = db.get_ap_comparison(assignment_id)
+    return jsonify({"ok": True, "comparison": comp})
+
+
+@app.route("/assignment/<int:assignment_id>/ap_dismiss", methods=["POST"])
+def assignment_ap_dismiss(assignment_id):
+    """Remove one question's AP suggestion (after accept or dismiss)."""
+    data = request.get_json(silent=True) or {}
+    q_label = data.get("q", "")
+    if q_label:
+        db.remove_ap_question(assignment_id, q_label)
+    return jsonify({"ok": True})
 
 
 @app.route("/assignment/<int:assignment_id>/upload_reference", methods=["POST"])

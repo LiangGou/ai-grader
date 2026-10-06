@@ -50,6 +50,9 @@ def init_db():
     cols = [r[1] for r in cur.execute("PRAGMA table_info(assignments)").fetchall()]
     if "rubric_example_images" not in cols:
         cur.execute("ALTER TABLE assignments ADD COLUMN rubric_example_images TEXT DEFAULT '[]'")
+    # Migration: saved AP standard comparison (added after initial release).
+    if "ap_comparison" not in cols:
+        cur.execute("ALTER TABLE assignments ADD COLUMN ap_comparison TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -193,6 +196,39 @@ def save_rubric_example_images(assignment_id, paths):
     )
     conn.commit()
     conn.close()
+
+
+def save_ap_comparison(assignment_id, comparison):
+    """Persist the AP standard comparison so suggestions survive page refresh."""
+    conn = _connect()
+    conn.execute(
+        "UPDATE assignments SET ap_comparison = ? WHERE id = ?",
+        (json.dumps(comparison, ensure_ascii=False), assignment_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_ap_comparison(assignment_id):
+    """Return the saved AP comparison dict, or None."""
+    a = get_assignment(assignment_id)
+    if not a or not a.get("ap_comparison"):
+        return None
+    try:
+        return json.loads(a["ap_comparison"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def remove_ap_question(assignment_id, q_label):
+    """Remove one question's AP suggestion (after accept or dismiss)."""
+    comp = get_ap_comparison(assignment_id)
+    if not comp:
+        return
+    comp["questions"] = [
+        q for q in (comp.get("questions") or []) if q.get("q") != q_label
+    ]
+    save_ap_comparison(assignment_id, comp)
 
 
 def delete_assignment(assignment_id):

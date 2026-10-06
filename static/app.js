@@ -348,6 +348,8 @@
 
     // AP Standard comparison: side-by-side teacher rubric vs AP-aligned rubric.
     var apBtn = $("apCompareBtn"), apBox = $("apCompareBox");
+    // Restore any saved AP suggestions (they survive page refresh).
+    if (apBox) restoreApComparison();
     if (apBtn && apBox) {
       apBtn.addEventListener("click", function () {
         apBtn.disabled = true;
@@ -372,7 +374,7 @@
           });
       });
     }
-    function renderApComparison(box, comp) {
+    function renderApComparison(box, comp, silent) {
       // Clear any previous AP suggestions.
       document.querySelectorAll(".ap-suggest").forEach(function (el) { el.remove(); });
       box.style.display = "none";
@@ -381,6 +383,13 @@
         box.innerHTML = "<p><strong>Overall:</strong> " + escapeHtml(comp.overall) + "</p>";
       } else {
         box.innerHTML = "";
+      }
+      function apDismissed(qlabel) {
+        fetch("/assignment/" + window.ASSIGNMENT_ID + "/ap_dismiss", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ q: qlabel })
+        }).catch(function () {});
       }
       // Find teacher cards by question label.
       function findCard(qlabel) {
@@ -421,14 +430,29 @@
           var badge = card.querySelector(".verify-badge");
           if (badge) { badge.className = "verify-badge ok"; badge.textContent = "✅ Verified"; }
           scheduleAutoSave();
+          apDismissed(q.q);
           div.remove();
         });
-        div.querySelector(".ap-dismiss").addEventListener("click", function () { div.remove(); });
+        div.querySelector(".ap-dismiss").addEventListener("click", function () {
+          apDismissed(q.q);
+          div.remove();
+        });
       });
-      if (!document.querySelector(".ap-suggest")) {
+      if (!silent && !document.querySelector(".ap-suggest")) {
         box.style.display = "";
         box.innerHTML += "<p class='muted'>No matching questions found for AP suggestions.</p>";
       }
+    }
+    // Restore saved AP suggestions on page load.
+    function restoreApComparison() {
+      fetch("/assignment/" + window.ASSIGNMENT_ID + "/ap_compare")
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.ok && data.comparison && (data.comparison.questions || []).length) {
+            renderApComparison(apBox, data.comparison, true);
+          }
+        })
+        .catch(function () {});
     }
 
     var renderedGenIdx = {}; // idx -> true for the in-progress streaming generation
