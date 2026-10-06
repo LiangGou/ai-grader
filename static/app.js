@@ -273,9 +273,10 @@
           } else {
             var okCount = data.items.filter(function (it) { return it.verified === "yes"; }).length;
             var needCount = data.items.length - okCount;
+            saveRubric(true);  // auto-save so a refresh never loses the generated rubric
             alert("Digitized " + data.items.length + " question(s): " + okCount + " verified ✅" +
               (needCount ? ", " + needCount + " need your review ⚠️" : "") +
-              " — please review, edit, then save.");
+              " — auto-saved. Review and edit any time; edits save with 💾 Save Rubric.");
           }
         })
         .catch(function (e) {
@@ -285,34 +286,34 @@
         });
     });
 
-    $("saveRubricBtn").addEventListener("click", function () {
+    function saveRubric(quiet) {
       var items = collectItems();
       if (items.length === 0) {
-        alert("The structured rubric is empty. Add a reference example in Step 1, then click “✨ Generate Rubric from Example” first.");
+        if (!quiet) alert("The rubric is empty. Add a reference example in Step 1, then click “✨ Generate Rubric from Example” first.");
         return;
       }
-      var payload = { items: items };
       var btn = $("saveRubricBtn");
       btn.disabled = true;
       btn.textContent = "Saving…";
       fetch("/assignment/" + window.ASSIGNMENT_ID + "/save_rubric", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ items: items })
       })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           btn.disabled = false;
           btn.textContent = "💾 Save Rubric";
           if (!data.ok) { alert("Save failed: " + data.error); return; }
-          alert("Rubric saved — grading will use this version.");
+          if (!quiet) alert("Rubric saved — grading will use this version.");
         })
         .catch(function (e) {
           btn.disabled = false;
           btn.textContent = "💾 Save Rubric";
           alert("Request failed: " + e.message);
         });
-    });
+    }
+    $("saveRubricBtn").addEventListener("click", function () { saveRubric(false); });
   }
 
   /* ---------- Grading page ---------- */
