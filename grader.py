@@ -63,7 +63,9 @@ def _get_client():
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured. Please enter your API key on the Settings page.")
-    return OpenAI(api_key=api_key)
+    # Fail fast instead of hanging: the default SDK timeout is 10 minutes, which
+    # would leave a background job stuck on "Reading questions…" indefinitely.
+    return OpenAI(api_key=api_key, timeout=120.0)
 
 
 def _parse_json_loose(text):

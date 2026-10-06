@@ -365,7 +365,8 @@
             var nDone = Object.keys(renderedGenIdx).length;
             var total = data.total || 0;
             if (data.status === "running") {
-              btn.textContent = total > 0 ? "⏳ Validated " + nDone + "/" + total + " questions…" : "⏳ Reading questions…";
+              var elapsed = attempts * 3;
+              btn.textContent = total > 0 ? "⏳ Validated " + nDone + "/" + total + " questions…" : "⏳ Reading questions… (" + elapsed + "s)";
               if (attempts >= maxAttempts) {
                 clearInterval(timer); activeRubricPoll = null;
                 failGenerate(btn, "Generation is taking longer than expected. Please try again.");
