@@ -20,8 +20,8 @@ DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 EXAMPLE_RUBRIC_SYSTEM = """You are digitizing a teacher's reference example (a hand-graded paper, answer key, or scoring guide) into structured data.
 For each question, transcribe and extract:
 - "q": the question label (e.g. "Question 1").
-- "question_text": the question itself, transcribed faithfully. Write ALL mathematics in LaTeX: use $...$ for inline math (e.g. $2x + 6 = 14$) and $$...$$ for display math (e.g. $$\\int_0^1 x^2 dx$$).
-- "reference_solution": the teacher's correct solution / working / final answer, transcribed faithfully, with mathematics in LaTeX as above. Capture the final answer at minimum; include key working steps if shown.
+- "question_text": the question itself, transcribed faithfully. Write ALL mathematics in LaTeX: use $...$ for inline math (e.g. $2x + 6 = 14$) and $$...$$ for display math (e.g. $$\\int_0^1 x^2 dx$$). EVERY math fragment MUST be wrapped in $ delimiters — never leave LaTeX commands like \\frac outside $...$.
+- "reference_solution": the teacher's correct solution / working / final answer, transcribed faithfully, with mathematics in LaTeX as above (every fragment wrapped in $...$). Capture the final answer at minimum; include key working steps if shown, separating distinct steps with a line break.
 - "max_score": the max points for the question.
 - "criteria": the scoring/deduction rules you can infer from the teacher's markings (check marks, crosses, circled mistakes, handwritten notes like "-2"). For example, if the teacher wrote "-2" next to a missing unit, include "deduct 2 points for a missing/wrong unit".
 - "has_diagram": true or false — REQUIRED. Look carefully at the example photo: does this question show ANY diagram, graph, plot, coordinate system, or geometric figure? You must answer this for every question.
@@ -120,6 +120,50 @@ def _chat_json(system, user_content, max_tokens):
 
 
 def _digits_of(text):
+    """Extract float numbers from a string for numeric comparison."""
+    return [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", text or "")]
+
+
+def normalize_latex(text):
+    """Normalize LaTeX math delimiters in digitized/AI-generated text.
+
+    The vision model often emits LaTeX with inconsistent $...$ delimiters and
+    uses \\\\ as a formula separator, which leaves fragments like \\frac{5}{n}
+    unrendered by KaTeX. This pass:
+    1. Keeps already-delimited $...$ / $$...$$ spans untouched.
+    2. Splits the rest on \\\\ separators (which become line breaks); wraps
+       any segment containing a LaTeX command (\\<letter>) in $...$.
+    3. Plain English without LaTeX commands passes through unchanged.
+    """
+    if not text:
+        return text
+    tokens = re.split(r"(\$\$.+?\$\$|\$.+?\$)", text, flags=re.DOTALL)
+    segs = []  # strings; "\n" marks a hard break from a \\ separator
+    for tok in tokens:
+        if not tok:
+            continue
+        if len(tok) >= 2 and tok.startswith("$") and tok.endswith("$"):
+            segs.append(tok)  # already-delimited math, keep as-is
+            continue
+        for part in re.split(r"(\\\\)", tok):
+            if part == "\\\\":
+                segs.append("\n")
+                continue
+            part = part.strip(" \t")
+            if not part:
+                continue
+            if re.search(r"\\[a-zA-Z%$&#_{}]", part):
+                part = "$" + part.replace("$", "") + "$"
+            segs.append(part)
+    result = ""
+    for s in segs:
+        if s == "\n":
+            result = result.rstrip(" ") + "\n"
+        else:
+            if result and not result.endswith("\n"):
+                result += " "
+            result += s
+    return result.strip(" ")
     """Extract float numbers from a string for numeric comparison."""
     return [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", text or "")]
 
@@ -266,10 +310,10 @@ def digitize_example(image_paths, hint=None):
         questions.append(
             {
                 "q": str(it.get("q", "")).strip(),
-                "question_text": str(it.get("question_text", "")).strip(),
-                "reference_solution": str(it.get("reference_solution", "")).strip(),
+                "question_text": normalize_latex(str(it.get("question_text", "")).strip()),
+                "reference_solution": normalize_latex(str(it.get("reference_solution", "")).strip()),
                 "max_score": ms,
-                "criteria": str(it.get("criteria", "")).strip(),
+                "criteria": normalize_latex(str(it.get("criteria", "")).strip()),
                 "graph": it.get("graph") if isinstance(it.get("graph"), dict) else None,
             }
         )
@@ -388,6 +432,11 @@ def rubric_items_to_text(items):
 def build_rubric_prompt_text(rubric_text, rubric_items):
     """Rubric text used for grading: prefer the structured version (more accurate)."""
     if rubric_items:
+        # Self-heal: normalize LaTeX in rubrics saved before the fix.
+        for it in rubric_items:
+            for k in ("question_text", "reference_solution", "criteria"):
+                if it.get(k):
+                    it[k] = normalize_latex(it[k])
         return rubric_items_to_text(rubric_items)
     return rubric_text or ""
 
@@ -436,8 +485,8 @@ def grade_paper(rubric_text, rubric_items, image_paths, reference_image_paths=No
                 "q": str(q.get("q", "")),
                 "score": s,
                 "max_score": max_s,
-                "answer_seen": str(q.get("answer_seen", "")),
-                "feedback": str(q.get("feedback", "")),
+                "answer_seen": normalize_latex(str(q.get("answer_seen", ""))),
+                "feedback": normalize_latex(str(q.get("feedback", ""))),
             }
         )
     total = round(sum(q["score"] for q in questions), 2)
@@ -446,5 +495,5 @@ def grade_paper(rubric_text, rubric_items, image_paths, reference_image_paths=No
         "questions": questions,
         "total": total,
         "max_total": max_total,
-        "overall_feedback": str(data.get("overall_feedback", "")),
+        "overall_feedback": normalize_latex(str(data.get("overall_feedback", ""))),
     }

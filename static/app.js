@@ -71,10 +71,10 @@
         '<button type="button" class="btn btn-small row-del">✕</button>' +
       '</div>' +
       '<label class="rubric-field"><span>Question (digitized)</span>' +
-        '<input class="qt" type="text" placeholder="Question text as read from the example" value="' + escapeHtml(item.question_text) + '">' +
+        '<textarea class="qt" rows="2" placeholder="Question text as read from the example">' + escapeHtml(item.question_text) + '</textarea>' +
         '<div class="math-preview"></div></label>' +
       '<label class="rubric-field"><span>Reference solution (digitized)</span>' +
-        '<input class="rs" type="text" placeholder="Reference solution as read from the example" value="' + escapeHtml(item.reference_solution) + '">' +
+        '<textarea class="rs" rows="3" placeholder="Reference solution as read from the example">' + escapeHtml(item.reference_solution) + '</textarea>' +
         '<div class="math-preview"></div></label>' +
       '<label class="rubric-field"><span>Scoring / deduction rules</span>' +
         '<input class="cr" type="text" placeholder="Scoring/deduction rules" value="' + escapeHtml(item.criteria) + '"></label>' +

@@ -89,6 +89,11 @@ def assignment_page(assignment_id):
     if not a:
         return redirect(url_for("index"))
     items = json.loads(a["rubric_json"] or "[]")
+    # Self-heal: normalize LaTeX delimiters in rubrics saved before the fix.
+    for it in items:
+        for k in ("question_text", "reference_solution", "criteria"):
+            if it.get(k):
+                it[k] = grader.normalize_latex(it[k])
     refs = json.loads(a["reference_images"] or "[]")
     refs = [os.path.basename(p) for p in refs if os.path.exists(p)]
     rubric_examples = db.get_rubric_example_images(assignment_id)
