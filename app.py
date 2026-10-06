@@ -114,7 +114,7 @@ def api_rubric_from_example():
     if not paths:
         return jsonify({"ok": False, "error": "No example photos selected. Please add a reference example first."}), 400
     try:
-        result = grader.rubric_from_example(paths)
+        result = grader.rubric_from_example(paths, upload_dir=UPLOAD_DIR)
     except RuntimeError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:  # noqa: BLE001
@@ -177,6 +177,7 @@ def assignment_save_rubric(assignment_id):
             "reference_solution": str(it.get("reference_solution", "")).strip(),
             "verified": it.get("verified", "review") if it.get("verified") in ("yes", "review") else "review",
             "verify_note": str(it.get("verify_note", "")).strip(),
+            "graph": it.get("graph") if isinstance(it.get("graph"), dict) else None,
         })
     items = clean
     rubric_text = grader.rubric_items_to_text(items)

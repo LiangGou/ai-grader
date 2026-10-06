@@ -63,7 +63,10 @@ the assignment setup page (`/assignment/<id>`).
 2. Click **✨ Generate Rubric from Example** — the pipeline runs:
    a. **Digitize** (`POST /api/rubric_from_example` → `grader.digitize_example`):
       GPT-4o vision transcribes every question into `{q, question_text,
-      reference_solution, max_score, criteria}`.
+      reference_solution, max_score, criteria}` with mathematics in LaTeX
+      (`$...$`/`$$...$$`, rendered with KaTeX on the page). Diagrams are
+      captured too: function plots as a regenerable expression + x-range,
+      other figures as a crop box.
    b. **Validate** (`grader.validate_question`, run in parallel): the model
       re-solves each question independently from the digitized question text
       and compares with the transcribed reference solution; for numerical

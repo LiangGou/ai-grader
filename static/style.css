@@ -128,3 +128,10 @@ code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 13p
 .rubric-field { display: block; margin-bottom: 6px; }
 .rubric-field > span { display: block; font-size: 12px; color: #888; margin-bottom: 2px; }
 .rubric-field input { width: 100%; box-sizing: border-box; margin: 0; padding: 8px 10px; }
+
+.math-preview { font-size: 15px; padding: 6px 10px; background: #f8fafc; border-radius: 6px; margin-top: 4px; overflow-x: auto; }
+.math-preview:empty { display: none; }
+.graph-slot { margin-top: 8px; }
+.graph-cap { font-size: 13px; color: #666; margin: 0 0 4px; }
+.graph-canvas { width: 100%; max-width: 420px; height: auto; border: 1px solid #e0e0e0; border-radius: 8px; background: #fff; }
+.graph-img { max-width: 100%; border: 1px solid #e0e0e0; border-radius: 8px; }

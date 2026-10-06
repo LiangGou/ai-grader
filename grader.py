@@ -20,12 +20,16 @@ DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 EXAMPLE_RUBRIC_SYSTEM = """You are digitizing a teacher's reference example (a hand-graded paper, answer key, or scoring guide) into structured data.
 For each question, transcribe and extract:
 - "q": the question label (e.g. "Question 1").
-- "question_text": the question itself, transcribed as faithfully as you can.
-- "reference_solution": the teacher's correct solution / working / final answer, transcribed faithfully. Capture the final answer at minimum; include key working steps if shown.
+- "question_text": the question itself, transcribed faithfully. Write ALL mathematics in LaTeX: use $...$ for inline math (e.g. $2x + 6 = 14$) and $$...$$ for display math (e.g. $$\\int_0^1 x^2 dx$$).
+- "reference_solution": the teacher's correct solution / working / final answer, transcribed faithfully, with mathematics in LaTeX as above. Capture the final answer at minimum; include key working steps if shown.
 - "max_score": the max points for the question.
 - "criteria": the scoring/deduction rules you can infer from the teacher's markings (check marks, crosses, circled mistakes, handwritten notes like "-2"). For example, if the teacher wrote "-2" next to a missing unit, include "deduct 2 points for a missing/wrong unit".
+- "has_diagram": true or false — REQUIRED. Look carefully at the example photo: does this question show ANY diagram, graph, plot, coordinate system, or geometric figure? You must answer this for every question.
+- "graph": REQUIRED when has_diagram is true, omitted otherwise. Describe the diagram ONE of these two ways:
+  * If it is the plot of a single mathematical function y = f(x): {"kind": "function", "expression": "<Python expression in x using only numbers, x, +, -, *, /, **, parentheses, and these functions: sqrt, sin, cos, tan, log, log10, exp, abs, pi, e. Example: 'x**2 - 3*x + 2'>", "x_min": <number>, "x_max": <number>} — choose an x range that matches what the graph shows.
+  * Otherwise (geometry figures, bar charts, hand-drawn diagrams, number lines, etc.): {"kind": "crop", "image_index": <0-based index of the example photo it appears in>, "x_min": <0-1000>, "y_min": <0-1000>, "x_max": <0-1000>, "y_max": <0-1000>} — the bounding box of the diagram within that photo, in relative 0-1000 coordinates.
 Output ONLY a JSON object, no explanations, in this format:
-{"questions": [{"q": "Question 1", "question_text": "...", "reference_solution": "...", "max_score": 5, "criteria": "..."}, ...]}
+{"questions": [{"q": "Question 1", "question_text": "...", "reference_solution": "...", "max_score": 5, "criteria": "...", "graph": {...}}, ...]}
 If you cannot determine a max score for a question, assign a reasonable default based on the question type and note "Max score set by AI default — please confirm" in criteria.
 If the photos yield no questions at all, output {"questions": []}.
 """
@@ -120,12 +124,12 @@ def _digits_of(text):
     return [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", text or "")]
 
 
-def _safe_eval(expr):
+def _safe_eval(expr, extra_names=None):
     """Evaluate a pure-arithmetic Python expression safely.
 
-    Only numbers, arithmetic operators, and whitelisted math functions are
-    allowed — no imports, attribute access, or names beyond the whitelist.
-    Returns the float result, or None if the expression is not allowed.
+    Only numbers, arithmetic operators, whitelisted math functions, and
+    `extra_names` (e.g. {"x": value}) are allowed — no imports, attribute
+    access, or other names. Returns the float result, or None if disallowed.
     """
     import ast
     import math
@@ -136,6 +140,8 @@ def _safe_eval(expr):
         "log": math.log, "log10": math.log10, "exp": math.exp,
         "abs": abs, "round": round, "pow": pow, "min": min, "max": max,
     }
+    if extra_names:
+        allowed_names = dict(allowed_names, **extra_names)
     allowed_nodes = (
         ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call, ast.Name, ast.Load,
         ast.Constant, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod,
@@ -156,6 +162,84 @@ def _safe_eval(expr):
         return float(eval(compile(tree, "<check>", "eval"), {"__builtins__": {}}, allowed_names))  # noqa: S307
     except Exception:
         return None
+
+
+def _sample_function(expr, x_min, x_max, n=200):
+    """Sample y = f(x) for a function-graph spec. Returns
+    {"points": [[x, y], ...], "x_min", "x_max", "y_min", "y_max"} or None."""
+    import math
+
+    try:
+        x_min, x_max = float(x_min), float(x_max)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(x_min) and math.isfinite(x_max)) or x_max <= x_min:
+        return None
+    points = []
+    for i in range(n + 1):
+        x = x_min + (x_max - x_min) * i / n
+        y = _safe_eval(expr, {"x": x})
+        if y is not None and math.isfinite(y) and abs(y) < 1e9:
+            points.append([round(x, 4), round(y, 4)])
+    if len(points) < 10:
+        return None
+    ys = [p[1] for p in points]
+    y_min, y_max = min(ys), max(ys)
+    pad = max((y_max - y_min) * 0.1, 1.0)
+    return {
+        "kind": "function",
+        "points": points,
+        "x_min": x_min, "x_max": x_max,
+        "y_min": y_min - pad, "y_max": y_max + pad,
+        "expression": expr,
+    }
+
+
+def _crop_graph(image_paths, spec, upload_dir):
+    """Crop a diagram region from an example photo. `spec` carries image_index
+    and 0-1000 relative box coords. Returns {"kind": "image", "url": ...} or None."""
+    from PIL import Image
+
+    if not upload_dir:
+        return None
+    try:
+        idx = int(spec.get("image_index", 0))
+        src = image_paths[idx]
+        x0, y0 = float(spec.get("x_min", 0)), float(spec.get("y_min", 0))
+        x1, y1 = float(spec.get("x_max", 1000)), float(spec.get("y_max", 1000))
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not (0 <= x0 < x1 <= 1000 and 0 <= y0 < y1 <= 1000):
+        return None
+    try:
+        im = Image.open(src).convert("RGB")
+        w, h = im.size
+        box = (int(w * x0 / 1000), int(h * y0 / 1000), int(w * x1 / 1000), int(h * y1 / 1000))
+        if box[2] - box[0] < 20 or box[3] - box[1] < 20:
+            return None
+        import random
+        import time
+        name = f"graph_crop_{int(time.time())}_{random.randint(1000, 9999)}.png"
+        im.crop(box).save(os.path.join(upload_dir, name))
+        return {"kind": "image", "url": f"/uploads/{name}"}
+    except Exception:
+        return None
+
+
+def _process_graph(question, image_paths, upload_dir):
+    """Turn a digitized graph spec into render-ready data (or None)."""
+    spec = question.get("graph")
+    if not isinstance(spec, dict):
+        return None
+    kind = spec.get("kind")
+    if kind == "function":
+        expr = str(spec.get("expression", "")).strip()
+        if not expr:
+            return None
+        return _sample_function(expr, spec.get("x_min", -10), spec.get("x_max", 10))
+    if kind == "crop":
+        return _crop_graph(image_paths, spec, upload_dir)
+    return None
 
 
 def digitize_example(image_paths, hint=None):
@@ -186,6 +270,7 @@ def digitize_example(image_paths, hint=None):
                 "reference_solution": str(it.get("reference_solution", "")).strip(),
                 "max_score": ms,
                 "criteria": str(it.get("criteria", "")).strip(),
+                "graph": it.get("graph") if isinstance(it.get("graph"), dict) else None,
             }
         )
     return questions
@@ -231,14 +316,14 @@ def validate_question(question_text, reference_solution):
     return {"verdict": "unsure", "note": note or "Could not confidently validate the reference solution."}
 
 
-def build_example_rubric(image_paths, max_workers=5):
+def build_example_rubric(image_paths, upload_dir=None, max_workers=5):
     """Full pipeline: digitize the example, validate each reference solution
     (independent re-solve + Python numeric check), retry failed questions once
     with a correction hint, and flag anything still unresolved for the teacher.
 
     Returns {"items": [...]} where each item has q, question_text,
     reference_solution, max_score, criteria, verified ("yes"|"review"),
-    and verify_note.
+    verify_note, and graph (render-ready function plot / cropped image / None).
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -276,14 +361,15 @@ def build_example_rubric(image_paths, max_workers=5):
                 "criteria": q["criteria"],
                 "verified": "yes" if v["verdict"] == "confirmed" else "review",
                 "verify_note": "" if v["verdict"] == "confirmed" else v["note"],
+                "graph": _process_graph(q, image_paths, upload_dir),
             }
         )
     return {"items": items}
 
 
-def rubric_from_example(image_paths):
+def rubric_from_example(image_paths, upload_dir=None):
     """Legacy alias: build the full digitize+validate rubric from example photos."""
-    return build_example_rubric(image_paths)
+    return build_example_rubric(image_paths, upload_dir=upload_dir)
 
 
 def rubric_items_to_text(items):

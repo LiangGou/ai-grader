@@ -17,7 +17,7 @@ question against the rubric → totals are tallied → class-wide stats + CSV ex
 1. **Classes / assignments**: create a class → create grading assignments under it (homework/exam name).
 2. **Rubric entry** (assignment setup page):
    - 📝 Reference example: take a photo or upload existing photos of a reference — a paper you already graded by hand (with your check marks, crosses, and point notes), an answer key, or a printed scoring guide. Examples are **saved** per assignment: revisit them any time, check/uncheck which ones to use, delete and replace them;
-   - ✨ Generate rubric from example: the backend **digitizes** the example (question text + reference solution + rubric), then **validates** each reference solution by independently re-solving the question and Python-checking the math. Failed questions are retried once; anything still unresolved is flagged ⚠️ for you to fix (editing a flagged row marks it verified by you);
+   - ✨ Generate rubric from example: the backend **digitizes** the example (question text + reference solution + rubric, with math in LaTeX), then **validates** each reference solution by independently re-solving the question and Python-checking the math. Diagrams are either **regenerated** as function plots or **cropped** from your photo and shown with the question. Failed questions are retried once; anything still unresolved is flagged ⚠️ for you to fix (editing a flagged row marks it verified by you);
    - The digitized table is fully editable: add/remove rows, change labels, max scores, solutions, rules;
    - Optional reference/answer-key photos, sent along as grading context.
 3. **Photo grading**: enter the student name → take photos or pick from the photo library (multiple pages supported, can mix both)

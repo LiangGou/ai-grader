@@ -9,7 +9,7 @@
 </div>
 
 {% for q in questions %}
-<div class="card">
+<div class="card math-text">
   <div class="row-between">
     <h3 style="margin:0">{{ q.q }}</h3>
     <span><strong>{{ q.score }}</strong> / {{ q.max_score }} pts</span>
@@ -23,10 +23,27 @@
 </div>
 {% endfor %}
 
-<div class="card">
+<div class="card math-text">
   <p><strong>Overall feedback</strong></p>
   <p style="margin-bottom:0">{{ g.overall_feedback }}</p>
 </div>
+
+<script>
+(function () {
+  if (typeof renderMathInElement !== "function") return;
+  document.querySelectorAll(".math-text").forEach(function (el) {
+    try {
+      renderMathInElement(el, {
+        delimiters: [
+          { left: "$$", right: "$$", display: true },
+          { left: "$", right: "$", display: false }
+        ],
+        throwOnError: false
+      });
+    } catch (e) { /* leave raw text */ }
+  });
+})();
+</script>
 
 <div class="sticky-bar">
   <a class="btn btn-big" href="{{ url_for('results_page', assignment_id=g.assignment_id) }}">← Back to Results</a>

@@ -4,6 +4,52 @@
 
   function $(id) { return document.getElementById(id); }
 
+  /* Render LaTeX ($...$ / $$...$$) inside an element with KaTeX when available. */
+  function renderMath(el) {
+    if (!el || typeof renderMathInElement !== "function") return;
+    try {
+      renderMathInElement(el, {
+        delimiters: [
+          { left: "$$", right: "$$", display: true },
+          { left: "$", right: "$", display: false }
+        ],
+        throwOnError: false
+      });
+    } catch (e) { /* leave raw text on failure */ }
+  }
+
+  /* Draw a sampled y=f(x) polyline with axes and grid. */
+  function drawFunctionGraph(canvas, g) {
+    var ctx = canvas.getContext("2d");
+    var W = canvas.width, H = canvas.height, pad = 28;
+    var x0 = g.x_min, x1 = g.x_max, y0 = g.y_min, y1 = g.y_max;
+    function X(x) { return pad + (x - x0) / (x1 - x0) * (W - 2 * pad); }
+    function Y(y) { return H - pad - (y - y0) / (y1 - y0) * (H - 2 * pad); }
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = "#e0e0e0"; ctx.lineWidth = 1;
+    for (var i = 0; i <= 4; i++) {
+      var gx = X(x0 + (x1 - x0) * i / 4), gy = Y(y0 + (y1 - y0) * i / 4);
+      ctx.beginPath(); ctx.moveTo(gx, pad); ctx.lineTo(gx, H - pad); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(W - pad, gy); ctx.stroke();
+    }
+    // axes
+    ctx.strokeStyle = "#999"; ctx.lineWidth = 1.5;
+    if (y0 <= 0 && 0 <= y1) { ctx.beginPath(); ctx.moveTo(pad, Y(0)); ctx.lineTo(W - pad, Y(0)); ctx.stroke(); }
+    if (x0 <= 0 && 0 <= x1) { ctx.beginPath(); ctx.moveTo(X(0), pad); ctx.lineTo(X(0), H - pad); ctx.stroke(); }
+    // curve
+    ctx.strokeStyle = "#1565c0"; ctx.lineWidth = 2.5; ctx.beginPath();
+    var started = false;
+    g.points.forEach(function (p) {
+      var px = X(p[0]), py = Y(p[1]);
+      if (!started) { ctx.moveTo(px, py); started = true; }
+      else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+    ctx.fillStyle = "#666"; ctx.font = "11px sans-serif";
+    ctx.fillText("x", W - pad + 4, Y(0) + 4);
+    ctx.fillText("y", X(0) - 12, pad - 6);
+  }
+
   /* ---------- Assignment setup page: digitized rubric ---------- */
   function rubricRow(item) {
     item = item || {};
@@ -25,13 +71,57 @@
         '<button type="button" class="btn btn-small row-del">✕</button>' +
       '</div>' +
       '<label class="rubric-field"><span>Question (digitized)</span>' +
-        '<input class="qt" type="text" placeholder="Question text as read from the example" value="' + escapeHtml(item.question_text) + '"></label>' +
+        '<input class="qt" type="text" placeholder="Question text as read from the example" value="' + escapeHtml(item.question_text) + '">' +
+        '<div class="math-preview"></div></label>' +
       '<label class="rubric-field"><span>Reference solution (digitized)</span>' +
-        '<input class="rs" type="text" placeholder="Reference solution as read from the example" value="' + escapeHtml(item.reference_solution) + '"></label>' +
+        '<input class="rs" type="text" placeholder="Reference solution as read from the example" value="' + escapeHtml(item.reference_solution) + '">' +
+        '<div class="math-preview"></div></label>' +
       '<label class="rubric-field"><span>Scoring / deduction rules</span>' +
         '<input class="cr" type="text" placeholder="Scoring/deduction rules" value="' + escapeHtml(item.criteria) + '"></label>' +
+      '<div class="graph-slot"></div>' +
       note;
+    row._graph = item.graph || null;
     row.querySelector(".row-del").addEventListener("click", function () { row.remove(); });
+    // Live KaTeX previews under the digitized inputs.
+    ["qt", "rs"].forEach(function (cls) {
+      var inp = row.querySelector("." + cls);
+      var prev = inp.parentElement.querySelector(".math-preview");
+      var update = function () {
+        if (!inp.value.trim()) { prev.innerHTML = ""; prev.style.display = "none"; return; }
+        prev.style.display = "";
+        prev.textContent = inp.value;
+        renderMath(prev);
+      };
+      inp.addEventListener("input", update);
+      update();
+    });
+    // Graph: regenerated function plot or cropped diagram image.
+    (function () {
+      var slot = row.querySelector(".graph-slot");
+      var g = row._graph;
+      if (!g) return;
+      if (g.kind === "function" && g.points && g.points.length) {
+        var cap = document.createElement("p");
+        cap.className = "graph-cap";
+        cap.textContent = "📈 Regenerated graph" + (g.expression ? ": y = " + g.expression : "");
+        var cv = document.createElement("canvas");
+        cv.className = "graph-canvas";
+        cv.width = 600; cv.height = 360;
+        slot.appendChild(cap);
+        slot.appendChild(cv);
+        drawFunctionGraph(cv, g);
+      } else if (g.kind === "image" && g.url) {
+        var cap2 = document.createElement("p");
+        cap2.className = "graph-cap";
+        cap2.textContent = "🖼️ Diagram from your example";
+        var im = document.createElement("img");
+        im.className = "graph-img";
+        im.src = g.url;
+        im.alt = "Cropped diagram from the reference example";
+        slot.appendChild(cap2);
+        slot.appendChild(im);
+      }
+    })();
     // If the teacher edits a flagged row, treat it as human-verified.
     if (state === "warn") {
       ["qt", "rs"].forEach(function (cls) {
@@ -70,7 +160,8 @@
         verify_note: (function () {
           var n = row.querySelector(".verify-note");
           return n ? n.textContent : "";
-        })()
+        })(),
+        graph: row._graph || null
       });
     });
     return items;
