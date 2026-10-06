@@ -4,6 +4,28 @@
 
   function $(id) { return document.getElementById(id); }
 
+  /* Click-to-enlarge lightbox: every uploaded-image thumbnail and every
+     diagram (img.thumb, img.graph-img) opens fullscreen on tap. Uses event
+     delegation so dynamically added images work too. */
+  (function initLightbox() {
+    var lb = document.getElementById("lightbox");
+    if (!lb) return;
+    var lbImg = lb.querySelector("img");
+    function close() { lb.classList.remove("open"); lbImg.removeAttribute("src"); }
+    lb.addEventListener("click", close);
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") close();
+    });
+    document.addEventListener("click", function (e) {
+      var t = e.target;
+      if (t && t.tagName === "IMG" && (t.classList.contains("thumb") || t.classList.contains("graph-img"))) {
+        e.preventDefault();
+        lbImg.src = t.currentSrc || t.src;
+        lb.classList.add("open");
+      }
+    });
+  })();
+
   /* Shrink a photo client-side before upload. Phone photos are multi-MB and
      stall on slow connections; downscale to max 1600px as JPEG (~0.82).
      Also converts HEIC etc. to real JPEG. Falls back to the original file. */
