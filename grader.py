@@ -363,11 +363,12 @@ Output ONLY a JSON object in exactly this format (no markdown, no extra text):
 {"code": "<python code here>"}
 
 Rules for the code:
-- Use `import matplotlib; matplotlib.use("Agg")` then `import matplotlib.pyplot as plt` and `import numpy as np`.
-- The code MUST save the figure to the path in the OUTPUT_PATH variable (already defined) via `plt.savefig(OUTPUT_PATH, dpi=150, bbox_inches="tight")`. Do NOT call plt.show().
+- Start with: import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt; import numpy as np
+- Do NOT define OUTPUT_PATH (it is already defined, just use it).
+- Do NOT call plt.savefig() or plt.show(). Just build the figure with plt.figure() / plt.subplots() and draw on it. The system will save it.
 - Solve the problem as needed to determine what to draw (find zeros, asymptotes, intercepts, etc. computationally with numpy).
 - Draw clean, labeled diagrams: axes with labels, key points marked and labeled, asymptotes as dashed lines, etc.
-- Keep the code self-contained. Only use: matplotlib, numpy, math. No file I/O except the savefig. No network. No os/sys/subprocess.
+- Keep the code self-contained. Only use: matplotlib, numpy, math. No file I/O. No network. No os/sys/subprocess.
 - The figure should be clear at 800x600 pixels.
 """
 
@@ -376,6 +377,7 @@ _DIAGRAM_CODE_BLOCKLIST = (
     "os.", "sys.", "subprocess", "__import__", "eval(", "exec(",
     "open(", "input(", "compile(", "globals(", "locals(",
     "socket", "urllib", "requests", "shutil", "pathlib",
+    "output_path =", "savefig", "plt.show",
 )
 
 
@@ -423,11 +425,14 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
     import sys
     name = f"diagram_gen_{int(time.time())}_{random.randint(1000, 9999)}.png"
     out_path = os.path.join(upload_dir, name)
+    # The model only builds the figure; we do the savefig so the output path
+    # is always correct (models sometimes redefine OUTPUT_PATH).
     runner = (
         "import matplotlib; matplotlib.use('Agg')\n"
         f"OUTPUT_PATH = {out_path!r}\n"
         + code
-        + "\n"
+        + "\nimport matplotlib.pyplot as _plt\n"
+        "_plt.savefig(OUTPUT_PATH, dpi=150, bbox_inches='tight')\n"
     )
     try:
         proc = subprocess.run(
