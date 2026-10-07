@@ -251,6 +251,43 @@ def _run_solve_job(job_id, paths):
                                    "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
 
 
+
+
+@app.route("/api/retry_question", methods=["POST"])
+def api_retry_question():
+    """Retry AI-solving a single question with debug output.
+
+    Body: {assignment_id, q, question_text, max_score, model, high_effort}.
+    `model` is "o3" (default) or "gpt-4o"; `high_effort` requests o3 with
+    reasoning_effort="high". Returns the new solution, criteria, verification
+    status, and the raw model outputs for debugging.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    assignment_id = data.get("assignment_id")
+    q_label = str(data.get("q", "")).strip()
+    question_text = str(data.get("question_text", "")).strip()
+    model = str(data.get("model", "o3")).strip() or "o3"
+    high_effort = bool(data.get("high_effort"))
+    try:
+        max_score = float(data.get("max_score", 0) or 0)
+    except (TypeError, ValueError):
+        max_score = 0
+    if not assignment_id or not question_text:
+        return jsonify({"ok": False, "error": "Missing assignment or question text."}), 400
+    if model not in ("o3", "gpt-4o"):
+        return jsonify({"ok": False, "error": "Model must be 'o3' or 'gpt-4o'."}), 400
+    # Give the solver the assignment's question photos for a second read.
+    image_paths = [p for p in db.get_rubric_example_images(assignment_id) if os.path.exists(p)]
+    try:
+        result = grader.retry_solve_question(
+            question_text, max_score, q_label,
+            model=model, high_effort=high_effort,
+            image_paths=image_paths or None,
+        )
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"Retry failed: {e}"}), 500
+    return jsonify({"ok": True, "result": result})
+
 @app.route("/assignment/<int:assignment_id>/upload_rubric_example", methods=["POST"])
 def assignment_upload_rubric_example(assignment_id):
     a = db.get_assignment(assignment_id)

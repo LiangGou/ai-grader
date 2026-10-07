@@ -148,6 +148,24 @@
         : '<span class="verify-badge manual">✏️ Manual</span>';
     var note = (state === "warn" && item.verify_note)
       ? '<p class="verify-note">' + escapeHtml(item.verify_note) + '</p>' : "";
+    // Retry panel for AI-solved questions that failed verification.
+    var retryHtml = "";
+    if (item.origin === "ai_solved" && state === "warn") {
+      retryHtml =
+        '<div class="retry-box">' +
+          '<button type="button" class="btn btn-small retry-toggle">🔄 Retry with AI</button>' +
+          '<div class="retry-panel" style="display:none">' +
+            '<label>Model: <select class="retry-model">' +
+              '<option value="o3">o3 (default)</option>' +
+              '<option value="o3-high">o3 high effort (slower, more thorough)</option>' +
+              '<option value="gpt-4o">gpt-4o (different approach)</option>' +
+            '</select></label> ' +
+            '<button type="button" class="btn btn-small btn-primary retry-go">Retry</button>' +
+            '<div class="retry-status muted"></div>' +
+            '<details class="retry-debug"><summary>Debug: raw model output</summary><pre class="retry-raw"></pre></details>' +
+          '</div>' +
+        '</div>';
+    }
     row.innerHTML =
       '<div class="rubric-top">' +
         '<input class="q" type="text" placeholder="Question" value="' + escapeHtml(item.q) + '">' +
@@ -164,9 +182,76 @@
       '<label class="rubric-field"><span>Scoring / deduction rules</span>' +
         '<textarea class="cr" rows="3" placeholder="Scoring/deduction rules">' + escapeHtml(item.criteria) + '</textarea></label>' +
       '<div class="graph-slot"></div>' +
-      note;
+      note +
+      retryHtml;
     row._graph = item.graph || null;
     row.querySelector(".row-del").addEventListener("click", function () { row.remove(); scheduleAutoSave(); });
+    // Retry wiring.
+    var retryToggle = row.querySelector(".retry-toggle");
+    if (retryToggle) {
+      retryToggle.addEventListener("click", function () {
+        var panel = row.querySelector(".retry-panel");
+        panel.style.display = panel.style.display === "none" ? "" : "none";
+      });
+      row.querySelector(".retry-go").addEventListener("click", function () {
+        var modelSel = row.querySelector(".retry-model").value;
+        var model = modelSel === "gpt-4o" ? "gpt-4o" : "o3";
+        var highEffort = modelSel === "o3-high";
+        var status = row.querySelector(".retry-status");
+        var rawPre = row.querySelector(".retry-raw");
+        var goBtn = row.querySelector(".retry-go");
+        goBtn.disabled = true;
+        status.textContent = "⏳ Retrying with " + modelSel + "… (about 30-60s)";
+        rawPre.textContent = "";
+        fetch("/api/retry_question", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            assignment_id: window.ASSIGNMENT_ID,
+            q: row.querySelector(".q").value,
+            question_text: row.querySelector(".qt").value,
+            max_score: parseFloat(row.querySelector(".ms").value) || 0,
+            model: model,
+            high_effort: highEffort
+          })
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            goBtn.disabled = false;
+            if (!data.ok) {
+              status.textContent = "❌ " + (data.error || "retry failed");
+              return;
+            }
+            var res = data.result;
+            // Show debug output.
+            rawPre.textContent = (res.debug || []).map(function (d) {
+              return "=== " + d.step + " (" + d.model + (d.effort ? ", effort=" + d.effort : "") + ") ===\n" + d.raw;
+            }).join("\n\n");
+            row.querySelector(".retry-debug").open = true;
+            if (res.verified === "yes") {
+              status.textContent = "✅ Verified on retry — solution and rubric updated.";
+            } else {
+              status.textContent = "⚠️ Still needs review: " + (res.verify_note || "");
+            }
+            // Update the card with the new solution.
+            row.querySelector(".rs").value = res.solution || "";
+            row.querySelector(".rs").dispatchEvent(new Event("input"));
+            row.querySelector(".cr").value = res.criteria || "";
+            var b = row.querySelector(".verify-badge");
+            if (b) {
+              b.className = "verify-badge " + (res.verified === "yes" ? "ok" : "warn");
+              b.textContent = res.verified === "yes" ? "✅ Verified" : "⚠️ Needs your review";
+            }
+            var vn = row.querySelector(".verify-note");
+            if (vn) vn.textContent = res.verify_note || "";
+            scheduleAutoSave();
+          })
+          .catch(function (e) {
+            goBtn.disabled = false;
+            status.textContent = "❌ Request failed: " + e.message;
+          });
+      });
+    }
     // Live KaTeX previews under the digitized inputs.
     ["qt", "rs"].forEach(function (cls) {
       var inp = row.querySelector("." + cls);

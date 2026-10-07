@@ -106,7 +106,7 @@ def _data_url(path):
     return f"data:{media_type};base64,{data}"
 
 
-def _chat_json(system, user_content, max_tokens, model=None):
+def _chat_json(system, user_content, max_tokens, model=None, reasoning_effort=None, _raw=None):
     client = _get_client()
     model = model or DEFAULT_MODEL
     # Reasoning models (o1/o3) use max_completion_tokens and don't support
@@ -121,11 +121,15 @@ def _chat_json(system, user_content, max_tokens, model=None):
     )
     if is_reasoning:
         kwargs["max_completion_tokens"] = max_tokens
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
     else:
         kwargs["max_tokens"] = max_tokens
         kwargs["response_format"] = {"type": "json_object"}
     resp = client.chat.completions.create(**kwargs)
     text = (resp.choices[0].message.content or "").strip()
+    if _raw is not None:
+        _raw.append({"model": model, "effort": reasoning_effort, "raw": text})
     if not text:
         raise ValueError("The model returned an empty response. Please try again.")
     return _parse_json_loose(text)
@@ -814,7 +818,8 @@ def transcribe_questions_only(image_paths):
     return questions
 
 
-def solve_and_rubric(question_text, max_score, q_label="", image_paths=None):
+def solve_and_rubric(question_text, max_score, q_label="", image_paths=None,
+                   model=None, reasoning_effort=None, _debug=None):
     """Reasoning-model pass: solve the question and generate an AP-style rubric.
 
     Returns {solution, ap_points, notes}. The ap_points sum to exactly max_score.
@@ -843,7 +848,9 @@ def solve_and_rubric(question_text, max_score, q_label="", image_paths=None):
         SOLVE_RUBRIC_SYSTEM,
         user_content,
         max_tokens=4096,
-        model=REASONING_MODEL,
+        model=model or REASONING_MODEL,
+        reasoning_effort=reasoning_effort,
+        _raw=_debug,
     )
     pts = data.get("ap_points") or []
     # Guard: force the breakdown to sum to exactly max_score.
@@ -859,7 +866,7 @@ def solve_and_rubric(question_text, max_score, q_label="", image_paths=None):
     }
 
 
-def verify_solution(question_text, solution):
+def verify_solution(question_text, solution, model=None, reasoning_effort=None, _debug=None):
     """Independently re-solve and compare with the generated answer key.
 
     Returns {"verdict": "confirmed"|"mismatch"|"unsure", "note": str}.
@@ -870,7 +877,9 @@ def verify_solution(question_text, solution):
         VERIFY_SOLUTION_SYSTEM,
         [{"type": "text", "text": f"Question:\n{question_text}\n\nProposed solution (AI-generated answer key):\n{solution}"}],
         max_tokens=2048,
-        model=REASONING_MODEL,
+        model=model or REASONING_MODEL,
+        reasoning_effort=reasoning_effort,
+        _raw=_debug,
     )
     agrees = data.get("agrees")
     confidence = str(data.get("confidence", "")).lower()
@@ -896,6 +905,46 @@ def verify_solution(question_text, solution):
         detail = f" Independent solution: {your_answer}." if your_answer else ""
         return {"verdict": "mismatch", "note": (note + detail).strip() or "Independent solving disagrees with the answer key."}
     return {"verdict": "unsure", "note": note or "Could not confidently verify the answer key."}
+
+
+def retry_solve_question(question_text, max_score, q_label="", model="o3",
+                         high_effort=False, image_paths=None):
+    """Retry solving a single question, with full debug output.
+
+    `model` is "o3" or "gpt-4o". `high_effort` requests o3 with
+    reasoning_effort="high" (slower, more thorough).
+
+    Returns {solution, criteria, verified, verify_note, debug} where debug is
+    a list of {step, model, raw} showing exactly what each model call returned.
+    """
+    debug = []
+    effort = "high" if high_effort and model.startswith("o") else None
+    use_model = model or REASONING_MODEL
+
+    solve_debug, verify_debug = [], []
+    solved = solve_and_rubric(question_text, max_score, q_label,
+                              image_paths=image_paths, model=use_model,
+                              reasoning_effort=effort, _debug=solve_debug)
+    for d in solve_debug:
+        debug.append({"step": "solve", "model": d["model"], "effort": d["effort"], "raw": d["raw"]})
+    verdict = verify_solution(question_text, solved["solution"], model=use_model,
+                              reasoning_effort=effort, _debug=verify_debug)
+    for d in verify_debug:
+        debug.append({"step": "verify", "model": d["model"], "effort": d["effort"], "raw": d["raw"]})
+
+    verified = "yes" if verdict["verdict"] == "confirmed" else "review"
+    criteria = "; ".join(
+        f"{p.get('points', 1)} pt: {p.get('for', '')}"
+        for p in solved["ap_points"] if isinstance(p, dict)
+    )
+    return {
+        "solution": solved["solution"],
+        "criteria": criteria,
+        "max_score": max_score,
+        "verified": verified,
+        "verify_note": verdict.get("note", ""),
+        "debug": debug,
+    }
 
 
 def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
@@ -946,6 +995,7 @@ def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
                 "has_diagram": q.get("has_diagram", False),
                 "verified": "review",
                 "verify_note": f"AI solving failed ({e}). Please solve manually or retry.",
+                "origin": "ai_solved",
                 "graph": None,
             }
         verified = "yes" if verdict["verdict"] == "confirmed" else "review"
@@ -965,6 +1015,7 @@ def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
             "has_diagram": q.get("has_diagram", False),
             "verified": verified,
             "verify_note": verdict.get("note", ""),
+            "origin": "ai_solved",
             "graph": None,
         }
         # Diagram for graph questions (best effort; never blocks the item).

@@ -171,6 +171,14 @@ code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 13p
 .ap-pts li { margin-bottom: 4px; }
 .ap-suggest .btn { margin-top: 6px; }
 .ap-accept { background: #e8f5e9; border-color: #a5d6a7; }
+/* Per-question AI retry */
+.retry-box { margin: 8px 0 4px; padding: 8px 10px; background: #fff8e1; border: 1px dashed #ffcc02; border-radius: 8px; }
+.retry-panel { margin-top: 8px; font-size: 14px; }
+.retry-panel label { display: inline-block; margin-right: 8px; }
+.retry-status { margin: 6px 0; }
+.retry-debug { margin-top: 6px; }
+.retry-debug summary { cursor: pointer; color: #555; font-size: 13px; }
+.retry-raw { background: #263238; color: #e0e0e0; padding: 10px; border-radius: 6px; font-size: 12px; max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 
 /* Click-to-enlarge lightbox for all thumbnails and diagrams. */
 .thumb, .graph-img { cursor: zoom-in; }
