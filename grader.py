@@ -815,10 +815,26 @@ def validate_question(question_text, reference_solution, retry_hint=""):
         if not failed:
             return {"verdict": "confirmed",
                     "note": f"Python verified {len(check_results)} claim(s). " + note}
-        # At least one check failed: report which claim is wrong.
-        detail = "; ".join(f"{expr} = {val:g}" for expr, _, val in failed[:3])
-        return {"verdict": "mismatch",
-                "note": f"Python disproves teacher claim(s): {detail}. " + note}
+        # Fallback: a pure expression like "6*120-2" (=718) isn't a difference
+        # check — compare its value against numbers in the reference solution.
+        # (Fix 2026-10-07: LLM often generates values, not zero-checks.)
+        ref_nums = _digits_of(reference_solution)
+        rescued = []
+        still_failed = []
+        for expr, passed, val in failed:
+            if isinstance(val, (int, float)) and ref_nums and any(
+                    abs(val - n) <= max(1e-6, abs(n) * 1e-4) for n in ref_nums):
+                rescued.append((expr, val))
+            else:
+                still_failed.append((expr, passed, val))
+        if rescued and not still_failed:
+            return {"verdict": "confirmed",
+                    "note": f"Python values match reference {rescued[0][1]:g}. " + note}
+        if still_failed:
+            # At least one check failed: report which claim is wrong.
+            detail = "; ".join(f"{expr} = {val:g}" for expr, _, val in still_failed[:3])
+            return {"verdict": "mismatch",
+                    "note": f"Python disproves teacher claim(s): {detail}. " + note}
 
     # No executable checks: fall back to LLM judgment, but require high
     # confidence to overrule the teacher.
