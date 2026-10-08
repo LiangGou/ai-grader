@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_grader.db")
@@ -57,6 +58,20 @@ def init_db():
     gcols = [r[1] for r in cur.execute("PRAGMA table_info(grades)").fetchall()]
     if "images" not in gcols:
         cur.execute("ALTER TABLE grades ADD COLUMN images TEXT DEFAULT '[]'")
+    # Rubric generation jobs: DB-backed so jobs survive multi-worker gunicorn
+    # and Render restarts (in-memory dict lost jobs with --workers 2).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS rubric_jobs (
+            job_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'running',
+            total INTEGER NOT NULL DEFAULT 0,
+            done_json TEXT NOT NULL DEFAULT '[]',
+            items_json TEXT NOT NULL DEFAULT '[]',
+            error TEXT DEFAULT '',
+            created REAL NOT NULL,
+            updated REAL NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -249,5 +264,94 @@ def delete_assignment(assignment_id):
     conn = _connect()
     conn.execute("DELETE FROM grades WHERE assignment_id = ?", (assignment_id,))
     conn.execute("DELETE FROM assignments WHERE id = ?", (assignment_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------- Rubric generation jobs (DB-backed) ----------
+# Jobs were kept in an in-memory dict, which broke under gunicorn --workers 2
+# (each worker has its own memory: job created in worker A, poll hits worker B
+# -> "Job not found") and on Render restarts. DB storage fixes both.
+
+JOB_STALE_SECONDS = 900  # a "running" job with no update for 15 min is dead
+
+
+def create_rubric_job(job_id):
+    conn = _connect()
+    now_ts = time.time()
+    conn.execute(
+        "INSERT OR REPLACE INTO rubric_jobs (job_id, status, total, done_json, items_json, error, created, updated)"
+        " VALUES (?, 'running', 0, '[]', '[]', '', ?, ?)",
+        (job_id, now_ts, now_ts),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_rubric_job(job_id):
+    conn = _connect()
+    row = conn.execute("SELECT * FROM rubric_jobs WHERE job_id = ?", (job_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "job_id": row["job_id"],
+        "status": row["status"],
+        "total": row["total"],
+        "done": json.loads(row["done_json"] or "[]"),
+        "items": json.loads(row["items_json"] or "[]"),
+        "error": row["error"] or "",
+        "created": row["created"],
+        "updated": row["updated"],
+    }
+
+
+def _touch_job(conn, job_id):
+    conn.execute("UPDATE rubric_jobs SET updated = ? WHERE job_id = ?", (time.time(), job_id))
+
+
+def set_rubric_job_total(job_id, total):
+    conn = _connect()
+    conn.execute("UPDATE rubric_jobs SET total = ? WHERE job_id = ?", (total, job_id))
+    _touch_job(conn, job_id)
+    conn.commit()
+    conn.close()
+
+
+def append_rubric_job_item(job_id, item):
+    conn = _connect()
+    row = conn.execute("SELECT done_json FROM rubric_jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if row:
+        done = json.loads(row["done_json"] or "[]")
+        done.append(item)
+        conn.execute("UPDATE rubric_jobs SET done_json = ? WHERE job_id = ?", (json.dumps(done), job_id))
+        _touch_job(conn, job_id)
+        conn.commit()
+    conn.close()
+
+
+def finish_rubric_job(job_id, items):
+    conn = _connect()
+    payload = json.dumps(items)
+    conn.execute(
+        "UPDATE rubric_jobs SET status = 'done', items_json = ?, done_json = ?, total = ? WHERE job_id = ?",
+        (payload, payload, len(items), job_id),
+    )
+    _touch_job(conn, job_id)
+    conn.commit()
+    conn.close()
+
+
+def fail_rubric_job(job_id, error):
+    conn = _connect()
+    conn.execute("UPDATE rubric_jobs SET status = 'error', error = ? WHERE job_id = ?", (str(error), job_id))
+    _touch_job(conn, job_id)
+    conn.commit()
+    conn.close()
+
+
+def cleanup_old_rubric_jobs(max_age_seconds=1800):
+    conn = _connect()
+    conn.execute("DELETE FROM rubric_jobs WHERE created < ?", (time.time() - max_age_seconds,))
     conn.commit()
     conn.close()

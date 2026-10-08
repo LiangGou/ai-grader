@@ -115,16 +115,17 @@ def assignment_page(assignment_id):
 # Background rubric-digitization jobs: digitizing + validating takes ~1 minute,
 # too long for one fragile HTTP request. POST /api/rubric_from_example starts
 # a job and returns immediately; the client polls /api/rubric_job/<job_id>.
-_rubric_jobs = {}
-_rubric_jobs_lock = threading.Lock()
-
-
 @app.route("/api/rubric_job/<job_id>")
 def api_rubric_job(job_id):
-    with _rubric_jobs_lock:
-        job = _rubric_jobs.get(job_id)
+    # Jobs are DB-backed (not in-memory) so they survive gunicorn multi-worker
+    # setups and server restarts. A "running" job with no update for a long
+    # time means its worker died: report it as an error, not "not found".
+    job = db.get_rubric_job(job_id)
     if not job:
         return jsonify({"ok": False, "error": "Job not found. The server may have restarted — please tap Generate again."}), 404
+    if job["status"] == "running" and time.time() - job["updated"] > db.JOB_STALE_SECONDS:
+        db.fail_rubric_job(job_id, "The generation worker stopped unexpectedly — please tap Generate again.")
+        job = db.get_rubric_job(job_id)
     # While running, "done" carries the questions validated so far (each with
     # "idx"); the client renders and saves them incrementally.
     out = {"ok": True, "status": job["status"], "total": job.get("total", 0),
@@ -159,84 +160,31 @@ def api_solve_rubric():
     if not paths:
         return jsonify({"ok": False, "error": "No question photos selected. Please add them first."}), 400
     job_id = uuid.uuid4().hex[:12]
-    with _rubric_jobs_lock:
-        now = time.time()
-        for jid in [j for j, j in _rubric_jobs.items() if now - j.get("created", now) > 1800]:
-            del _rubric_jobs[jid]
-        _rubric_jobs[job_id] = {"status": "running", "created": now}
+    db.cleanup_old_rubric_jobs()
+    db.create_rubric_job(job_id)
     threading.Thread(target=_run_solve_job, args=(job_id, paths), daemon=True).start()
     return jsonify({"ok": True, "job_id": job_id})
 
 
 def _run_solve_job(job_id, paths):
+    # Job state lives in the DB (not process memory) so any gunicorn worker
+    # can serve poll requests and jobs survive restarts.
     def _on_total(total):
-        with _rubric_jobs_lock:
-            if job_id in _rubric_jobs:
-                _rubric_jobs[job_id]["total"] = total
+        db.set_rubric_job_total(job_id, total)
 
     def _on_item(item):
-        with _rubric_jobs_lock:
-            if job_id in _rubric_jobs:
-                _rubric_jobs[job_id]["done"].append(item)
+        db.append_rubric_job_item(job_id, item)
 
     try:
-        with _rubric_jobs_lock:
-            _rubric_jobs[job_id]["done"] = []
-            _rubric_jobs[job_id]["total"] = 0
         result = grader.build_unified_rubric_streaming(
             paths, upload_dir=UPLOAD_DIR, on_total=_on_total, on_item=_on_item)
-        with _rubric_jobs_lock:
-            _rubric_jobs[job_id] = {"status": "done", "items": result["items"],
-                                   "done": result["items"], "total": len(result["items"]),
-                                   "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
+        db.finish_rubric_job(job_id, result["items"])
     except RuntimeError as e:
-        with _rubric_jobs_lock:
-            _rubric_jobs[job_id] = {"status": "error", "error": str(e),
-                                   "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
+        db.fail_rubric_job(job_id, str(e))
     except Exception as e:  # noqa: BLE001
-        with _rubric_jobs_lock:
-            _rubric_jobs[job_id] = {"status": "error", "error": f"Failed to solve and generate rubric: {e}",
-                                   "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
+        db.fail_rubric_job(job_id, f"Failed to solve and generate rubric: {e}")
 
 
-
-
-@app.route("/api/upgrade_to_ap", methods=["POST"])
-def api_upgrade_to_ap():
-    """Upgrade non-AP criteria to AP step format for an assignment.
-
-    Body: {assignment_id}. For each item whose criteria is not already in
-    AP format ("N pt: Step M"), generates AP steps from the question +
-    existing solution. Returns {upgraded: [q labels], skipped: [q labels]}.
-    """
-    data = request.get_json(force=True, silent=True) or {}
-    assignment_id = data.get("assignment_id")
-    a = db.get_assignment(assignment_id)
-    if not a:
-        return jsonify({"ok": False, "error": "Assignment not found"}), 404
-    items = json.loads(a["rubric_json"] or "[]")
-    upgraded, skipped, failed = [], [], []
-    for it in items:
-        q_label = it.get("q", "?")
-        if grader._is_ap_format(it.get("criteria")):
-            skipped.append(q_label)
-            continue
-        try:
-            criteria = grader.generate_ap_rubric_only(
-                it.get("question_text", ""),
-                it.get("reference_solution", ""),
-                float(it.get("max_score") or 0),
-                q_label=q_label,
-            )
-            it["criteria"] = criteria
-            upgraded.append(q_label)
-        except Exception as e:
-            failed.append(f"{q_label}: {e}")
-    if upgraded:
-        rubric_text = grader.rubric_items_to_text(items)
-        db.save_rubric(assignment_id, rubric_text, items)
-    return jsonify({"ok": True, "upgraded": upgraded, "skipped": skipped,
-                    "failed": failed})
 
 
 @app.route("/api/retry_question", methods=["POST"])

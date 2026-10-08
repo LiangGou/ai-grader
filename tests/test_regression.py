@@ -1444,6 +1444,87 @@ def test_parse_json_loose_multiple_fences(errors):
     print("  done")
 
 
+def test_rubric_jobs_db_backed(errors):
+    """Jobs must be DB-backed, not in-memory (Render multi-worker bug 2026-10-07).
+
+    In-memory _rubric_jobs dict broke under gunicorn --workers 2: job created
+    in worker A, poll hit worker B -> 'Job not found'. Uses a temp DB.
+    """
+    import tempfile, time
+    import db as dbmod
+    print("Testing DB-backed rubric jobs...")
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    orig = dbmod.DB_PATH
+    dbmod.DB_PATH = tmp.name
+    try:
+        dbmod.init_db()
+        # Create -> visible to a "different worker" (fresh connection).
+        dbmod.create_rubric_job("job123")
+        job = dbmod.get_rubric_job("job123")
+        if not job or job["status"] != "running":
+            errors.append("job not retrievable after create")
+        # Incremental updates.
+        dbmod.set_rubric_job_total("job123", 3)
+        dbmod.append_rubric_job_item("job123", {"q": "Q1", "idx": 0})
+        dbmod.append_rubric_job_item("job123", {"q": "Q2", "idx": 1})
+        job = dbmod.get_rubric_job("job123")
+        if job["total"] != 3 or len(job["done"]) != 2:
+            errors.append(f"incremental updates lost: {job}")
+        # Finish.
+        dbmod.finish_rubric_job("job123", [{"q": "Q1"}, {"q": "Q2"}, {"q": "Q3"}])
+        job = dbmod.get_rubric_job("job123")
+        if job["status"] != "done" or len(job["items"]) != 3:
+            errors.append(f"finish failed: {job['status']}")
+        # Error path.
+        dbmod.create_rubric_job("jobErr")
+        dbmod.fail_rubric_job("jobErr", "boom")
+        job = dbmod.get_rubric_job("jobErr")
+        if job["status"] != "error" or job["error"] != "boom":
+            errors.append(f"error path failed: {job}")
+        # Unknown job -> None (API returns 404).
+        if dbmod.get_rubric_job("nope") is not None:
+            errors.append("unknown job should return None")
+        # Stale detection: running job with old updated timestamp.
+        dbmod.create_rubric_job("jobStale")
+        conn = dbmod._connect()
+        conn.execute("UPDATE rubric_jobs SET updated = ? WHERE job_id = ?",
+                     (time.time() - dbmod.JOB_STALE_SECONDS - 1, "jobStale"))
+        conn.commit(); conn.close()
+        job = dbmod.get_rubric_job("jobStale")
+        if not (job["status"] == "running"
+                and time.time() - job["updated"] > dbmod.JOB_STALE_SECONDS):
+            errors.append("stale job not detectable")
+        # Cleanup removes old jobs.
+        dbmod.cleanup_old_rubric_jobs(max_age_seconds=0)
+        if dbmod.get_rubric_job("job123") is not None:
+            errors.append("cleanup did not remove old jobs")
+    finally:
+        dbmod.DB_PATH = orig
+        os.unlink(tmp.name)
+    print("  done")
+
+
+def test_upgrade_to_ap_removed(errors):
+    """The separate 'Upgrade to AP Standard' button/endpoint was removed
+    (2026-10-07 user decision): AP format is the default Generate Rubric output."""
+    print("Testing Upgrade-to-AP removal...")
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(base, "app.py")) as f:
+        app_src = f.read()
+    if "/api/upgrade_to_ap" in app_src or "def api_upgrade_to_ap" in app_src:
+        errors.append("api/upgrade_to_ap endpoint still present in app.py")
+    with open(os.path.join(base, "templates", "assignment.html")) as f:
+        tpl = f.read()
+    if "upgradeApBtn" in tpl or "Upgrade to AP Standard" in tpl:
+        errors.append("Upgrade to AP Standard button still in template")
+    with open(os.path.join(base, "static", "app.js")) as f:
+        js = f.read()
+    if "upgrade_to_ap" in js or "upgradeApBtn" in js:
+        errors.append("upgrade_to_ap references still in app.js")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1478,6 +1559,9 @@ def main():
     test_latex_n_preserves_commands(errors)
     test_balance_braces_double_backslash(errors)
     test_parse_json_loose_multiple_fences(errors)
+    # Render deployment fixes (2026-10-07)
+    test_rubric_jobs_db_backed(errors)
+    test_upgrade_to_ap_removed(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 

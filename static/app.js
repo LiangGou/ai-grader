@@ -556,40 +556,7 @@
 
     // Unified flow: uses teacher's worked solutions if shown, otherwise AI
     // solves each question itself. Either way builds an AP-style rubric
-    // from the printed point values.
-    // Upgrade old-style rubrics to AP step format.
-    var upgradeBtn = $("upgradeApBtn");
-    if (upgradeBtn) {
-      upgradeBtn.addEventListener("click", function () {
-        upgradeBtn.disabled = true;
-        upgradeBtn.textContent = "⏳ Upgrading to AP…";
-        fetch("/api/upgrade_to_ap", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ assignment_id: window.ASSIGNMENT_ID })
-        })
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            upgradeBtn.disabled = false;
-            upgradeBtn.textContent = "📐 Upgrade to AP Standard";
-            if (d.ok) {
-              var msg = "Upgraded: " + (d.upgraded.join(", ") || "none") +
-                "\nAlready AP: " + (d.skipped.join(", ") || "none");
-              if (d.failed.length) msg += "\nFailed: " + d.failed.join("; ");
-              alert(msg);
-              location.reload();
-            } else {
-              alert("Upgrade failed: " + (d.error || "unknown error"));
-            }
-          })
-          .catch(function (e) {
-            upgradeBtn.disabled = false;
-            upgradeBtn.textContent = "📐 Upgrade to AP Standard";
-            alert("Upgrade failed: " + e.message);
-          });
-      });
-    }
-
+    // from the printed point values (AP format is the default output).
     $("solveRubricBtn").addEventListener("click", function () {
       var include = savedExamples.filter(function (ex) { return ex.checked; }).map(function (ex) { return ex.name; });
       if (!include.length) { alert("Please take or upload the question photos first, and make sure at least one saved example is checked."); return; }
