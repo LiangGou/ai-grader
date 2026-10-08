@@ -1,0 +1,111 @@
+{
+  "quiz": "Quiz #4 (stage1 rerun, updated verifier prompt)",
+  "stage1_rubric": {
+    "duration_s": 124.9,
+    "total": 9,
+    "verified": 4,
+    "ap_format": 9,
+    "points_ok": 9,
+    "questions": [
+      {
+        "q": "Q1",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: identifies that the instantaneous rate of change is ds/dt (requires taking the derivative of s with respect to t); 1 pt: Step 2: correctly differentiates s = 3t^2 - 2t + 2 to obtain ds/d",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q3",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The reference overcomplicated the final expression. Independent solution: 2((x+3)^5 - 5)5(x+3)^4.). Please review manually.",
+        "ap_format": true,
+        "points_sum": 3,
+        "max_score": 3.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: applies the outer chain rule to the square, writing f'(x)=2((x+3)^5-5)\u00b7[( )]'; 1 pt: Step 2: differentiates the inner ((x+3)^5-5) to get 5(x+3)^4(1); 1 pt: Step 3: multiplies the factors",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q2",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution's final equation is incorrect after computing the y-intercept from the function value at x=\\pi/4. Independent solution: y = \\sqrt{2}(x - \\frac{\\pi}{4}) + \\frac{\\sqrt{2}}{2}.). Please review manually.",
+        "ap_format": true,
+        "points_sum": 7,
+        "max_score": 7.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: differentiates f(x)=cos x to obtain f'(x) = -sin x; 1 pt: Step 2: evaluates the derivative at x = \u03c0/4 to get f'(\u03c0/4) = -\u221a2/2; 1 pt: Step 3: takes the negative reciprocal of the tangent s",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q6",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: sets up f'(x) with the quotient rule as [(2x+1)(d/dx(3x-4)) - (3x-4)(d/dx(2x+1))] / (2x+1)^2; 1 pt: Step 2: computes the derivatives d/dx(3x-4)=3 and d/dx(2x+1)=2 and substitutes them co",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q5",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The midpoints and function evaluations in the reference solution are incorrect. Independent solution: 3(e^{3.5} + e^{6.5} + e^{9.5}).). Please review manually.",
+        "ap_format": true,
+        "points_sum": 5,
+        "max_score": 5.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: finds the subinterval width  \u0394x = (10\u22121)/3 = 3; 1 pt: Step 2: identifies the three midpoint x-values 9/2, 15/2, and 21/2; 1 pt: Step 3: evaluates the function at those midpoints to obtai",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q7",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The teacher's reference solution contains an error in the direction of the limit and missing the correct expression form. Independent solution: lim_{n \\to \\infty} \\frac{1}{n} \\sum_{k=1}^{n} 6\\left(\\frac{k}{n}\\right)^3.). Please review manually.",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: states the width of each subinterval, \u0394x = (1\u22120)/n = 1/n; 1 pt: Step 2: identifies a right-hand (or any consistent) sample point, e.g., x_k = 0 + k\u0394x = k/n; 1 pt: Step 3: constructs the ",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q4",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 10,
+        "max_score": 10.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: completely factors the numerator and denominator of f(x); 1 pt: Step 2: identifies the common factor (x\u22123) and cancels it to reveal a removable discontinuity; 1 pt: Step 3: states that t",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q9",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The teacher's critical points seem incorrect but have similar local extrema values. Independent solution: Critical points: x=0.5, 3; Local maximum: (0.5, 415/16); Local minimum: (3, 5/2).). Please review manually.",
+        "ap_format": true,
+        "points_sum": 10,
+        "max_score": 10.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: correctly differentiates to obtain f'(x) = 4x^3 \u2212 12x^2 \u2212 x + 3; 1 pt: Step 2: sets f'(x) = 0 as the equation whose solutions give the critical numbers; 1 pt: Step 3: algebraically solve",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q8",
+        "verified": "yes",
+        "verify_note": "Independent solution: f decreases on (-\u221e,-8), increases on (-8,8), then decreases on (8,\u221e); relative minimum at x=-8, relative maximum at x=8; concave up on (-\u221e,0), concave down on (0,\u221e) with an inflection point at x=0..",
+        "ap_format": true,
+        "points_sum": 5,
+        "max_score": 5.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: Identify all x\u2013values where f'(x)=0 or f'(x) is undefined and mark them as critical points for f(x).; 1 pt: Step 2: Correctly determine and state the intervals on which f is increasing a",
+        "origin": "ai_solved"
+      }
+    ]
+  }
+}

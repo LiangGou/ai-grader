@@ -749,43 +749,70 @@ def digitize_example(image_paths, hint=None):
     return questions
 
 
-def validate_question(question_text, reference_solution):
+def validate_question(question_text, reference_solution, retry_hint=""):
     """Independently re-solve a question and compare with the reference solution.
 
     Returns {"verdict": "confirmed"|"mismatch"|"unsure", "note": str}.
     Uses an LLM re-solve plus a safe Python numeric check when applicable.
+    retry_hint: previous verification failure note, to help the model
+    reconsider (e.g. transcription may have misread the handwriting).
     """
     if not (question_text or "").strip() or not (reference_solution or "").strip():
         return {"verdict": "unsure", "note": "No question text or reference solution to validate."}
-    data = _chat_json(
-        VALIDATE_SYSTEM,
-        f"Question:\n{question_text}\n\nTeacher's reference solution (transcribed from photo):\n{reference_solution}",
+    user_msg = (
+        f"Question:\n{question_text}\n\n"
+        f"Teacher's reference solution (transcribed from photo):\n{reference_solution}"
+    )
+    if retry_hint:
+        user_msg += (
+            f"\n\nPrevious verification attempt failed: {retry_hint}\n"
+            "The transcription may have misread the handwriting, or the teacher "
+            "may have made an error. Re-examine carefully."
+        )
+    data = _chat_json(VALIDATE_SYSTEM, user_msg,
         max_tokens=2048,
     )
     agrees = data.get("agrees")
     confidence = str(data.get("confidence", "")).lower()
     note = str(data.get("note", "")).strip()
-    your_answer = str(data.get("your_answer", "")).strip()
+    claims = data.get("claims", []) or []
+    py_checks = data.get("python_checks", []) or []
+    # Legacy single-expression format.
+    if data.get("python_check"):
+        py_checks.append(str(data.get("python_check")).strip())
 
-    # Strong check: evaluate the model's python expression and compare numerically.
-    py_expr = str(data.get("python_check", "")).strip()
-    if py_expr:
-        computed = _safe_eval(py_expr)
-        ref_nums = _digits_of(reference_solution)
-        if computed is not None and ref_nums:
-            if any(abs(computed - n) <= max(1e-6, abs(n) * 1e-4) for n in ref_nums):
-                return {"verdict": "confirmed", "note": f"Python check passed ({py_expr} = {computed:g})."}
-            return {
-                "verdict": "mismatch",
-                "note": f"Python check: {py_expr} = {computed:g}, but the reference solution says {reference_solution!r}.",
-            }
+    # Execute all Python checks: each should evaluate to ~0 (claim verified)
+    # or True. If any check proves the teacher wrong, it's a real mismatch.
+    # If all pass, confirm even if the LLM's symbolic comparison disagrees.
+    # (Fixes false negatives from LLM arithmetic errors, 2026-10-07.)
+    check_results = []
+    for expr in py_checks:
+        if not expr or not isinstance(expr, str):
+            continue
+        computed = _safe_eval(expr)
+        if computed is None:
+            continue
+        # Pass if ~0 (difference check) or truthy (boolean check).
+        passed = abs(computed) < 1e-6 if isinstance(computed, (int, float)) else bool(computed)
+        check_results.append((expr[:60], passed, computed))
 
-    if agrees is True and confidence in ("high", "medium"):
-        detail = f" Independent solution: {your_answer}." if your_answer else ""
-        return {"verdict": "confirmed", "note": (note + detail).strip()}
-    if agrees is False:
-        detail = f" Independent solution: {your_answer}." if your_answer else ""
-        return {"verdict": "mismatch", "note": (note + detail).strip() or "Independent solving disagrees with the reference solution."}
+    if check_results:
+        failed = [r for r in check_results if not r[1]]
+        if not failed:
+            return {"verdict": "confirmed",
+                    "note": f"Python verified {len(check_results)} claim(s). " + note}
+        # At least one check failed: report which claim is wrong.
+        detail = "; ".join(f"{expr} = {val:g}" for expr, _, val in failed[:3])
+        return {"verdict": "mismatch",
+                "note": f"Python disproves teacher claim(s): {detail}. " + note}
+
+    # No executable checks: fall back to LLM judgment, but require high
+    # confidence to overrule the teacher.
+    if agrees is True:
+        return {"verdict": "confirmed", "note": note}
+    if agrees is False and confidence == "high":
+        return {"verdict": "mismatch",
+                "note": note or "Independent check disagrees with the reference solution."}
     return {"verdict": "unsure", "note": note or "Could not confidently validate the reference solution."}
 
 
@@ -1099,15 +1126,14 @@ Output ONLY a JSON object, no explanations:
 """
 
 
-VERIFY_SOLUTION_SYSTEM = """You are a careful, independent checker. You are given a calculus question and a proposed solution (from a teacher's worked example).
-Your job:
-1. Solve the question yourself, step by step, WITHOUT trusting the proposed solution. Show your work carefully — arithmetic errors are the most common cause of false mismatches.
-2. Compare your final answer with the proposed solution.
-3. If the question involves numerical computation, provide a Python expression (using only arithmetic operators and the math module, e.g. "math.pi * 3**2") that computes the KEY numerical result. This will be executed to verify. Make sure the expression is correct — test it mentally.
-4. IMPORTANT: The proposed solution comes from a teacher. Only set "agrees" to false if you are HIGHLY confident there is a real error, not just a different-but-equivalent form. Double-check your own arithmetic before disagreeing.
+VERIFY_SOLUTION_SYSTEM = """You are a careful checker. You are given a calculus question and a teacher's worked solution.
+Your job is NOT to re-solve from scratch (that causes false mismatches). Instead:
+1. Read the teacher's solution carefully. Extract the KEY mathematical claims (e.g. "critical points are x=-1/2, 1/2, 3", "f'(x) = 4x^3 - 12x^2 - x + 3").
+2. For each key claim, provide a Python expression (using only arithmetic operators and the math module) that VERIFIES the claim by direct computation. Example: to verify "f'(x) = 4x^3 - 12x^2 - x + 3" at x=2, use "(4*2**3 - 12*2**2 - 2 + 3) - (4*2**3 - 12*2**2 - 2 + 3)" which should be 0. To verify critical points, plug each into f'(x) and check it equals 0.
+3. If the teacher's solution is correct, the Python checks will pass. Only flag a problem if the Python computation PROVES the teacher wrong.
 Output ONLY a JSON object, no explanations:
-{"your_answer": "<your final answer, concise>", "agrees": true/false, "confidence": "high/medium/low", "note": "<one sentence on any discrepancy, or empty>", "python_check": "<expression or empty>"}
-Set "agrees" to true if the answers match (allowing equivalent forms, e.g. 0.5 = 1/2, or different but valid methods).
+{"claims": ["<claim 1>", "<claim 2>"], "python_checks": ["<expr 1>", "<expr 2>"], "agrees": true/false, "confidence": "high/medium/low", "note": "<one sentence, or empty>"}
+Set "agrees" to true if the teacher's claims verify (or if there are no verifiable numerical claims but the reasoning looks sound).
 """
 
 
@@ -1566,14 +1592,17 @@ def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
             default_note = "Max score set by AI default — please confirm."
         else:
             default_note = ""
-        # Retry validation up to 3 times; a persistent mismatch is flagged
-        # for the teacher (only after 3 tries do we ask the user).
+        # Retry validation up to 3 times, feeding each failure's note back as
+        # context (the transcription may have misread handwriting, or the
+        # teacher may be wrong). Only after 3 tries do we ask the user.
+        # (User requirement 2026-10-07: always retry with error info.)
         verdict = None
         last_note = ""
         for _ in range(3):
             try:
                 verdict = validate_question(q.get("question_text", ""),
-                                            q.get("reference_solution", ""))
+                                            q.get("reference_solution", ""),
+                                            retry_hint=last_note)
             except Exception as e:  # noqa: BLE001
                 last_note = str(e)
                 continue

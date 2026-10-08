@@ -1600,6 +1600,70 @@ def test_teacher_criteria_forced_to_ap(errors):
     print("  done")
 
 
+def test_verifier_python_checks_override(errors):
+    """Verifier: Python checks override LLM symbolic judgment (2026-10-07).
+
+    When python_checks all pass, verdict must be "confirmed" even if the LLM
+    claims disagreement (fixes false negatives from LLM arithmetic errors).
+    """
+    print("Testing verifier Python override...")
+    import grader
+    # Mock the LLM response with passing python checks but agrees=False.
+    import json
+    from unittest.mock import patch
+    fake_response = {
+        "claims": ["critical points are x=0.5"],
+        "python_checks": ["0.5 - 0.5"],  # evaluates to 0 -> pass
+        "agrees": False,
+        "confidence": "high",
+        "note": "LLM thinks it disagrees",
+    }
+    with patch.object(grader, "_chat_json", return_value=fake_response):
+        result = grader.validate_question("Q?", "teacher sol")
+    if result.get("verdict") != "confirmed":
+        errors.append(f"Python checks should override LLM: got {result}")
+    # Failing check -> mismatch.
+    fake_response2 = {
+        "claims": ["x=999 is critical"],
+        "python_checks": ["1 - 0"],  # evaluates to 1 -> fail
+        "agrees": True,
+        "confidence": "high",
+        "note": "",
+    }
+    with patch.object(grader, "_chat_json", return_value=fake_response2):
+        result2 = grader.validate_question("Q?", "teacher sol")
+    if result2.get("verdict") != "mismatch":
+        errors.append(f"Failing Python check should be mismatch: got {result2}")
+    print("  done")
+
+
+def test_validate_retry_hint(errors):
+    """validate_question must accept retry_hint and include it in the prompt.
+
+    Teacher-path verification retries feed the previous failure note back
+    (user requirement 2026-10-07: transcription may have misread handwriting).
+    """
+    print("Testing validate retry_hint...")
+    import grader
+    import inspect
+    sig = inspect.signature(grader.validate_question)
+    if "retry_hint" not in sig.parameters:
+        errors.append("validate_question missing retry_hint param")
+        return
+    # Verify the hint reaches the LLM prompt.
+    from unittest.mock import patch
+    captured = {}
+    def fake_chat(system, user_msg, **kwargs):
+        captured["msg"] = user_msg
+        return {"claims": [], "python_checks": [], "agrees": True,
+                "confidence": "high", "note": ""}
+    with patch.object(grader, "_chat_json", side_effect=fake_chat):
+        grader.validate_question("What is 2+2?", "4", retry_hint="prev failed: misread")
+    if "prev failed" not in captured.get("msg", ""):
+        errors.append("retry_hint not included in validate prompt")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1644,6 +1708,8 @@ def main():
     test_passwords_must_differ(errors)
     test_regenerate_rubric_endpoint(errors)
     test_teacher_criteria_forced_to_ap(errors)
+    test_verifier_python_checks_override(errors)
+    test_validate_retry_hint(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 

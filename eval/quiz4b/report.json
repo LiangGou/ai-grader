@@ -1,0 +1,195 @@
+{
+  "quiz": "quiz4b",
+  "images": [
+    "/home/hatch/workspace/ai-grader/eval/quiz4b/quiz4b_p1.jpg",
+    "/home/hatch/workspace/ai-grader/eval/quiz4b/quiz4b_p2.jpg",
+    "/home/hatch/workspace/ai-grader/eval/quiz4b/quiz4b_p3.jpg"
+  ],
+  "stage1_rubric": {
+    "duration_s": 151.9,
+    "total": 9,
+    "verified": 4,
+    "ap_format": 9,
+    "points_ok": 9,
+    "questions": [
+      {
+        "q": "Q1",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (Python disproves teacher claim(s): 12 * 60**2 + 10 * 60 = 43800. ). Please review manually.",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: converts 1 minute to 60 seconds; 1 pt: Step 2: differentiates V = 4t^3 + 5t^2 to obtain dV/dt = 12t^2 + 10t; 1 pt: Step 3: substitutes t = 60 into dV/dt and sets up 12(60)^2 + 10(60); 1 ",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q3",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: states the subinterval width \u0394x as 5/n (or equivalent correct expression).; 1 pt: Step 2: defines the k-th sample point x_k = 0 + k\u0394x (e.g., x_k = 5k/n).; 1 pt: Step 3: substitutes into ",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q2",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 7,
+        "max_score": 7.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: identifies that the slope of the tangent requires computing f'(x); 1 pt: Step 2: differentiates f(x)=cos x to obtain f'(x) = -sin x; 1 pt: Step 3: substitutes x = \u03c0/2 into f'(x); 1 pt: S",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q5",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 5,
+        "max_score": 5.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: computes \u0394x = (16\u22124)/3 = 4; 1 pt: Step 2: finds correct midpoints x\u2081 = 6, x\u2082 = 10, x\u2083 = 14; 1 pt: Step 3: evaluates the function at each midpoint to get f(x\u2081)=e\u2075, f(x\u2082)=e\u2079, f(x\u2083)=e\u00b9\u00b3; 1 ",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q6",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution incorrectly shows the denominator as expanded to x^4 - 6x^2 + 9.). Please review manually.",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: correctly sets up the quotient-rule expression  [(x^2\u22123)(d/dx(2x+1)) \u2212 (2x+1)(d/dx(x^2\u22123))] /(x^2\u22123)^2 (or any equivalent structure); 1 pt: Step 2: computes the derivatives d/dx(2x+1)=2 ",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q8",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution incorrectly applies the chain rule.). Please review manually.",
+        "ap_format": true,
+        "points_sum": 3,
+        "max_score": 3.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: applies the chain rule to the outer square to write f'(x)=2((\u22125x^2+4)^3+5)\u00b7((\u22125x^2+4)^3+5)'; 1 pt: Step 2: correctly differentiates the inner expression (\u22125x^2+4)^3+5 to get (\u221230x)(\u22125x^2",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q4",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution incorrectly gives vertical asymptotes at x=-1 instead of x=3.). Please review manually.",
+        "ap_format": true,
+        "points_sum": 10,
+        "max_score": 10.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: correctly factors the numerator \u2212x(x\u22125)(x\u22122) and the denominator (x\u22123)^2(x\u22122)(x+1)(x+3).; 1 pt: Step 2: recognizes the common factor (x\u22122) cancels, creating a removable discontinuity (ho",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q9",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The derivative calculation in the reference solution is incorrect.). Please review manually.",
+        "ap_format": true,
+        "points_sum": 10,
+        "max_score": 10.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: correctly simplifies/rewrites f(x) as a single polynomial with like terms combined (e.g., 8x^3 + 16x^2 - 2x - 4); 1 pt: Step 2: differentiates to obtain the correct derivative f'(x); 1 p",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q7",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 3,
+        "max_score": 3.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: Identify all x\u2013values where f'(x)=0 (or undefined) from the given sketch; mark them as critical points for f.; 1 pt: Step 2: Determine the sign of f'(x) on each interval between critical",
+        "origin": "ai_solved"
+      }
+    ]
+  },
+  "stage2_grading": {
+    "duration_s": 6.2,
+    "total": 9,
+    "matched": 6,
+    "questions": [
+      {
+        "q": "Q1",
+        "score": 3.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": false,
+        "feedback": "Lost 1 point for incorrect simplification in Step 4."
+      },
+      {
+        "q": "Q2",
+        "score": 7.0,
+        "max_score": 7.0,
+        "expected": 7.0,
+        "match": true,
+        "feedback": "Full credit for all steps correctly executed."
+      },
+      {
+        "q": "Q3",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "All steps correctly done."
+      },
+      {
+        "q": "Q4",
+        "score": 7.0,
+        "max_score": 10.0,
+        "expected": 10.0,
+        "match": false,
+        "feedback": "Lost 3 points for not providing full branch-behavior analysis."
+      },
+      {
+        "q": "Q5",
+        "score": 5.0,
+        "max_score": 5.0,
+        "expected": 5.0,
+        "match": true,
+        "feedback": "Perfect execution of all steps."
+      },
+      {
+        "q": "Q6",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "No errors, full credit for steps."
+      },
+      {
+        "q": "Q7",
+        "score": 3.0,
+        "max_score": 3.0,
+        "expected": 3.0,
+        "match": true,
+        "feedback": "Perfect analysis and accurate graph sketch."
+      },
+      {
+        "q": "Q8",
+        "score": 3.0,
+        "max_score": 3.0,
+        "expected": 3.0,
+        "match": true,
+        "feedback": "All differentiation steps are correct."
+      },
+      {
+        "q": "Q9",
+        "score": 9.0,
+        "max_score": 10.0,
+        "expected": 10.0,
+        "match": false,
+        "feedback": "Minor simplification error, otherwise all steps shown correctly, lost 1 point in Step 1."
+      }
+    ]
+  }
+}
