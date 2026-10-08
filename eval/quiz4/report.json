@@ -7,10 +7,190 @@
     "/home/hatch/workspace/ai-grader/eval/quiz4/quiz4_p4.jpg"
   ],
   "stage1_rubric": {
-    "error": "Invalid port: ':1]'",
-    "questions": []
+    "duration_s": 110.9,
+    "total": 9,
+    "verified": 6,
+    "ap_format": 3,
+    "points_ok": 3,
+    "questions": [
+      {
+        "q": "Q1",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": false,
+        "points_sum": 0,
+        "max_score": 4.0,
+        "points_ok": false,
+        "criteria_preview": "Correct differentiation and evaluation at specified time.",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q2",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": false,
+        "points_sum": 0,
+        "max_score": 7.0,
+        "points_ok": false,
+        "criteria_preview": "Correct derivative, slope calculation, and equation formulation for the normal line.",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q4",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": false,
+        "points_sum": 0,
+        "max_score": 10.0,
+        "points_ok": false,
+        "criteria_preview": "Correct identification of zeros, vertical asymptotes, and holes.",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q3",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 3,
+        "max_score": 3.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: applies the chain rule to the outer square, writing f'(x) = 2((x+3)^5-5)\u00b7d/dx[((x+3)^5-5)]; 1 pt: Step 2: differentiates the inner expression ((x+3)^5-5) to obtain 5(x+3)^4 (follow-throu",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q7",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution mistakenly includes a negative sign. Independent solution: S = \\lim_{n \\to \\infty} \\frac{1}{n} \\sum_{k=1}^{n} 6 \\left(\\frac{k}{n}\\right)^3.). Please review manually.",
+        "ap_format": false,
+        "points_sum": 0,
+        "max_score": 4.0,
+        "points_ok": false,
+        "criteria_preview": "Correct formulation using limits and summation.",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q6",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: Clearly invokes the quotient rule and/or identifies u = 3x\u22124 and v = 2x+1 (or an equivalent setup).; 1 pt: Step 2: Computes the derivatives u' = 3 and v' = 2 correctly (or equivalent der",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q5",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The teacher's reference solution has errors in the midpoints and their evaluation. Independent solution: 3(e^{5/2} + e^{17/2} + e^8).). Please review manually.",
+        "ap_format": false,
+        "points_sum": 0,
+        "max_score": 5.0,
+        "points_ok": false,
+        "criteria_preview": "Correct subdivision size and midpoint evaluation. Answer in terms of $e$.",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q9",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution has an incorrect derivative and factored form. Independent solution: Local minima at x = 3 and local maximum at x = 0.5.). Please review manually.",
+        "ap_format": false,
+        "points_sum": 0,
+        "max_score": 10.0,
+        "points_ok": false,
+        "criteria_preview": "Correct critical point identification and evaluation of function at those points.",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q8",
+        "verified": "yes",
+        "verify_note": "Independent solution: f increases and is concave-down for x<-3, attains a local maximum at x=-3, then decreases and stays concave-down until x=0 where an inflection occurs; it continues decreasing but now concave-up on (0,3) and reaches a local minimum at x=3, after which it increases and remains concave-up for x>3..",
+        "ap_format": true,
+        "points_sum": 5,
+        "max_score": 5.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: Identify/mark all x\u2013values where f'(x)=0 or is undefined as critical points of f.; 1 pt: Step 2: Correctly determine and state the intervals where f is increasing (f'>0) and decreasing (",
+        "origin": "ai_solved"
+      }
+    ]
   },
   "stage2_grading": {
-    "error": "no rubrics from stage 1"
+    "duration_s": 9.3,
+    "total": 9,
+    "matched": 9,
+    "questions": [
+      {
+        "q": "Q1",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "Correct differentiation and evaluation with units."
+      },
+      {
+        "q": "Q2",
+        "score": 7.0,
+        "max_score": 7.0,
+        "expected": 7.0,
+        "match": true,
+        "feedback": "Correct derivative, slope of tangent and normal, and formulation of normal line equation."
+      },
+      {
+        "q": "Q3",
+        "score": 3.0,
+        "max_score": 3.0,
+        "expected": 3.0,
+        "match": true,
+        "feedback": "Correct application of chain rule, differentiation, and multiplication."
+      },
+      {
+        "q": "Q4",
+        "score": 10.0,
+        "max_score": 10.0,
+        "expected": 10.0,
+        "match": true,
+        "feedback": "Correctly identified zeros, vertical asymptotes, and holes."
+      },
+      {
+        "q": "Q5",
+        "score": 5.0,
+        "max_score": 5.0,
+        "expected": 5.0,
+        "match": true,
+        "feedback": "Correct subdivision size and midpoint evaluation in terms of e."
+      },
+      {
+        "q": "Q6",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "Correct application of quotient rule and simplification."
+      },
+      {
+        "q": "Q7",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "Correct formulation using limits and summation."
+      },
+      {
+        "q": "Q8",
+        "score": 5.0,
+        "max_score": 5.0,
+        "expected": 5.0,
+        "match": true,
+        "feedback": "Correct identification and classification of critical points, intervals, and sketching."
+      },
+      {
+        "q": "Q9",
+        "score": 10.0,
+        "max_score": 10.0,
+        "expected": 10.0,
+        "match": true,
+        "feedback": "Correct identification and evaluation of critical points with local extrema."
+      }
+    ]
   }
 }

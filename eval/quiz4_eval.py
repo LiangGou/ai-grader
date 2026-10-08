@@ -62,10 +62,10 @@ def stage1_rubric_creation():
     try:
         result = grader.build_unified_rubric_streaming(
             IMAGES, upload_dir="/tmp/eval_uploads", on_item=on_item)
-        # Consume the generator
-        if hasattr(result, "__next__"):
-            for _ in result:
-                pass
+        # build_unified_rubric_streaming returns {"items": [...]} directly
+        # (not a generator). on_item already collected items_out.
+        if isinstance(result, dict) and result.get("items") and not items_out:
+            items_out.extend(result["items"])
     except Exception as e:
         print(f"  STAGE 1 FAILED: {e}")
         import traceback
