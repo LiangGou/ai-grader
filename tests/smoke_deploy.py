@@ -34,13 +34,18 @@ def check(name, cond, detail=""):
         errors.append(name)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class Session:
-    """Minimal cookie-aware HTTP client (no extra deps)."""
+    """Minimal cookie-aware HTTP client (no extra deps, no redirect following)."""
 
     def __init__(self):
         self.cj = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(self.cj))
+            urllib.request.HTTPCookieProcessor(self.cj), _NoRedirect)
 
     def get(self, path, headers=None):
         req = urllib.request.Request(BASE + path, headers=headers or {})
