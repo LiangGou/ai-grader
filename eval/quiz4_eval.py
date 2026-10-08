@@ -18,11 +18,20 @@ os.chdir("/home/hatch/workspace/ai-grader")
 
 import grader
 
-EVAL_DIR = "/home/hatch/workspace/ai-grader/eval/quiz4"
-IMAGES = [os.path.join(EVAL_DIR, f"quiz4_p{i}.jpg") for i in range(1, 5)]
+import glob
+QUIZ_NAME = sys.argv[1] if len(sys.argv) > 1 else "quiz4"
+EVAL_DIR = f"/home/hatch/workspace/ai-grader/eval/{QUIZ_NAME}"
+IMAGES = sorted(glob.glob(os.path.join(EVAL_DIR, "*.jpg")))
+if not IMAGES:
+    print(f"No images found in {EVAL_DIR}")
+    sys.exit(1)
 
-# Expected max scores from the quiz paper: Q1=4, Q2=7, Q3=3, Q4=10, Q5=5, Q6=4, Q7=4, Q8=?, Q9=10
-EXPECTED_MAX = {"1": 4, "2": 7, "3": 3, "4": 10, "5": 5, "6": 4, "7": 4, "9": 10}
+# Expected scores: loaded from expected.json if present, else expect full marks
+EXPECTED_MAX = {}
+_exp_path = os.path.join(EVAL_DIR, "expected.json")
+if os.path.exists(_exp_path):
+    with open(_exp_path) as _ef:
+        EXPECTED_MAX = json.load(_ef)
 
 
 def stage1_rubric_creation():
@@ -139,7 +148,7 @@ def stage2_grading(rubric_items):
 
 
 def main():
-    report = {"quiz": "Quiz #4", "images": IMAGES}
+    report = {"quiz": QUIZ_NAME, "images": IMAGES}
     s1 = stage1_rubric_creation()
     report["stage1_rubric"] = {k: v for k, v in s1.items() if k != "items"}
     s2 = stage2_grading(s1.get("items", []))
