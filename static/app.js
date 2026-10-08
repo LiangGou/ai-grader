@@ -344,7 +344,7 @@
     return items;
   }
 
-  if ($("itemsRows") && typeof window.ASSIGNMENT_ID !== "undefined" && $("generateRubricBtn")) {
+  if ($("itemsRows") && typeof window.ASSIGNMENT_ID !== "undefined" && $("solveRubricBtn")) {
     var rowsBox = $("itemsRows");
     (window.EXISTING_ITEMS || []).forEach(function (it) { rowsBox.appendChild(rubricRow(it)); });
 
