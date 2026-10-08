@@ -218,7 +218,10 @@
             high_effort: highEffort
           })
         })
-          .then(function (r) { return r.json(); })
+          .then(function (r) {
+            if (!r.ok) throw new Error("Server returned " + r.status + ". Please try again.");
+            return r.json();
+          })
           .then(function (data) {
             goBtn.disabled = false;
             if (!data.ok) {
@@ -556,7 +559,10 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ assignment_id: window.ASSIGNMENT_ID, include: include })
       })
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          if (!r.ok) throw new Error("Server returned " + r.status + ". Please try again.");
+          return r.json();
+        })
         .then(function (data) {
           if (!data.ok || !data.job_id) {
             failGenerate(btn, "Solve failed: " + (data.error || "unknown error"));
