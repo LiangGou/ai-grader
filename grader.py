@@ -178,6 +178,24 @@ def normalize_latex(text):
         spans.append(m.group(0))
         return "\x00%d\x00" % len(spans)
 
+    # Protect \begin{env}...\end{env} blocks FIRST: they must stay together as
+    # one math unit. Splitting on \\ would shatter alignment environments
+    # (aligned, align, cases, ...) into unrenderable fragments.
+    def _save_env(m):
+        body = m.group(0)
+        # If not already inside math delimiters, wrap as display math.
+        if body.lstrip().startswith("$$") or (
+            body.lstrip().startswith("$") and not body.lstrip().startswith("$$")
+        ):
+            pass  # already delimited, keep as-is
+        else:
+            body = "$$" + body.strip() + "$$"
+        spans.append(body)
+        return "\x00%d\x00" % len(spans)
+
+    text = re.sub(r"(\${1,2})?\\begin\{[a-zA-Z*]+\}.*?\\end\{[a-zA-Z*]+\}(\${1,2})?",
+                  _save_env, text, flags=re.DOTALL)
+
     protected = re.sub(r"\$\$.+?\$\$", _save, text, flags=re.DOTALL)
     positions = [m.start() for m in re.finditer(r"(?<!\\)\$", protected)]
     if len(positions) % 2 == 1:
