@@ -465,7 +465,14 @@ def _write_env(api_key, model):
 
 @app.route("/uploads/<path:filename>")
 def uploaded_file(filename):
-    return send_file(os.path.join(UPLOAD_DIR, filename))
+    # Block path traversal (e.g. ../../ai_grader.db): only serve files
+    # physically inside UPLOAD_DIR.
+    safe = os.path.realpath(os.path.join(UPLOAD_DIR, filename))
+    if not safe.startswith(os.path.realpath(UPLOAD_DIR) + os.sep):
+        return jsonify({"ok": False, "error": "Not found."}), 404
+    if not os.path.isfile(safe):
+        return jsonify({"ok": False, "error": "Not found."}), 404
+    return send_file(safe)
 
 
 if __name__ == "__main__":

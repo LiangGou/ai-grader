@@ -1525,6 +1525,24 @@ def test_upgrade_to_ap_removed(errors):
     print("  done")
 
 
+def test_upload_path_traversal_blocked(errors):
+    """GET /uploads/../../ai_grader.db must not leak files outside uploads/."""
+    print("Testing upload path traversal guard...")
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(base, "app.py")) as f:
+        src = f.read()
+    # The uploaded_file route must canonicalize and jail to UPLOAD_DIR.
+    if "realpath" not in src or "UPLOAD_DIR" not in src:
+        errors.append("uploaded_file missing path canonicalization")
+    # Simulate the guard logic directly.
+    upload_dir = os.path.join(base, "uploads")
+    for evil in ["../../ai_grader.db", "..%2f..%2fapp.py", "subdir/../../db.py"]:
+        safe = os.path.realpath(os.path.join(upload_dir, evil))
+        if safe.startswith(os.path.realpath(upload_dir) + os.sep):
+            errors.append(f"traversal not blocked: {evil} -> {safe}")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1562,6 +1580,7 @@ def main():
     # Render deployment fixes (2026-10-07)
     test_rubric_jobs_db_backed(errors)
     test_upgrade_to_ap_removed(errors)
+    test_upload_path_traversal_blocked(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 
