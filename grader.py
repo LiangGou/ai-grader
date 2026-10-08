@@ -1160,7 +1160,8 @@ VERIFY_SOLUTION_SYSTEM = """You are a careful checker. You are given a calculus 
 Your job is NOT to re-solve from scratch (that causes false mismatches). Instead:
 1. Read the teacher's solution carefully. Extract the KEY mathematical claims (e.g. "critical points are x=-1/2, 1/2, 3", "f'(x) = 4x^3 - 12x^2 - x + 3").
 2. For each key claim, provide a Python expression (using only arithmetic operators and the math module) that VERIFIES the claim by direct computation. Example: to verify "f'(x) = 4x^3 - 12x^2 - x + 3" at x=2, use "(4*2**3 - 12*2**2 - 2 + 3) - (4*2**3 - 12*2**2 - 2 + 3)" which should be 0. To verify critical points, plug each into f'(x) and check it equals 0.
-3. If the teacher's solution is correct, the Python checks will pass. Only flag a problem if the Python computation PROVES the teacher wrong.
+3. EQUIVALENT FORMS: If the teacher's answer looks different from what you'd expect (e.g. "y - √2/2 = √2(x-π/4)" vs "y = √2(x-π/4) + √2/2"), do NOT flag it as wrong. Instead, verify by SUBSTITUTION: pick a specific x value, compute y from both forms, and check they match. Only flag if substitution PROVES they're different.
+4. If the teacher's solution is correct, the Python checks will pass. Only flag a problem if the Python computation PROVES the teacher wrong.
 Output ONLY a JSON object, no explanations:
 {"claims": ["<claim 1>", "<claim 2>"], "python_checks": ["<expr 1>", "<expr 2>"], "agrees": true/false, "confidence": "high/medium/low", "note": "<one sentence, or empty>"}
 Set "agrees" to true if the teacher's claims verify (or if there are no verifiable numerical claims but the reasoning looks sound).

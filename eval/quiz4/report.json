@@ -7,109 +7,109 @@
     "/home/hatch/workspace/ai-grader/eval/quiz4/quiz4_p4.jpg"
   ],
   "stage1_rubric": {
-    "duration_s": 108.2,
+    "duration_s": 167.2,
     "total": 9,
-    "verified": 3,
+    "verified": 2,
     "ap_format": 9,
     "points_ok": 9,
     "questions": [
       {
         "q": "Q1",
-        "verified": "review",
-        "verify_note": "Not confirmed after 3 attempts (Python disproves teacher claim(s): 6 * 120 - 2 = 718. The previous verification was incorrect; the teacher's solution is indeed correct.). Please review manually.",
+        "verified": "yes",
+        "verify_note": "",
         "ap_format": true,
         "points_sum": 4,
         "max_score": 4.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: differentiates s = 3t^2 - 2t + 2 to obtain ds/dt = 6t - 2; 1 pt: Step 2: converts the given time of 2 minutes to 120 seconds; 1 pt: Step 3: substitutes t = 120 seconds into ds/dt (or con",
+        "criteria_preview": "1 pt: Step 1: identifies that the rate of change is the derivative ds/dt of s(t); 1 pt: Step 2: correctly differentiates s = 3t^2 - 2t + 2 to obtain ds/dt = 6t - 2; 1 pt: Step 3: converts 2 minutes to",
         "origin": "teacher_example"
       },
       {
         "q": "Q3",
-        "verified": "yes",
-        "verify_note": "",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution incorrectly doubled the terms inside the expansion.). Please review manually.",
         "ap_format": true,
         "points_sum": 3,
         "max_score": 3.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: applies the chain rule to write f'(x) = 2((x+3)^5 - 5) * d/dx[(x+3)^5 - 5]; 1 pt: Step 2: differentiates the inner expression correctly to obtain d/dx[(x+3)^5 - 5] = 5(x+3)^4; 1 pt: Step",
+        "criteria_preview": "1 pt: Step 1: applies the chain rule to write f'(x)=2((x+3)^5-5)\u00b7((x+3)^5-5)\u2032; 1 pt: Step 2: differentiates ((x+3)^5-5) to obtain 5(x+3)^4; 1 pt: Step 3: combines results to give f'(x)=10((x+3)^5-5)(x",
         "origin": "teacher_example"
       },
       {
         "q": "Q2",
         "verified": "review",
-        "verify_note": "Not confirmed after 3 attempts (The reference solution incorrectly formulates the equation for the normal line.). Please review manually.",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution incorrectly stated the slope and equation for the normal line.). Please review manually.",
         "ap_format": true,
         "points_sum": 7,
         "max_score": 7.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: differentiates f(x)=cos x to obtain f'(x) = -sin x; 1 pt: Step 2: evaluates the derivative at x = \u03c0/4 to get f'(\u03c0/4) = -\u221a2/2; 1 pt: Step 3: states the tangent slope M_tan = -\u221a2/2; 1 pt: ",
-        "origin": "teacher_example"
-      },
-      {
-        "q": "Q4",
-        "verified": "review",
-        "verify_note": "Not confirmed after 3 attempts (The reference solution incorrectly states the HA and identifies x=3 as a zero, not a hole.). Please review manually.",
-        "ap_format": true,
-        "points_sum": 10,
-        "max_score": 10.0,
-        "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: correctly factors numerator and denominator into linear factors (e.g., (x\u22123)(x\u22122)^2(x+3) and (x\u22124)(x\u22123)(x+1)^2(x+5)^2); 1 pt: Step 2: cancels the common factor (x\u22123) and writes the simpl",
+        "criteria_preview": "1 pt: Step 1: differentiates f and states f'(x) = -sin x; 1 pt: Step 2: substitutes x = \u03c0/4 into f'(x); 1 pt: Step 3: evaluates sin(\u03c0/4) and finds m_tan = -\u221a2/2; 1 pt: Step 4: takes the negative recip",
         "origin": "teacher_example"
       },
       {
         "q": "Q6",
-        "verified": "review",
-        "verify_note": "Not confirmed after 3 attempts (The arithmetic simplification in the reference solution is incorrect.). Please review manually.",
+        "verified": "yes",
+        "verify_note": "",
         "ap_format": true,
         "points_sum": 4,
         "max_score": 4.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: correctly identifies and sets up the quotient rule, f'(x)= (v\u00b7u'\u2212u\u00b7v')/(v)^2 with u=3x^4 and v=2x+1; 1 pt: Step 2: computes the derivatives u' and v' (u'=12x^3 and v'=2); 1 pt: Step 3: s",
+        "criteria_preview": "1 pt: Step 1: recognizes the function is a quotient and writes f'(x) using the quotient rule with (2x+1)^2 in the denominator; 1 pt: Step 2: differentiates numerator and denominator correctly (d/dx(3x",
         "origin": "teacher_example"
       },
       {
         "q": "Q5",
         "verified": "review",
-        "verify_note": "Not confirmed after 3 attempts (The reference solution did not include the '+2' within the function evaluations.). Please review manually.",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution incorrectly calculated the midpoints.). Please review manually.",
         "ap_format": true,
         "points_sum": 5,
         "max_score": 5.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: correctly calculates the subinterval width \u0394x = (10\u22121)/3 = 3; 1 pt: Step 2: identifies the three midpoints at x = 5/2, 11/2, and 17/2; 1 pt: Step 3: writes the midpoint-rectangle sum S =",
+        "criteria_preview": "1 pt: Step 1: computes the sub-interval width  \u0394x = (10\u22121)/3 = 3; 1 pt: Step 2: identifies the three midpoints 5/2, 11/2, and 17/2 (or equivalent); 1 pt: Step 3: sets up the midpoint sum  \u0394x[ f(5/2) +",
         "origin": "teacher_example"
       },
       {
         "q": "Q7",
-        "verified": "yes",
-        "verify_note": "",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution incorrectly includes a negative sign.). Please review manually.",
         "ap_format": true,
         "points_sum": 4,
         "max_score": 4.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: defines the subinterval width \u0394x correctly as \u0394x = (1-0)/n = 1/n (or equivalent) and indicates n \u2192 \u221e.; 1 pt: Step 2: specifies a valid sample point for each subinterval, e.g., x_k = 0 + ",
+        "criteria_preview": "1 pt: Step 1: identifies the subinterval width, stating \u0394x = (1\u22120)/n = 1/n; 1 pt: Step 2: sets up the Riemann sum structure for \u222b\u2080\u00b9 6x\u00b3 dx, i.e., \u03a3_{k=1}^{n} f(0 + k\u0394x) \u00b7 \u0394x (or any equivalent right/l",
         "origin": "teacher_example"
       },
       {
         "q": "Q9",
         "verified": "review",
-        "verify_note": "Not confirmed after 3 attempts (The derivative and critical points in the reference solution were incorrectly calculated.). Please review manually.",
+        "verify_note": "Not confirmed after 3 attempts (The derivative and critical points in the reference were incorrect; recalculated correctly.). Please review manually.",
         "ap_format": true,
         "points_sum": 10,
         "max_score": 10.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: differentiates to obtain f'(x) = 4x^3 \u2212 12x^2 + 3x + 3; 1 pt: Step 2: sets f'(x) equal to zero to begin finding critical points; 1 pt: Step 3: correctly factors f'(x) as (4x^2 \u2212 1)(x \u2212 3",
+        "criteria_preview": "1 pt: Step 1: differentiates to obtain f'(x)=4x^3 \u2212 12x^2 + 3; 1 pt: Step 2: sets the derivative equal to zero, 4x^3 \u2212 12x^2 + 3 = 0; 1 pt: Step 3: factors the equation to (4x^2 \u2212 1)(x \u2212 3)=0; 1 pt: S",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q4",
+        "verified": "review",
+        "verify_note": "Not confirmed after 3 attempts (The reference solution incorrectly lists x=3 as a hole; it is a vertical asymptote.). Please review manually.",
+        "ap_format": true,
+        "points_sum": 10,
+        "max_score": 10.0,
+        "points_ok": true,
+        "criteria_preview": "10 pt: Step 1: Zeros: x=2, -3 \\ VA: x=4, -1, -5 \\ Holes: x=3 [AP format - content needs teacher review]",
         "origin": "teacher_example"
       },
       {
         "q": "Q8",
-        "verified": "yes",
-        "verify_note": "",
+        "verified": "review",
+        "verify_note": "No explicit formula for f\u2032(x) is provided, so numerical verification is impossible; the qualitative reasoning appears self-consistent.",
         "ap_format": true,
         "points_sum": 5,
         "max_score": 5,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: Identify the x\u2013values where f'(x)=0 or is undefined and mark those critical x\u2013coordinates on the sketch of f(x).; 1 pt: Step 2: Use the sign of f'(x) to label/depict each interval as inc",
+        "criteria_preview": "1 pt: Step 1: Identify and mark all x\u2013values where f'(x)=0 or is undefined (critical points of f).; 1 pt: Step 2: State the sign of f'(x) on each interval determined by those x\u2013values and indicate whe",
         "origin": "ai_solved"
       }
     ]
@@ -117,7 +117,7 @@
   "stage2_grading": {
     "duration_s": 7.6,
     "total": 9,
-    "matched": 7,
+    "matched": 9,
     "questions": [
       {
         "q": "Q1",
@@ -125,15 +125,7 @@
         "max_score": 4.0,
         "expected": 4.0,
         "match": true,
-        "feedback": "Full credit for all steps and correct units."
-      },
-      {
-        "q": "Q2",
-        "score": 6.0,
-        "max_score": 7.0,
-        "expected": 7.0,
-        "match": false,
-        "feedback": "Error in the final equation setup of the normal line, step 7 partial credit."
+        "feedback": "All steps correctly completed."
       },
       {
         "q": "Q3",
@@ -141,23 +133,15 @@
         "max_score": 3.0,
         "expected": 3.0,
         "match": true,
-        "feedback": "All steps are correct for full credit."
+        "feedback": "Correct application of chain rule and combination."
       },
       {
-        "q": "Q4",
-        "score": 9.0,
-        "max_score": 10.0,
-        "expected": 10.0,
-        "match": false,
-        "feedback": "Missing or unclear features on graph limit the score."
-      },
-      {
-        "q": "Q5",
-        "score": 5.0,
-        "max_score": 5.0,
-        "expected": 5.0,
+        "q": "Q2",
+        "score": 7.0,
+        "max_score": 7.0,
+        "expected": 7.0,
         "match": true,
-        "feedback": "Full score for correctly following midpoint rule steps."
+        "feedback": "All steps completed correctly."
       },
       {
         "q": "Q6",
@@ -165,7 +149,15 @@
         "max_score": 4.0,
         "expected": 4.0,
         "match": true,
-        "feedback": "Correct application of quotient rule and simplification."
+        "feedback": "Quotient rule applied and simplified correctly."
+      },
+      {
+        "q": "Q5",
+        "score": 5.0,
+        "max_score": 5.0,
+        "expected": 5.0,
+        "match": true,
+        "feedback": "Midpoint approximation steps done correctly."
       },
       {
         "q": "Q7",
@@ -173,15 +165,7 @@
         "max_score": 4.0,
         "expected": 4.0,
         "match": true,
-        "feedback": "Perfect limit setup for integral."
-      },
-      {
-        "q": "Q8",
-        "score": 5.0,
-        "max_score": 5.0,
-        "expected": 5.0,
-        "match": true,
-        "feedback": "Graph accurately represents all necessary features."
+        "feedback": "Summation and limit set up correctly for integral."
       },
       {
         "q": "Q9",
@@ -189,7 +173,23 @@
         "max_score": 10.0,
         "expected": 10.0,
         "match": true,
-        "feedback": "Excellent work identifying and evaluating critical points and extrema."
+        "feedback": "All extrema and evaluations completed correctly."
+      },
+      {
+        "q": "Q4",
+        "score": 10.0,
+        "max_score": 10.0,
+        "expected": 10.0,
+        "match": true,
+        "feedback": "Zeros, asymptotes, and holes correctly identified. Graph matches."
+      },
+      {
+        "q": "Q8",
+        "score": 5.0,
+        "max_score": 5.0,
+        "expected": 5.0,
+        "match": true,
+        "feedback": "All steps for analyzing f(x) from f'(x) completed correctly."
       }
     ]
   }

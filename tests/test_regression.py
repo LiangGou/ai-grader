@@ -1686,6 +1686,20 @@ def test_safe_eval_equality(errors):
     print("  done")
 
 
+def test_verifier_equivalent_forms_prompt(errors):
+    """Verifier prompt must instruct substitution for equivalent forms.
+
+    Eval 2026-10-07: Q2/Q3 failed because LLM didn't recognize equivalent
+    equations (y - √2/2 = √2(x-π/4) vs y = √2(x-π/4) + √2/2).
+    """
+    print("Testing verifier equivalent-forms instruction...")
+    import grader
+    prompt = grader.VERIFY_SOLUTION_SYSTEM
+    if "EQUIVALENT FORMS" not in prompt or "SUBSTITUTION" not in prompt:
+        errors.append("VERIFY_SOLUTION_SYSTEM missing equivalent-forms substitution instruction")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1695,6 +1709,7 @@ def main():
     test_unicode_sanitization(errors)
     test_duplicate_assignment_rejected(errors)
     test_is_ap_format(errors)
+    test_verifier_equivalent_forms_prompt(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)
