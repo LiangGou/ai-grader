@@ -1584,6 +1584,22 @@ def test_regenerate_rubric_endpoint(errors):
     print("  done")
 
 
+def test_teacher_criteria_forced_to_ap(errors):
+    """Teacher criteria must be converted to AP format (user req 2026-10-07).
+
+    Even when the teacher wrote criteria, the pipeline must output AP-style
+    steps, preserving the teacher's intent.
+    """
+    print("Testing forced AP conversion...")
+    import grader
+    # generate_ap_rubric_only must accept teacher_criteria param.
+    import inspect
+    sig = inspect.signature(grader.generate_ap_rubric_only)
+    if "teacher_criteria" not in sig.parameters:
+        errors.append("generate_ap_rubric_only missing teacher_criteria param")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1627,6 +1643,7 @@ def main():
     test_proactive_graph_heuristic(errors)
     test_passwords_must_differ(errors)
     test_regenerate_rubric_endpoint(errors)
+    test_teacher_criteria_forced_to_ap(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 

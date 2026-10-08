@@ -855,18 +855,26 @@ def _minimal_ap_rubric(reference_solution, max_score, q_label=""):
     return "; ".join(parts) + " [AP format - content needs teacher review]"
 
 
-def generate_ap_rubric_only(question_text, reference_solution, max_score, q_label="", retry_hint=""):
+def generate_ap_rubric_only(question_text, reference_solution, max_score, q_label="", retry_hint="", teacher_criteria=""):
     """Generate AP-style rubric points from an existing question + solution.
 
     Used when the teacher's example has no usable rubric markings — instead of
     making the teacher click "Compare with AP Standard", we generate the AP
     rubric directly. Returns a criteria string; points sum to max_score.
+
+    If teacher_criteria is provided, incorporate the teacher's scoring intent
+    into the AP steps (user requirement 2026-10-07: always AP-format).
     """
     prompt = (
         f"Question {q_label} (worth {max_score:g} points):\n{question_text}\n\n"
         f"Reference solution:\n{reference_solution}\n\n"
-        "Create the AP-style scoring rubric."
     )
+    if teacher_criteria and teacher_criteria.strip():
+        prompt += (
+            f"Teacher's original scoring notes (preserve their intent in your AP steps):\n"
+            f"{teacher_criteria.strip()}\n\n"
+        )
+    prompt += "Create the AP-style scoring rubric."
     if retry_hint:
         prompt += (
             "\n\nIMPORTANT — A previous attempt failed validation. Learn from this:\n"
@@ -920,15 +928,16 @@ def build_example_rubric_streaming(image_paths, upload_dir=None, max_workers=5,
 
     def _build(idx, q, verdict):
         criteria = q["criteria"]
-        # If the example has no usable rubric markings, generate AP-style
-        # rubric directly — no extra button click needed.
-        if _criteria_is_weak(criteria) and q.get("reference_solution", "").strip():
+        # Always convert to AP-style steps (user requirement 2026-10-07),
+        # preserving teacher intent from their original criteria.
+        if not _is_ap_format(criteria) and q.get("reference_solution", "").strip():
             try:
                 criteria = generate_ap_rubric_only(
                     q["question_text"], q["reference_solution"],
-                    q["max_score"] or 5, q["q"])
+                    q["max_score"] or 5, q["q"],
+                    teacher_criteria=criteria)
             except Exception:
-                pass  # keep the original (weak) criteria on failure
+                pass  # keep the original criteria on failure
         return {
             "idx": idx,
             "q": q["q"],
@@ -1090,14 +1099,15 @@ Output ONLY a JSON object, no explanations:
 """
 
 
-VERIFY_SOLUTION_SYSTEM = """You are a careful, independent checker. You are given a calculus question and a proposed solution (an AI-generated answer key).
+VERIFY_SOLUTION_SYSTEM = """You are a careful, independent checker. You are given a calculus question and a proposed solution (from a teacher's worked example).
 Your job:
-1. Solve the question yourself, step by step, WITHOUT trusting the proposed solution.
+1. Solve the question yourself, step by step, WITHOUT trusting the proposed solution. Show your work carefully — arithmetic errors are the most common cause of false mismatches.
 2. Compare your final answer with the proposed solution.
-3. If the question is a numerical computation, also provide a single Python expression (using only arithmetic operators and the math module, e.g. "math.pi * 3**2") that computes the answer. Leave it empty if not numerical.
+3. If the question involves numerical computation, provide a Python expression (using only arithmetic operators and the math module, e.g. "math.pi * 3**2") that computes the KEY numerical result. This will be executed to verify. Make sure the expression is correct — test it mentally.
+4. IMPORTANT: The proposed solution comes from a teacher. Only set "agrees" to false if you are HIGHLY confident there is a real error, not just a different-but-equivalent form. Double-check your own arithmetic before disagreeing.
 Output ONLY a JSON object, no explanations:
 {"your_answer": "<your final answer, concise>", "agrees": true/false, "confidence": "high/medium/low", "note": "<one sentence on any discrepancy, or empty>", "python_check": "<expression or empty>"}
-Set "agrees" to true only if you are confident the two answers match (allowing equivalent forms, e.g. 0.5 = 1/2).
+Set "agrees" to true if the answers match (allowing equivalent forms, e.g. 0.5 = 1/2, or different but valid methods).
 """
 
 
@@ -1575,7 +1585,10 @@ def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
                        "note": f"Not confirmed after 3 attempts ({last_note}). "
                                "Please review manually."}
         criteria = q.get("criteria", "")
-        if _criteria_is_weak(criteria):
+        # AP enforcement: ALWAYS convert to AP-style steps, even if the teacher
+        # wrote criteria. The teacher's wording is passed as context so the
+        # AP rubric preserves their intent. (User requirement 2026-10-07.)
+        if not _is_ap_format(criteria):
             # AP enforcement: the rubric MUST be decomposed into AP-style steps.
             # Retry with increasingly forceful reprompts; never keep weak
             # "deduct..." text. If the model still fails, build a minimal
@@ -1595,7 +1608,8 @@ def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
                         )
                     criteria = generate_ap_rubric_only(
                         q.get("question_text", ""), q.get("reference_solution", ""),
-                        max_score, q_label, retry_hint=rubric_hint)
+                        max_score, q_label, retry_hint=rubric_hint,
+                        teacher_criteria=q.get("criteria", ""))
                     if _is_ap_format(criteria):
                         ap_ok = True
                         break
