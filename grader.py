@@ -837,18 +837,27 @@ def transcribe_questions_only(image_paths):
 
 
 def solve_and_rubric(question_text, max_score, q_label="", image_paths=None,
-                   model=None, reasoning_effort=None, _debug=None):
+                   model=None, reasoning_effort=None, _debug=None, retry_hint=""):
     """Reasoning-model pass: solve the question and generate an AP-style rubric.
 
     Returns {solution, ap_points, notes}. The ap_points sum to exactly max_score.
     When image_paths is given, the model also sees the original photos so it
     can read the PRINTED question directly (guarding against transcription
     errors); it must still ignore all handwriting.
+    `retry_hint` (optional) describes what went wrong in a previous attempt so
+    the model can correct itself.
     """
     prompt = (
         f"Question {q_label} (worth {max_score:g} points):\n{question_text}\n\n"
         "Solve it and create the AP-style rubric."
     )
+    if retry_hint:
+        prompt += (
+            "\n\nIMPORTANT — A previous attempt failed. Learn from this:\n"
+            f"{retry_hint}\n"
+            "Double-check the question (especially exponents, fractions, and signs), "
+            "solve carefully step by step, and make sure your answer is correct."
+        )
     user_content = [{"type": "text", "text": prompt}]
     if image_paths:
         user_content[0]["text"] += (
@@ -926,11 +935,12 @@ def verify_solution(question_text, solution, model=None, reasoning_effort=None, 
 
 
 def retry_solve_question(question_text, max_score, q_label="", model="o3",
-                         high_effort=False, image_paths=None):
+                         high_effort=False, image_paths=None, max_attempts=3):
     """Retry solving a single question, with full debug output.
 
     `model` is "o3" or "gpt-4o". `high_effort` requests o3 with
-    reasoning_effort="high" (slower, more thorough).
+    reasoning_effort="high" (slower, more thorough). Tries up to
+    `max_attempts` times; each retry sees the previous failure.
 
     Returns {solution, criteria, verified, verify_note, debug} where debug is
     a list of {step, model, raw} showing exactly what each model call returned.
@@ -939,30 +949,96 @@ def retry_solve_question(question_text, max_score, q_label="", model="o3",
     effort = "high" if high_effort and model.startswith("o") else None
     use_model = model or REASONING_MODEL
 
-    solve_debug, verify_debug = [], []
-    solved = solve_and_rubric(question_text, max_score, q_label,
-                              image_paths=image_paths, model=use_model,
-                              reasoning_effort=effort, _debug=solve_debug)
-    for d in solve_debug:
-        debug.append({"step": "solve", "model": d["model"], "effort": d["effort"], "raw": d["raw"]})
-    verdict = verify_solution(question_text, solved["solution"], model=use_model,
-                              reasoning_effort=effort, _debug=verify_debug)
-    for d in verify_debug:
-        debug.append({"step": "verify", "model": d["model"], "effort": d["effort"], "raw": d["raw"]})
+    solved, verdict, last_exc = None, None, None
+    retry_hint = ""
+    for attempt in range(1, max_attempts + 1):
+        solve_debug, verify_debug = [], []
+        try:
+            solved = solve_and_rubric(
+                question_text, max_score, q_label,
+                image_paths=image_paths, model=use_model,
+                reasoning_effort=effort, _debug=solve_debug,
+                retry_hint=retry_hint)
+            for d in solve_debug:
+                debug.append({"step": f"solve (try {attempt})", "model": d["model"],
+                              "effort": d["effort"], "raw": d["raw"]})
+            verdict = verify_solution(question_text, solved["solution"],
+                                      model=use_model, reasoning_effort=effort,
+                                      _debug=verify_debug)
+            for d in verify_debug:
+                debug.append({"step": f"verify (try {attempt})", "model": d["model"],
+                              "effort": d["effort"], "raw": d["raw"]})
+        except Exception as e:  # noqa: BLE001
+            last_exc = e
+            debug.append({"step": f"solve (try {attempt})", "model": use_model,
+                          "effort": effort, "raw": f"ERROR: {e}"})
+            retry_hint = f"Attempt {attempt} raised an error: {e}. Try again carefully."
+            continue
+        if verdict["verdict"] == "confirmed":
+            break
+        retry_hint = (
+            f"Attempt {attempt} was NOT confirmed ({verdict['verdict']}): "
+            f"{verdict.get('note', '')} Attempted solution: {solved['solution'][:500]}"
+        )
 
+    if solved is None:
+        raise last_exc or RuntimeError("All retry attempts failed.")
     verified = "yes" if verdict["verdict"] == "confirmed" else "review"
     criteria = "; ".join(
         f"{p.get('points', 1)} pt: {p.get('for', '')}"
         for p in solved["ap_points"] if isinstance(p, dict)
     )
+    note = verdict.get("note", "")
+    if verified == "review" and not note:
+        note = f"Still not verified after {max_attempts} attempts. Please review manually."
     return {
         "solution": solved["solution"],
         "criteria": criteria,
         "max_score": max_score,
         "verified": verified,
-        "verify_note": verdict.get("note", ""),
+        "verify_note": note,
         "debug": debug,
     }
+
+
+def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
+                       max_attempts=3):
+    """Solve + verify with up to `max_attempts` tries.
+
+    Each retry includes the previous attempt's error/verification note in the
+    prompt so the model can correct itself. Returns (solved, verdict) on
+    success; raises the last exception if all attempts fail with an error.
+    If verification keeps failing (not an exception), returns the last
+    (solved, verdict) pair so the caller can flag it for manual review.
+    """
+    last_exc = None
+    solved, verdict = None, None
+    retry_hint = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            solved = solve_and_rubric(question_text, max_score, q_label,
+                                      image_paths=image_paths,
+                                      retry_hint=retry_hint)
+            verdict = verify_solution(question_text, solved["solution"])
+        except Exception as e:  # noqa: BLE001
+            last_exc = e
+            retry_hint = (
+                f"Attempt {attempt} raised an error: {e}. "
+                "This may have been transient — try again carefully."
+            )
+            continue
+        if verdict["verdict"] == "confirmed":
+            return solved, verdict
+        # Verification failed: feed the discrepancy back for the next attempt.
+        retry_hint = (
+            f"Attempt {attempt} produced a solution, but independent verification "
+            f"did NOT confirm it ({verdict['verdict']}): {verdict.get('note', '')} "
+            f"The attempted solution was: {solved['solution'][:500]}"
+        )
+    # All attempts exhausted.
+    if last_exc is not None and solved is None:
+        raise last_exc
+    return solved, verdict
 
 
 def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
@@ -998,9 +1074,10 @@ def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
         else:
             default_note = ""
         try:
-            solved = solve_and_rubric(q.get("question_text", ""), max_score, q_label,
-                                      image_paths=image_paths)
-            verdict = verify_solution(q.get("question_text", ""), solved["solution"])
+            # Up to 3 attempts; each retry sees the previous failure.
+            solved, verdict = _solve_with_retries(
+                q.get("question_text", ""), max_score, q_label,
+                image_paths=image_paths, max_attempts=3)
         except Exception as e:  # noqa: BLE001
             # Never silently drop a question: surface the error for teacher review.
             return {
@@ -1012,11 +1089,15 @@ def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
                 "criteria": "",
                 "has_diagram": q.get("has_diagram", False),
                 "verified": "review",
-                "verify_note": f"AI solving failed ({e}). Please solve manually or retry.",
+                "verify_note": f"AI solving failed after 3 attempts ({e}). Please solve manually or tap Retry.",
                 "origin": "ai_solved",
                 "graph": None,
             }
         verified = "yes" if verdict["verdict"] == "confirmed" else "review"
+        if verified == "review" and not verdict.get("note"):
+            note = "AI could not verify the solution after 3 attempts. Please review or tap Retry."
+        else:
+            note = verdict.get("note", "")
         criteria = "; ".join(
             f"{p.get('points', 1)} pt: {p.get('for', '')}"
             for p in solved["ap_points"] if isinstance(p, dict)
@@ -1032,7 +1113,7 @@ def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
             "criteria": criteria,
             "has_diagram": q.get("has_diagram", False),
             "verified": verified,
-            "verify_note": verdict.get("note", ""),
+            "verify_note": note,
             "origin": "ai_solved",
             "graph": None,
         }
