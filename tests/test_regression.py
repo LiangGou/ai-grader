@@ -245,12 +245,30 @@ def test_validation_guardrails(errors):
     print("  Guardrail checks done")
 
 
+def test_frontend_logic(errors):
+    """Run the Node-based frontend regression tests."""
+    import subprocess
+    print("Testing frontend logic (Node)...")
+    test_js = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "test_frontend.js")
+    try:
+        r = subprocess.run(["node", test_js], capture_output=True, text=True,
+                           timeout=30)
+        print(r.stdout)
+        if r.returncode != 0:
+            errors.append(f"Frontend tests failed:\n{r.stdout}\n{r.stderr}")
+    except Exception as e:
+        errors.append(f"Could not run frontend tests: {e}")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
 
     # Always run the no-API guardrail tests.
     test_validation_guardrails(errors)
+    # Frontend JS logic tests (no API).
+    test_frontend_logic(errors)
 
     if quick:
         if not os.path.exists(CACHE_FILE):

@@ -4,6 +4,18 @@
 
   function $(id) { return document.getElementById(id); }
 
+  /* Whether the "Retry with AI" button shows for a rubric card.
+     Shows for ANY question in warn (needs-review) state, regardless of
+     origin (ai_solved, teacher_example, or legacy items without origin).
+     Exported for regression testing. */
+  function canRetryQuestion(item, state) {
+    return state === "warn";
+  }
+  // Expose for Node-based regression tests.
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports.canRetryQuestion = canRetryQuestion;
+  }
+
   /* Click-to-enlarge lightbox: every uploaded-image thumbnail and every
      diagram (img.thumb, img.graph-img) opens fullscreen on tap. Uses event
      delegation so dynamically added images work too. */
@@ -148,10 +160,9 @@
         : '<span class="verify-badge manual">✏️ Manual</span>';
     var note = (state === "warn" && item.verify_note)
       ? '<p class="verify-note">' + escapeHtml(item.verify_note) + '</p>' : "";
-    // Retry panel for AI-solved questions that failed verification.
-    // Shows for ai_solved items, or older items with no solution to lose.
-    var canRetry = item.origin === "ai_solved" ||
-      (!item.origin && state === "warn" && !(item.reference_solution || "").trim());
+    // Retry panel: shown for ANY question needing review, regardless of origin.
+    // (ai_solved, teacher_example, or legacy items without origin.)
+    var canRetry = canRetryQuestion(item, state);
     var retryHtml = "";
     if (canRetry) {
       retryHtml =
