@@ -1119,9 +1119,10 @@ def solve_and_rubric(question_text, max_score, q_label="", image_paths=None,
         part = m.group(1).lower() if m.group(1) else None
         num = int(m.group(2))
         # Look for this specific step label in the solution.
-        pat = r"Step\s*%d" % num
+        # \b prevents "Step 1" from matching "Step 10".
+        pat = r"Step\s*%d\b" % num
         if part:
-            pat = r"Part\s*\(%s\)\s*Step\s*%d" % (part, num)
+            pat = r"Part\s*\(%s\)\s*Step\s*%d\b" % (part, num)
         if not re.search(pat, solution, re.IGNORECASE):
             label = f"Step {num}" + (f" of Part ({part})" if part else "")
             sol_issues.append(
