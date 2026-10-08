@@ -49,9 +49,10 @@ Set "agrees" to true only if you are confident the two answers match (allowing f
 GRADER_SYSTEM = """You are a strict grader who scores exactly by the rubric. Rules:
 1. Score ONLY what you can actually see in the student's paper photos. If a question is missing, illegible, or unanswered, give it 0 and note why in feedback.
 2. No question's score may exceed its max score.
-3. First briefly describe the student answer you detected for each question (quote or summarize it), then score it against the rubric — this reduces hallucination.
-4. Output ONLY a JSON object, no explanations, in this format:
-{"questions": [{"q": "question label", "score": numeric score, "max_score": numeric max, "answer_seen": "brief description of the detected student answer", "feedback": "reason for the score/deductions"}],
+3. The rubric criteria name specific STEPS (e.g. "Step 1: setup", "Step 2: computation"). Award each point ONLY if the student's paper shows that step done correctly — check step by step against the reference solution's steps.
+4. First briefly describe the student answer you detected for each question (quote or summarize it), then score it step-by-step against the rubric — this reduces hallucination.
+5. Output ONLY a JSON object, no explanations, in this format:
+{"questions": [{"q": "question label", "score": numeric score, "max_score": numeric max, "answer_seen": "brief description of the detected student answer", "feedback": "reason for the score/deductions, naming which steps earned/lost points"}],
  "total": numeric total, "max_total": numeric max total, "overall_feedback": "overall comment"}
 total must equal the sum of the question scores, and max_total must equal the sum of the max scores.
 """
@@ -705,17 +706,17 @@ def validate_question(question_text, reference_solution):
 AP_RUBRIC_ONLY_SYSTEM = """You are an expert AP Calculus teacher creating a scoring rubric.
 Given a question, its correct reference solution, and the total point value:
 
-CREATE an AP-style scoring rubric: break the total points into specific, observable criteria following AP free-response conventions:
-- Award points for specific steps (setup, correct mathematical work, final answer), not just the final answer.
-- Typical: 1 point for correct setup, 1-2 points for correct work/computation, 1 point for the final answer (with correct units or justification where applicable).
-- Each criterion must state exactly what earns the point.
-- Base the criteria on the reference solution's steps.
+CREATE an AP-style scoring rubric where EACH point maps to ONE distinct step of the reference solution. Follow AP free-response conventions:
+- Identify the solution's natural steps: SETUP (e.g. writing the correct formula/rule), MATHEMATICAL WORK (e.g. differentiating, simplifying, substituting), and final ANSWER (with units/justification where applicable).
+- Each ap_point's "for" MUST name the step it rewards, e.g. "Setup step: writes the quotient rule ..." or "Computation step: simplifies to ...". This creates a direct step-to-point mapping so a grader can check each step against its point.
+- Award points for specific observable steps, not just the final answer.
+- Base every criterion on an actual step visible in the reference solution.
 
 CRITICAL: The point breakdown MUST sum to EXACTLY the given max_score. You are distributing exactly that many points — never more, never fewer.
 
 Output ONLY a JSON object, no explanations:
 {
-  "ap_points": [{"points": 1, "for": "<what earns this point>"}, ...]
+  "ap_points": [{"points": 1, "for": "<step name>: <what earns this point>"}, ...]
 }
 """
 
@@ -892,18 +893,20 @@ If the photos yield no questions at all, output {"questions": []}.
 SOLVE_RUBRIC_SYSTEM = """You are an expert AP Calculus teacher creating an answer key and scoring rubric from scratch.
 Given a question and its point value:
 
-1. SOLVE the question completely and correctly. Show every step. This is the answer key — it must be right.
-2. CREATE an AP-style scoring rubric: break the total points into specific, observable criteria following AP free-response conventions:
-   - Award points for specific steps (setup, correct mathematical work, final answer), not just the final answer.
-   - Typical: 1 point for correct setup, 1-2 points for correct work/computation, 1 point for the final answer (with correct units or justification where applicable).
-   - Each criterion must state exactly what earns the point.
+1. SOLVE the question completely and correctly, writing the solution as NUMBERED AP-style steps (Step 1, Step 2, ...). Each step must be one distinct, observable mathematical action that an AP grader would award points for:
+   - Step 1 is typically the SETUP (e.g. writing the correct formula/rule, setting up the integral, identifying what to find).
+   - Middle steps are the MATHEMATICAL WORK (e.g. differentiating, simplifying, substituting values).
+   - The final step is the ANSWER (with correct units or justification where applicable).
+   Every step must be shown — no skipped algebra. This answer key will be used to grade students, so each step must be checkable.
+
+2. CREATE an AP-style scoring rubric where EACH point maps to ONE solution step. The "for" of each ap_point MUST start with the step number, e.g. "Step 2: correctly applies the quotient rule to get ...". This creates a direct step-to-point mapping so a grader can check each step against its point.
 
 CRITICAL: The point breakdown MUST sum to EXACTLY the given max_score. You are distributing exactly that many points — never more, never fewer.
 
 Output ONLY a JSON object, no explanations:
 {
-  "solution": "<complete worked solution, mathematics in LaTeX with $...$ delimiters, steps separated by line breaks>",
-  "ap_points": [{"points": 1, "for": "<what earns this point>"}, ...],
+  "solution": "<numbered steps, e.g. 'Step 1: ...\\nStep 2: ...'. Mathematics in LaTeX with $...$ delimiters>",
+  "ap_points": [{"points": 1, "for": "Step 1: <what earns this point>"}, ...],
   "notes": "<any ambiguity in the question, or empty>"
 }
 """
