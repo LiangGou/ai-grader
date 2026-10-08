@@ -740,6 +740,652 @@ def test_solve_rubric_route_exists(errors):
     print("  done")
 
 
+def test_solve_with_retries_exception_then_success(errors):
+    print("Testing _solve_with_retries exception recovery and retry_hint...")
+    import grader
+    from unittest.mock import patch
+
+    solved = {
+        "solution": "The answer is 4.",
+        "rubric": [],
+    }
+    confirmed = {
+        "verdict": "confirmed",
+        "note": "Checked.",
+    }
+
+    try:
+        with patch.object(
+            grader,
+            "solve_and_rubric",
+            side_effect=[RuntimeError("temporary model failure"), solved],
+        ) as mock_solve, patch.object(
+            grader,
+            "verify_solution",
+            return_value=confirmed,
+        ) as mock_verify:
+            actual_solved, actual_verdict = grader._solve_with_retries(
+                "What is 2 + 2?",
+                2,
+                q_label="1",
+                image_paths=["page.png"],
+                max_attempts=3,
+            )
+
+        if actual_solved != solved:
+            errors.append(
+                "_solve_with_retries did not return the successful retry result"
+            )
+        if actual_verdict != confirmed:
+            errors.append(
+                "_solve_with_retries did not return the successful verification verdict"
+            )
+        if mock_solve.call_count != 2:
+            errors.append(
+                f"_solve_with_retries made {mock_solve.call_count} solve calls; expected 2"
+            )
+        if mock_verify.call_count != 1:
+            errors.append(
+                f"verify_solution was called {mock_verify.call_count} times; expected 1"
+            )
+
+        calls = mock_solve.call_args_list
+        if len(calls) >= 2:
+            first_hint = calls[0].kwargs.get("retry_hint")
+            second_hint = calls[1].kwargs.get("retry_hint")
+
+            if first_hint != "":
+                errors.append(
+                    f"First solve attempt received unexpected retry_hint: {first_hint!r}"
+                )
+            if "Attempt 1" not in (second_hint or ""):
+                errors.append(
+                    f"Second solve attempt did not identify attempt 1: {second_hint!r}"
+                )
+            if "temporary model failure" not in (second_hint or ""):
+                errors.append(
+                    "Second solve attempt did not receive the previous exception text"
+                )
+
+            if calls[1].kwargs.get("image_paths") != ["page.png"]:
+                errors.append("image_paths were not preserved across solve retries")
+    except Exception as exc:
+        errors.append(
+            f"_solve_with_retries exception-recovery test raised unexpectedly: {exc}"
+        )
+
+    print("  done")
+
+def test_solve_with_retries_stops_on_identical_solution(errors):
+    print("Testing _solve_with_retries identical-solution early exit...")
+    import grader
+    from unittest.mock import patch
+
+    first = {
+        "solution": "  x = 7  ",
+        "rubric": [],
+    }
+    second = {
+        "solution": "x = 7",
+        "rubric": [],
+    }
+    mismatch = {
+        "verdict": "mismatch",
+        "note": "Independent check disagreed.",
+    }
+
+    try:
+        with patch.object(
+            grader,
+            "solve_and_rubric",
+            side_effect=[first, second, second, second, second],
+        ) as mock_solve, patch.object(
+            grader,
+            "verify_solution",
+            return_value=mismatch,
+        ) as mock_verify:
+            solved, verdict = grader._solve_with_retries(
+                "Solve for x.",
+                3,
+                q_label="2",
+                max_attempts=5,
+            )
+
+        if mock_solve.call_count != 2:
+            errors.append(
+                "Identical normalized solutions should stop after two attempts; "
+                f"got {mock_solve.call_count} attempts"
+            )
+        if mock_verify.call_count != 2:
+            errors.append(
+                f"Expected two verification calls, got {mock_verify.call_count}"
+            )
+        if solved != second:
+            errors.append("The duplicate-answer path did not return the latest solution")
+        if not isinstance(verdict, dict) or verdict.get("verdict") != "review":
+            errors.append(
+                f"Duplicate answers should force verdict='review'; got {verdict!r}"
+            )
+
+        note = (verdict or {}).get("note", "").lower()
+        if "same answer twice" not in note:
+            errors.append(
+                f"Duplicate-answer review note is missing the explanation: {note!r}"
+            )
+        if "independent check disagreed" not in note:
+            errors.append(
+                "Duplicate-answer handling discarded the verifier's original note"
+            )
+    except Exception as exc:
+        errors.append(
+            f"_solve_with_retries identical-solution test raised unexpectedly: {exc}"
+        )
+
+    print("  done")
+
+def test_build_unified_rubric_routes_teacher_and_ai_items(errors):
+    print("Testing build_unified_rubric_streaming per-question routing...")
+    import grader
+    import inspect
+    from unittest.mock import patch
+
+    questions = [
+        {
+            "q_label": "1",
+            "question_text": "TEACHER QUESTION",
+            "reference_solution": "TEACHER SOLUTION",
+            "rubric_criteria": "Award 1 point for the setup.",
+            "max_score": 4,
+        },
+        {
+            "q_label": "2",
+            "question_text": "AI QUESTION",
+            "reference_solution": "   ",
+            "rubric_criteria": "",
+            "max_score": 3,
+        },
+    ]
+
+    teacher_item = {
+        "q_label": "1",
+        "question_text": "TEACHER QUESTION",
+        "solution": "TEACHER SOLUTION",
+        "rubric": [],
+        "max_score": 4,
+        "verified": "confirmed",
+        "origin": "teacher_example",
+    }
+    ai_solved = {
+        "solution": "AI SOLUTION",
+        "rubric": [],
+    }
+    ai_verdict = {
+        "verdict": "confirmed",
+        "note": "Verified.",
+    }
+
+    def consume_stream(value):
+        if inspect.isgenerator(value) or (
+            hasattr(value, "__next__") and not isinstance(value, (str, bytes))
+        ):
+            while True:
+                try:
+                    next(value)
+                except StopIteration:
+                    break
+        return value
+
+    try:
+        with patch.object(
+            grader,
+            "_build_from_example",
+            return_value=teacher_item,
+        ) as mock_example, patch.object(
+            grader,
+            "_solve_with_retries",
+            return_value=(ai_solved, ai_verdict),
+        ) as mock_solve:
+            result = grader.build_unified_rubric_streaming(questions)
+            consume_stream(result)
+
+        if mock_example.call_count != 1:
+            errors.append(
+                "Expected exactly one teacher-example build, "
+                f"got {mock_example.call_count}"
+            )
+        if mock_solve.call_count != 1:
+            errors.append(
+                f"Expected exactly one AI solve, got {mock_solve.call_count}"
+            )
+
+        if mock_example.call_args:
+            example_text = repr(mock_example.call_args)
+            if "TEACHER QUESTION" not in example_text:
+                errors.append(
+                    "Teacher-example branch was not called with the teacher question"
+                )
+            if "TEACHER SOLUTION" not in example_text:
+                errors.append(
+                    "Teacher-example branch did not receive the reference solution"
+                )
+
+        if mock_solve.call_args:
+            solve_text = repr(mock_solve.call_args)
+            if "AI QUESTION" not in solve_text:
+                errors.append("AI-solve branch received the wrong question")
+            if "TEACHER QUESTION" in solve_text:
+                errors.append(
+                    "Question with a teacher reference was incorrectly sent to AI solve"
+                )
+    except Exception as exc:
+        errors.append(
+            f"build_unified_rubric_streaming routing test raised unexpectedly: {exc}"
+        )
+
+    print("  done")
+
+def test_build_unified_rubric_ai_fallback_and_default_score(errors):
+    print("Testing rubric-build AI fallback and default max_score...")
+    import grader
+    import inspect
+    import json
+    from unittest.mock import patch
+
+    questions = [
+        {
+            "q_label": "3",
+            "question_text": "FALLBACK QUESTION",
+            "reference_solution": "",
+            "rubric_criteria": "",
+            "max_score": 0,
+        }
+    ]
+
+    def drain(value):
+        chunks = []
+        return_value = None
+
+        if inspect.isgenerator(value) or (
+            hasattr(value, "__next__") and not isinstance(value, (str, bytes))
+        ):
+            while True:
+                try:
+                    chunks.append(next(value))
+                except StopIteration as stop:
+                    return_value = stop.value
+                    break
+        else:
+            chunks.append(value)
+
+        if return_value is not None:
+            chunks.append(return_value)
+        return chunks
+
+    try:
+        with patch.object(
+            grader,
+            "_solve_with_retries",
+            side_effect=RuntimeError("synthetic solve failure"),
+        ) as mock_solve:
+            result = grader.build_unified_rubric_streaming(questions)
+            chunks = drain(result)
+
+        if mock_solve.call_count != 1:
+            errors.append(
+                f"Expected one failed AI solve, got {mock_solve.call_count}"
+            )
+
+        if mock_solve.call_args:
+            call = mock_solve.call_args
+            score = call.args[1] if len(call.args) > 1 else call.kwargs.get("max_score")
+            if score != 5:
+                errors.append(
+                    f"Missing/zero max_score should default to 5; solver received {score!r}"
+                )
+
+        blob_parts = []
+        for chunk in chunks:
+            if isinstance(chunk, str):
+                blob_parts.append(chunk)
+            else:
+                blob_parts.append(json.dumps(chunk, default=str))
+        blob = "\n".join(blob_parts).lower()
+
+        if "fallback question" not in blob:
+            errors.append("Failed AI question disappeared from the streamed fallback")
+        if '"verified": "review"' not in blob and "'verified': 'review'" not in blob:
+            errors.append("Failed AI solve was not marked verified='review'")
+        if '"origin": "ai_solved"' not in blob and "'origin': 'ai_solved'" not in blob:
+            errors.append("Failed AI solve did not retain origin='ai_solved'")
+        if "max score set by ai default" not in blob:
+            errors.append(
+                "Default max-score confirmation note was not included in the fallback"
+            )
+    except Exception as exc:
+        errors.append(
+            f"AI fallback/default-score test raised unexpectedly: {exc}"
+        )
+
+    print("  done")
+
+def test_parse_json_loose_variants(errors):
+    print("Testing _parse_json_loose model-response variants...")
+    import grader
+
+    cases = [
+        (
+            '{"verdict":"confirmed","note":"ok"}',
+            {"verdict": "confirmed", "note": "ok"},
+        ),
+        (
+            '```json\n{"verdict":"review","note":"check"}\n```',
+            {"verdict": "review", "note": "check"},
+        ),
+        (
+            'Model preface.\n{"outer":{"value":3},"items":[1,2]}\nTrailing explanation.',
+            {"outer": {"value": 3}, "items": [1, 2]},
+        ),
+        (
+            '```\n{"max_score":5,"question_text":"Q1"}\n```',
+            {"max_score": 5, "question_text": "Q1"},
+        ),
+    ]
+
+    try:
+        for raw, expected in cases:
+            try:
+                actual = grader._parse_json_loose(raw)
+                if actual != expected:
+                    errors.append(
+                        f"_parse_json_loose({raw!r}) returned {actual!r}; "
+                        f"expected {expected!r}"
+                    )
+            except Exception as exc:
+                errors.append(
+                    f"_parse_json_loose rejected valid input {raw!r}: {exc}"
+                )
+
+        invalid_cases = [
+            "",
+            "This response contains no JSON.",
+            "```json\nnot actually json\n```",
+            'prefix {"broken": true suffix',
+        ]
+        for raw in invalid_cases:
+            try:
+                grader._parse_json_loose(raw)
+                errors.append(
+                    f"_parse_json_loose accepted invalid input instead of raising: {raw!r}"
+                )
+            except ValueError:
+                pass
+            except Exception as exc:
+                errors.append(
+                    f"_parse_json_loose raised {type(exc).__name__}, expected ValueError "
+                    f"for {raw!r}"
+                )
+    except Exception as exc:
+        errors.append(f"_parse_json_loose test raised unexpectedly: {exc}")
+
+    print("  done")
+
+def test_verify_solution_python_check_confirmed_and_mismatch(errors):
+    print("Testing verify_solution deterministic python_check verdicts...")
+    import grader
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    payload = {
+        "agrees": False,
+        "confidence": "low",
+        "python_check": "2 + 3 * 4",
+        "note": "Use the deterministic arithmetic check.",
+    }
+    content = json.dumps(payload)
+
+    class FakeCompletions:
+        def create(self, *args, **kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=content)
+                    )
+                ]
+            )
+
+    class FakeResponses:
+        def create(self, *args, **kwargs):
+            return SimpleNamespace(
+                output_text=content,
+                output=[
+                    SimpleNamespace(
+                        content=[SimpleNamespace(text=content)]
+                    )
+                ],
+            )
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCompletions()),
+        responses=FakeResponses(),
+    )
+
+    try:
+        # Patch both common client names so this remains network-free whether
+        # grader.py uses the chat-completions or responses interface.
+        with patch.object(grader, "client", fake_client, create=True), \
+             patch.object(grader, "openai_client", fake_client, create=True):
+            matching = grader.verify_solution(
+                "Evaluate 2 + 3 * 4.",
+                "Using order of operations, the final answer is 14.",
+            )
+            mismatching = grader.verify_solution(
+                "Evaluate 2 + 3 * 4.",
+                "Using order of operations, the final answer is 15.",
+            )
+
+        if matching.get("verdict") != "confirmed":
+            errors.append(
+                "Matching python_check result should be confirmed; "
+                f"got {matching!r}"
+            )
+        if mismatching.get("verdict") != "mismatch":
+            errors.append(
+                "Nonmatching python_check result should be mismatch; "
+                f"got {mismatching!r}"
+            )
+    except Exception as exc:
+        errors.append(
+            "verify_solution python_check test raised unexpectedly "
+            f"(and may have attempted a real API path): {exc}"
+        )
+
+    print("  done")
+
+def test_safe_eval_and_digits_of_numeric_edge_cases(errors):
+    print("Testing _safe_eval and _digits_of numeric behavior...")
+    import grader
+
+    try:
+        eval_cases = [
+            ("2 + 3 * 4", 14.0),
+            ("(10 - 4) / 3", 2.0),
+            ("-3 + 1.5", -1.5),
+            ("2 ** 5", 32.0),
+        ]
+
+        for expression, expected in eval_cases:
+            actual = grader._safe_eval(expression)
+            try:
+                numeric = float(actual)
+            except (TypeError, ValueError):
+                errors.append(
+                    f"_safe_eval({expression!r}) returned nonnumeric value {actual!r}"
+                )
+                continue
+
+            if abs(numeric - expected) > 1e-9:
+                errors.append(
+                    f"_safe_eval({expression!r}) returned {actual!r}; "
+                    f"expected {expected!r}"
+                )
+
+        unsafe_cases = [
+            "__import__('os').system('echo unsafe')",
+            "(1).__class__",
+            "[1, 2, 3][0]",
+            "open('/tmp/unsafe', 'w')",
+        ]
+        for expression in unsafe_cases:
+            try:
+                actual = grader._safe_eval(expression)
+                if actual is not None:
+                    errors.append(
+                        f"_safe_eval accepted unsafe expression {expression!r}: "
+                        f"{actual!r}"
+                    )
+            except Exception:
+                # Rejecting unsafe input by raising is also acceptable.
+                pass
+
+        extracted = grader._digits_of(
+            "Answers: x = -3.5, y = 12, and the correction is +0.25."
+        )
+        numeric_values = []
+        for value in extracted:
+            try:
+                numeric_values.append(float(value))
+            except (TypeError, ValueError):
+                errors.append(f"_digits_of returned a nonnumeric token: {value!r}")
+
+        for expected in (-3.5, 12.0, 0.25):
+            if not any(abs(value - expected) < 1e-9 for value in numeric_values):
+                errors.append(
+                    f"_digits_of failed to extract {expected!r}; got {extracted!r}"
+                )
+    except Exception as exc:
+        errors.append(f"_safe_eval/_digits_of test raised unexpectedly: {exc}")
+
+    print("  done")
+
+def test_rubric_items_to_text_preserves_grading_content(errors):
+    print("Testing rubric_items_to_text serialization...")
+    import grader
+
+    # Include the canonical fields plus compatible aliases used by older item
+    # shapes. All aliases intentionally carry the same sentinel values.
+    items = [
+        {
+            "q_label": "Q-SERIAL-1",
+            "label": "Q-SERIAL-1",
+            "question_label": "Q-SERIAL-1",
+            "question_text": "QUESTION_SENTINEL_ALPHA",
+            "question": "QUESTION_SENTINEL_ALPHA",
+            "solution": "SOLUTION_SENTINEL_ALPHA",
+            "reference_solution": "SOLUTION_SENTINEL_ALPHA",
+            "max_score": 7,
+            "rubric": [
+                {
+                    "criterion": "CRITERION_SENTINEL_ALPHA",
+                    "description": "CRITERION_SENTINEL_ALPHA",
+                    "points": 3,
+                }
+            ],
+            "criteria": [
+                {
+                    "criterion": "CRITERION_SENTINEL_ALPHA",
+                    "description": "CRITERION_SENTINEL_ALPHA",
+                    "points": 3,
+                }
+            ],
+            "rubric_criteria": [
+                {
+                    "criterion": "CRITERION_SENTINEL_ALPHA",
+                    "description": "CRITERION_SENTINEL_ALPHA",
+                    "points": 3,
+                }
+            ],
+        },
+        {
+            "q_label": "Q-SERIAL-2",
+            "label": "Q-SERIAL-2",
+            "question_label": "Q-SERIAL-2",
+            "question_text": "QUESTION_SENTINEL_BETA",
+            "question": "QUESTION_SENTINEL_BETA",
+            "solution": "SOLUTION_SENTINEL_BETA",
+            "reference_solution": "SOLUTION_SENTINEL_BETA",
+            "max_score": 5,
+            "rubric": [
+                {
+                    "criterion": "CRITERION_SENTINEL_BETA",
+                    "description": "CRITERION_SENTINEL_BETA",
+                    "points": 2,
+                }
+            ],
+            "criteria": [
+                {
+                    "criterion": "CRITERION_SENTINEL_BETA",
+                    "description": "CRITERION_SENTINEL_BETA",
+                    "points": 2,
+                }
+            ],
+            "rubric_criteria": [
+                {
+                    "criterion": "CRITERION_SENTINEL_BETA",
+                    "description": "CRITERION_SENTINEL_BETA",
+                    "points": 2,
+                }
+            ],
+        },
+    ]
+
+    try:
+        text = grader.rubric_items_to_text(items)
+
+        if not isinstance(text, str):
+            errors.append(
+                f"rubric_items_to_text returned {type(text).__name__}, expected str"
+            )
+        else:
+            required = [
+                "Q-SERIAL-1",
+                "QUESTION_SENTINEL_ALPHA",
+                "SOLUTION_SENTINEL_ALPHA",
+                "CRITERION_SENTINEL_ALPHA",
+                "Q-SERIAL-2",
+                "QUESTION_SENTINEL_BETA",
+                "SOLUTION_SENTINEL_BETA",
+                "CRITERION_SENTINEL_BETA",
+            ]
+            for sentinel in required:
+                if sentinel not in text:
+                    errors.append(
+                        f"rubric_items_to_text omitted required content: {sentinel}"
+                    )
+
+            if "3" not in text:
+                errors.append(
+                    "rubric_items_to_text omitted the 3-point criterion value"
+                )
+            if "2" not in text:
+                errors.append(
+                    "rubric_items_to_text omitted the 2-point criterion value"
+                )
+
+            alpha_pos = text.find("QUESTION_SENTINEL_ALPHA")
+            beta_pos = text.find("QUESTION_SENTINEL_BETA")
+            if alpha_pos == -1 or beta_pos == -1 or alpha_pos >= beta_pos:
+                errors.append(
+                    "rubric_items_to_text did not preserve question ordering"
+                )
+    except Exception as exc:
+        errors.append(
+            f"rubric_items_to_text serialization test raised unexpectedly: {exc}"
+        )
+
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -760,6 +1406,15 @@ def main():
     test_step_number_word_boundaries(errors)
     test_part_step_regex_variants(errors)
     test_solve_rubric_route_exists(errors)
+    # Gap analysis tests (gpt-5.6-sol, no API calls, mocked)
+    test_solve_with_retries_exception_then_success(errors)
+    test_solve_with_retries_stops_on_identical_solution(errors)
+    test_build_unified_rubric_routes_teacher_and_ai_items(errors)
+    test_build_unified_rubric_ai_fallback_and_default_score(errors)
+    test_parse_json_loose_variants(errors)
+    test_verify_solution_python_check_confirmed_and_mismatch(errors)
+    test_safe_eval_and_digits_of_numeric_edge_cases(errors)
+    test_rubric_items_to_text_preserves_grading_content(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 
