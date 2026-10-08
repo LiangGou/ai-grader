@@ -1745,6 +1745,21 @@ def test_verifier_empty_response(errors):
     print("  done")
 
 
+def test_chat_json_gpt5_compat(errors):
+    """_chat_json must treat gpt-5* like reasoning models.
+
+    Bug 2026-10-07: gpt-5.6-sol rejects max_tokens (API 400).
+    Must use max_completion_tokens and no response_format.
+    """
+    print("Testing gpt-5 compat...")
+    import grader
+    import inspect
+    src_code = inspect.getsource(grader._chat_json)
+    if 'model.startswith("gpt-5")' not in src_code:
+        errors.append("_chat_json missing gpt-5* compatibility")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1757,6 +1772,7 @@ def main():
     test_verifier_equivalent_forms_prompt(errors)
     test_validate_ocr_check(errors)
     test_verifier_uses_reasoning_model(errors)
+    test_chat_json_gpt5_compat(errors)
     test_verifier_empty_response(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)

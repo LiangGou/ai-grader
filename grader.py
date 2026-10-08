@@ -123,9 +123,10 @@ current_operation = "general"
 def _chat_json(system, user_content, max_tokens, model=None, reasoning_effort=None, _raw=None):
     client = _get_client()
     model = model or DEFAULT_MODEL
-    # Reasoning models (o1/o3) use max_completion_tokens and don't support
-    # response_format=json_object; ask for JSON in the prompt instead.
-    is_reasoning = model.startswith("o1") or model.startswith("o3")
+    # Reasoning models (o1/o3) and gpt-5.x use max_completion_tokens and don't
+    # support response_format=json_object; ask for JSON in the prompt instead.
+    is_reasoning = (model.startswith("o1") or model.startswith("o3")
+                    or model.startswith("gpt-5"))
     kwargs = dict(
         model=model,
         messages=[
