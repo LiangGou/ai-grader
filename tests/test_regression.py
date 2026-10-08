@@ -1616,6 +1616,52 @@ def test_login_required_and_usage_logging(errors):
     print("  done")
 
 
+def test_ap_rubric_no_weak_fallback(errors):
+    """AP enforcement: never keep weak 'deduct...' criteria (2026-10-07).
+
+    After failed AP generation attempts, the code must produce AP-format
+    rubric (via _minimal_ap_rubric), not weak general text.
+    """
+    import grader
+    print("Testing AP rubric enforcement...")
+    # _minimal_ap_rubric must always produce AP-format output.
+    out = grader._minimal_ap_rubric("Step 1: differentiate\nStep 2: solve\nStep 3: check", 6, "Q1")
+    if not grader._is_ap_format(out):
+        errors.append(f"_minimal_ap_rubric not AP format: {out!r}")
+    # Points must sum to max_score.
+    import re
+    pts = [int(m) for m in re.findall(r"(\d+)\s*pt:", out)]
+    if sum(pts) != 6:
+        errors.append(f"_minimal_ap_rubric points sum {sum(pts)} != 6: {out!r}")
+    # Must not contain weak "deduct" language.
+    if "deduct" in out.lower():
+        errors.append(f"_minimal_ap_rubric contains weak language: {out!r}")
+    # Works with empty solution too.
+    out2 = grader._minimal_ap_rubric("", 5, "Q2")
+    if not grader._is_ap_format(out2):
+        errors.append(f"_minimal_ap_rubric empty solution not AP format: {out2!r}")
+    print("  done")
+
+
+def test_proactive_graph_heuristic(errors):
+    """Proactive graphs: _would_graph_help detects visualizable problems."""
+    import grader
+    print("Testing proactive graph heuristic...")
+    # Should trigger for function/curve problems.
+    if not grader._would_graph_help("Find the critical points of f(x) = x^4 - 4x^3"):
+        errors.append("should detect critical-points problem")
+    if not grader._would_graph_help("Sketch the graph of y = x^2"):
+        errors.append("should detect sketch problem")
+    if not grader._would_graph_help("Find local extrema of f(x)"):
+        errors.append("should detect extrema problem")
+    # Should not trigger for pure algebra.
+    if grader._would_graph_help("Solve for x: 2x + 5 = 13"):
+        errors.append("should not trigger for simple algebra")
+    if grader._would_graph_help("Simplify the expression (a+b)^2"):
+        errors.append("should not trigger for simplification")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1655,6 +1701,8 @@ def main():
     test_upgrade_to_ap_removed(errors)
     test_upload_path_traversal_blocked(errors)
     test_login_required_and_usage_logging(errors)
+    test_ap_rubric_no_weak_fallback(errors)
+    test_proactive_graph_heuristic(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 

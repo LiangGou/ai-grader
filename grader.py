@@ -489,6 +489,8 @@ DIAGRAM_GEN_SYSTEM = """You are a math diagram generator. Given a math problem a
 Output ONLY a JSON object in exactly this format (no markdown, no extra text):
 {"code": "<python code here>"}
 
+If a diagram would NOT help understand this problem (e.g. pure algebra with no geometric meaning), output {"code": ""}.
+
 Rules for the code:
 - Start with: import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt; import numpy as np
 - Create the figure with a reasonable size: plt.figure(figsize=(8, 6)) or plt.subplots(figsize=(8, 6)). Do NOT create very tall or very wide figures.
@@ -646,14 +648,36 @@ def _crop_graph(image_paths, spec, upload_dir, question_text=""):
         return None
 
 
+def _would_graph_help(question_text, reference_solution=""):
+    """Heuristic: would a graph/diagram help understand this problem?
+
+    Proactive visualization: even when the question has no diagram, problems
+    about functions, curves, critical points, extrema, etc. benefit from one.
+    """
+    text = f"{question_text} {reference_solution}".lower()
+    graph_keywords = (
+        "plot", "graph", "sketch", "curve", "critical point", "local max",
+        "local min", "extrema", "inflection", "asymptote", "intercept",
+        "function f(", "f(x)", "derivative", "integral", "area under",
+        "tangent line", "normal line",
+    )
+    return any(kw in text for kw in graph_keywords)
+
+
 def _process_graph(question, image_paths, upload_dir):
     """Turn a digitized diagram into render-ready data (or None).
 
     Primary: generate the diagram with Python/matplotlib via the reasoning
     model (it understands the problem context and solves as needed).
+    Proactive: even without has_diagram, generate one when visualization helps.
     Fallbacks: legacy function-expression sampling, then photo crop.
     """
-    if not question.get("has_diagram"):
+    has_diagram = question.get("has_diagram")
+    proactive = not has_diagram and _would_graph_help(
+        str(question.get("question_text", "")),
+        str(question.get("reference_solution", "")),
+    )
+    if not has_diagram and not proactive:
         return None
     # Primary: AI-generated diagram from problem context.
     gen = _generate_diagram(
@@ -794,6 +818,34 @@ def _is_ap_format(criteria):
             ap_count += 1
     # Majority of segments must be AP-formatted.
     return ap_count > 0 and ap_count >= len(pts) / 2
+
+
+def _minimal_ap_rubric(reference_solution, max_score, q_label=""):
+    """Structural fallback: build a minimal AP-format rubric from solution steps.
+
+    Used when the model fails to produce AP-format rubrics after 5 attempts.
+    Splits the solution into numbered steps and distributes points evenly.
+    The format is always valid AP; the teacher reviews the content.
+    """
+    # Split solution into steps on "Step N:" markers or line breaks.
+    steps = re.findall(r"Step\s*\d+\s*:\s*(.+?)(?=Step\s*\d+\s*:|$)",
+                       reference_solution or "", re.IGNORECASE | re.DOTALL)
+    if not steps:
+        steps = [s.strip() for s in (reference_solution or "").split("\n") if s.strip()]
+    steps = [s.strip()[:80] for s in steps if s.strip()][:10] or ["Complete the solution"]
+    # Cap steps at total points so each step gets >= 1 pt and the sum is exact.
+    # Handle fractional max_score (e.g. 2.5) by rounding to nearest int for distribution.
+    total = max(1, int(round(max_score))) if max_score else len(steps)
+    steps = steps[:total]
+    n = len(steps)
+    base, extra = divmod(total, n)
+    parts = []
+    for i, s in enumerate(steps):
+        pts = base + (1 if i < extra else 0)
+        # Truncate step description to keep criteria readable.
+        desc = (s[:60] + "...") if len(s) > 60 else s
+        parts.append(f"{pts} pt: Step {i + 1}: {desc}")
+    return "; ".join(parts) + " [AP format - content needs teacher review]"
 
 
 def generate_ap_rubric_only(question_text, reference_solution, max_score, q_label="", retry_hint=""):
@@ -1517,18 +1569,40 @@ def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
                                "Please review manually."}
         criteria = q.get("criteria", "")
         if _criteria_is_weak(criteria):
-            # Retry AP rubric generation up to 3 times with validation feedback.
+            # AP enforcement: the rubric MUST be decomposed into AP-style steps.
+            # Retry with increasingly forceful reprompts; never keep weak
+            # "deduct..." text. If the model still fails, build a minimal
+            # AP-format rubric from the solution steps so the format is right.
             rubric_hint = ""
-            for attempt in range(3):
+            ap_ok = False
+            for attempt in range(5):
                 try:
+                    if attempt >= 3:
+                        # Final attempts: show a concrete example of the required format.
+                        rubric_hint += (
+                            "\n\nFORMAT EXAMPLE (you MUST follow this exact structure):\n"
+                            "\"1 pt: Step 1: ...; 1 pt: Step 2: ...; 2 pt: Step 3: ...\"\n"
+                            "Each segment MUST start with '<N> pt:' and reference 'Step <M>'. "
+                            "Decompose the solution into distinct checkable steps. "
+                            "Do NOT write general deductions like 'deduct for incorrect...'."
+                        )
                     criteria = generate_ap_rubric_only(
                         q.get("question_text", ""), q.get("reference_solution", ""),
                         max_score, q_label, retry_hint=rubric_hint)
-                    break
+                    if _is_ap_format(criteria):
+                        ap_ok = True
+                        break
+                    rubric_hint = (
+                        f"Your output was not in AP step format: {criteria[:200]}. "
+                        "Rewrite it as '<N> pt: Step <M>: <what to check>; ...'."
+                    )
                 except Exception as e:  # noqa: BLE001
                     rubric_hint = str(e)
-                    if attempt == 2:
-                        pass  # keep the weak criteria; teacher reviews
+            if not ap_ok:
+                # Structural fallback: minimal AP-format rubric from solution steps.
+                # Better than weak "deduct..." text; teacher reviews the content.
+                criteria = _minimal_ap_rubric(
+                    q.get("reference_solution", ""), max_score, q_label)
         if default_note and default_note not in (criteria or ""):
             criteria = f"{criteria} ({default_note})" if criteria else default_note
         return {
