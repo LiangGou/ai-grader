@@ -798,11 +798,10 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
                 pass
         user_msg += "\n\n[Original photos attached — verify the transcription against the handwriting.]"
         user_content[0] = {"type": "text", "text": user_msg}
-    # NOTE (2026-10-07): tried o3 for verification — worse than gpt-4o.
-    # o3 was more confidently wrong, slower, more expensive, and introduced
-    # empty-response/parsing crashes. gpt-4o + Python checks is more reliable.
+    # Try gpt-5.6-sol (OpenAI's strongest) for verification.
+    # (2026-10-07: o3 was worse than gpt-4o — more confidently wrong + crashes.)
     data = _chat_json(VALIDATE_SYSTEM, user_content,
-        max_tokens=2048,
+        max_tokens=2048, model="gpt-5.6-sol",
     )
     # Fail-safe: empty/invalid LLM response (seen with o3, 2026-10-07).
     if not isinstance(data, dict):

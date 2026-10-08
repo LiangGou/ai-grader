@@ -1716,17 +1716,16 @@ def test_validate_ocr_check(errors):
 
 
 def test_verifier_uses_reasoning_model(errors):
-    """Verifier must NOT use o3 (reverted 2026-10-07).
+    """Verifier must use gpt-5.6-sol (2026-10-07).
 
-    o3 was more confidently wrong, slower, pricier, and crashed on empty
-    responses. gpt-4o + Python checks is the reliable combo.
+    Trying OpenAI's strongest model after o3 disappointed.
     """
-    print("Testing verifier does NOT use o3...")
+    print("Testing verifier uses gpt-5.6-sol...")
     import grader
     import inspect
     src_code = inspect.getsource(grader.validate_question)
-    if "model=REASONING_MODEL" in src_code:
-        errors.append("validate_question should NOT use o3 (reverted)")
+    if 'model="gpt-5.6-sol"' not in src_code:
+        errors.append("validate_question should use gpt-5.6-sol")
     print("  done")
 
 
