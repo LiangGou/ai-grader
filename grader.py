@@ -746,11 +746,11 @@ def generate_ap_rubric_only(question_text, reference_solution, max_score, q_labe
         model=REASONING_MODEL,
     )
     pts = data.get("ap_points") or []
-    target = int(round(max_score))
-    total = sum(int(p.get("points", 0) or 0) for p in pts if isinstance(p, dict))
-    diff = target - total
-    if diff != 0 and pts and isinstance(pts[-1], dict):
-        pts[-1]["points"] = int(pts[-1].get("points", 0) or 0) + diff
+    # Hard guardrails on the rubric points. The solution is the teacher's,
+    # so pass it for step cross-checking but skip the substance check.
+    pts, issues = _check_ap_output(None, pts, max_score, strict_steps=False)
+    if issues:
+        raise ValueError("Rubric validation failed: " + "; ".join(issues))
     criteria = "; ".join(
         f"{p.get('points', 1)} pt: {p.get('for', '')}"
         for p in pts if isinstance(p, dict)
@@ -1012,14 +1012,14 @@ def solve_and_rubric(question_text, max_score, q_label="", image_paths=None,
         _raw=_debug,
     )
     pts = data.get("ap_points") or []
-    # Guard: force the breakdown to sum to exactly max_score.
-    target = int(round(max_score))
-    total = sum(int(p.get("points", 0) or 0) for p in pts if isinstance(p, dict))
-    diff = target - total
-    if diff != 0 and pts and isinstance(pts[-1], dict):
-        pts[-1]["points"] = int(pts[-1].get("points", 0) or 0) + diff
+    solution = normalize_latex(str(data.get("solution", "")).strip())
+    # Hard guardrails: validate steps, granularity, and point sum.
+    # Raises with actionable feedback so the retry loop can correct it.
+    pts, issues = _check_ap_output(solution, pts, max_score)
+    if issues:
+        raise ValueError("Rubric validation failed: " + "; ".join(issues))
     return {
-        "solution": normalize_latex(str(data.get("solution", "")).strip()),
+        "solution": solution,
         "ap_points": pts,
         "notes": str(data.get("notes", "")).strip(),
     }
@@ -1131,6 +1131,95 @@ def retry_solve_question(question_text, max_score, q_label="", model="o3",
         "verify_note": note,
         "debug": debug,
     }
+
+
+
+def _check_ap_output(solution, ap_points, max_score, strict_steps=True):
+    """Hard guardrails on AI-generated solution + AP rubric.
+
+    Returns (fixed_points, issues). `fixed_points` has a ±1 point-sum diff
+    auto-corrected on the last point. `issues` is a list of problem strings;
+    empty means the output is OK. Callers should retry with the issues as
+    feedback, or flag for manual review if retries are exhausted.
+
+    Checks:
+    1. Solution is non-empty and substantive (>= 50 chars). Skipped when
+       solution is None (teacher-provided).
+    2. Every rubric point references a step label. When strict_steps=True,
+       the label must exist in the solution text (e.g. "Step 2:" requires
+       "Step 2" in the solution). When False (teacher solution without
+       numbered steps), step numbers must simply be sequential from 1.
+    3. Granularity: a question worth >= 4 points needs at least 2 rubric points.
+    4. Point sum: auto-fix ±1 on the last point; larger diffs are issues.
+    """
+    issues = []
+    pts = [p for p in (ap_points or []) if isinstance(p, dict)]
+
+    # 1. Solution substance (skip when solution is teacher-provided / None).
+    if solution is not None:
+        sol = (solution or "").strip()
+        if len(sol) < 50:
+            issues.append(
+                f"Solution is empty or too short ({len(sol)} chars). "
+                "Write the complete worked solution with numbered steps.")
+
+    # 2. Collect step labels present in the solution.
+    steps_found = set()
+    if solution:
+        for m in re.finditer(r"(?:Part\s*\(([a-zA-Z])\)\s*)?Step\s*(\d+)",
+                             solution, re.IGNORECASE):
+            part = m.group(1).lower() if m.group(1) else None
+            steps_found.add((part, int(m.group(2))))
+
+    # 3. Rubric points exist and are granular enough.
+    target = int(round(max_score))
+    if not pts:
+        issues.append("No rubric points generated. Break the solution into "
+                      "steps and assign points to each.")
+    else:
+        if target >= 4 and len(pts) < 2:
+            issues.append(
+                f"Only {len(pts)} rubric point(s) for a {target}-point question. "
+                "Break the solution into at least 2 steps with separate points.")
+        # Every point must reference a step. Collect referenced step numbers.
+        ref_steps = []
+        for i, p in enumerate(pts):
+            for_text = str(p.get("for", ""))
+            m = re.search(r"(?:Part\s*\(([a-zA-Z])\)\s*)?Step\s*(\d+)",
+                          for_text, re.IGNORECASE)
+            if not m:
+                issues.append(
+                    f'Rubric point {i + 1} does not reference a solution step '
+                    '(its "for" must start with the step label, e.g. "Step 2: ...").')
+                continue
+            part = m.group(1).lower() if m.group(1) else None
+            key = (part, int(m.group(2)))
+            ref_steps.append(key)
+            if strict_steps and solution is not None and key not in steps_found:
+                label = f"Step {key[1]}" + (f" of Part ({key[0]})" if key[0] else "")
+                issues.append(
+                    f"Rubric point {i + 1} references {label}, which does "
+                    "not exist in the solution steps.")
+        # Non-strict mode: step numbers must be sequential from 1.
+        if not strict_steps and ref_steps:
+            nums = sorted(n for _, n in ref_steps)
+            if nums != list(range(1, len(nums) + 1)):
+                issues.append(
+                    f"Rubric step numbers are not sequential from 1: {nums}. "
+                    "Number the steps 1, 2, 3, ... in order.")
+
+    # 4. Point sum: auto-fix ±1, larger diffs are issues.
+    total = sum(int(p.get("points", 0) or 0) for p in pts)
+    diff = target - total
+    if diff != 0:
+        if abs(diff) == 1 and pts:
+            pts[-1]["points"] = int(pts[-1].get("points", 0) or 0) + diff
+        else:
+            issues.append(
+                f"Rubric points sum to {total}, not {target}. "
+                f"Redistribute to sum to exactly {target}.")
+
+    return pts, issues
 
 
 def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
