@@ -1715,6 +1715,20 @@ def test_validate_ocr_check(errors):
     print("  done")
 
 
+def test_verifier_uses_reasoning_model(errors):
+    """Verifier must use the reasoning model (o3), not gpt-4o.
+
+    User request 2026-10-07: try a better model for math verification.
+    """
+    print("Testing verifier reasoning model...")
+    import grader
+    import inspect
+    src_code = inspect.getsource(grader.validate_question)
+    if "REASONING_MODEL" not in src_code:
+        errors.append("validate_question should use REASONING_MODEL (o3)")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1726,6 +1740,7 @@ def main():
     test_is_ap_format(errors)
     test_verifier_equivalent_forms_prompt(errors)
     test_validate_ocr_check(errors)
+    test_verifier_uses_reasoning_model(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)

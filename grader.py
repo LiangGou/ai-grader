@@ -798,8 +798,10 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
                 pass
         user_msg += "\n\n[Original photos attached — verify the transcription against the handwriting.]"
         user_content[0] = {"type": "text", "text": user_msg}
+    # Use the reasoning model (o3) for verification — much better at math
+    # than gpt-4o (user request 2026-10-07: "try a better model").
     data = _chat_json(VALIDATE_SYSTEM, user_content,
-        max_tokens=2048,
+        max_tokens=2048, model=REASONING_MODEL,
     )
     agrees = data.get("agrees")
     confidence = str(data.get("confidence", "")).lower()
