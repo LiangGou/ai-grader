@@ -1664,6 +1664,28 @@ def test_validate_retry_hint(errors):
     print("  done")
 
 
+def test_safe_eval_equality(errors):
+    """_safe_eval must handle 'LHS = RHS' format (bug 2026-10-07).
+
+    LLM generates checks like "6*120-2 = 718". Should return ~0 (equality holds).
+    """
+    print("Testing _safe_eval equality...")
+    import grader
+    # Equality holds -> ~0.
+    r = grader._safe_eval("6 * 120 - 2 = 718")
+    if r is None or abs(r) > 1e-6:
+        errors.append(f"'6*120-2 = 718' should be ~0, got {r}")
+    # Equality fails -> nonzero.
+    r2 = grader._safe_eval("6 * 120 - 2 = 719")
+    if r2 is None or abs(r2) < 1e-6:
+        errors.append(f"'6*120-2 = 719' should be nonzero, got {r2}")
+    # Plain expression still works.
+    r3 = grader._safe_eval("2 + 3 * 4")
+    if r3 is None or abs(r3 - 14) > 1e-6:
+        errors.append(f"'2+3*4' should be 14, got {r3}")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1710,6 +1732,7 @@ def main():
     test_teacher_criteria_forced_to_ap(errors)
     test_verifier_python_checks_override(errors)
     test_validate_retry_hint(errors)
+    test_safe_eval_equality(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 

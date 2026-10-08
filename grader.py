@@ -340,9 +340,23 @@ def _safe_eval(expr, extra_names=None):
     Only numbers, arithmetic operators, whitelisted math functions, and
     `extra_names` (e.g. {"x": value}) are allowed — no imports, attribute
     access, or other names. Returns the float result, or None if disallowed.
+
+    Also handles "LHS = RHS" equality format (common in LLM-generated checks):
+    returns LHS - RHS, so ~0 means the equality holds.
     """
     import ast
     import math
+
+    # Handle "expr = value" format: verify the equality by subtraction.
+    # (Bug fix 2026-10-07: LLM generates "6*120-2 = 718", not just "6*120-2".)
+    if isinstance(expr, str) and "=" in expr and "==" not in expr:
+        parts = expr.split("=", 1)
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+            lhs = _safe_eval(parts[0].strip(), extra_names)
+            rhs = _safe_eval(parts[1].strip(), extra_names)
+            if lhs is not None and rhs is not None:
+                return lhs - rhs
+            return None
 
     allowed_names = {
         "pi": math.pi, "e": math.e, "tau": math.tau,
