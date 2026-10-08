@@ -463,6 +463,7 @@ def api_save_grade():
             float(data.get("total", 0)),
             float(data.get("max_total", 0)),
             data.get("overall_feedback") or "",
+            data.get("photos") or [],
         )
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({"ok": False, "error": f"Save failed, incomplete data: {e}"}), 400
@@ -515,7 +516,13 @@ def grade_detail_page(grade_id):
         questions = json.loads(g["questions_json"] or "[]")
     except (json.JSONDecodeError, TypeError):
         questions = []
-    return render_template("grade_detail.html", a=a, g=g, questions=questions, env=_env_status())
+    try:
+        photos = json.loads(g.get("images") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        photos = []
+    # Only keep photos that still exist on disk.
+    photos = [p for p in photos if os.path.exists(os.path.join(UPLOAD_DIR, p))]
+    return render_template("grade_detail.html", a=a, g=g, questions=questions, photos=photos, env=_env_status())
 
 
 # ---------- Settings ----------

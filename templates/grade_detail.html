@@ -8,6 +8,17 @@
   <p class="total-line">Total: <strong>{{ g.total }} / {{ g.max_total }} pts</strong></p>
 </div>
 
+{% if photos %}
+<div class="card">
+  <p><strong>📷 Student paper</strong></p>
+  <div class="thumb-row">
+    {% for p in photos %}
+    <img class="thumb enlargeable" src="{{ url_for('uploaded_file', filename=p) }}" alt="Student paper page">
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% for q in questions %}
 <div class="card math-text">
   <div class="row-between">

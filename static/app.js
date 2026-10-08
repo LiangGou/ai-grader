@@ -755,6 +755,7 @@
             return;
           }
           currentResult = data.result;
+          currentResult.photos = data.photos || [];
           renderResult(name, data.result);
         })
         .catch(function (e) {
@@ -820,7 +821,8 @@
           questions: questions,
           total: total,
           max_total: currentResult.max_total,
-          overall_feedback: $("overallFeedback").value
+          overall_feedback: $("overallFeedback").value,
+          photos: currentResult.photos || []
         })
       })
         .then(function (r) { return r.json(); })

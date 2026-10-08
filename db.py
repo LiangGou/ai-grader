@@ -53,6 +53,10 @@ def init_db():
     # Migration: saved AP standard comparison (added after initial release).
     if "ap_comparison" not in cols:
         cur.execute("ALTER TABLE assignments ADD COLUMN ap_comparison TEXT DEFAULT ''")
+    # Migration: student paper photos linked to each grade.
+    gcols = [r[1] for r in cur.execute("PRAGMA table_info(grades)").fetchall()]
+    if "images" not in gcols:
+        cur.execute("ALTER TABLE grades ADD COLUMN images TEXT DEFAULT '[]'")
     conn.commit()
     conn.close()
 
@@ -138,13 +142,13 @@ def save_reference_images(assignment_id, paths):
 
 
 # ---------- Grades ----------
-def save_grade(assignment_id, student_name, questions, total, max_total, overall_feedback):
+def save_grade(assignment_id, student_name, questions, total, max_total, overall_feedback, images=None):
     conn = _connect()
     cur = conn.cursor()
     cur.execute(
         """INSERT INTO grades
-           (assignment_id, student_name, questions_json, total, max_total, overall_feedback, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           (assignment_id, student_name, questions_json, total, max_total, overall_feedback, images, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             assignment_id,
             student_name,
@@ -152,6 +156,7 @@ def save_grade(assignment_id, student_name, questions, total, max_total, overall
             total,
             max_total,
             overall_feedback,
+            json.dumps(images or [], ensure_ascii=False),
             now(),
         ),
     )
