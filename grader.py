@@ -533,6 +533,41 @@ _DIAGRAM_CODE_BLOCKLIST = (
 )
 
 
+DIAGRAM_VALIDATE_SYSTEM = """You are a math diagram checker. You are shown a diagram generated for a math problem, along with the problem text and reference solution.
+Check if the diagram correctly represents the problem:
+1. Does it show the right type of graph (e.g. parabola vs line vs rational function)?
+2. Are key features correct (intercepts, asymptotes, critical points, shape)?
+3. Are axes labeled and the diagram readable?
+Output ONLY a JSON object: {"valid": true/false, "reason": "<one sentence>"}
+Set valid=true only if the diagram is mathematically correct for the problem."""
+
+
+def _validate_diagram(image_path, question_text, reference_solution):
+    """Validate a generated diagram using the vision model.
+
+    Returns (valid: bool, reason: str). The vision model looks at the
+    generated image and checks it against the problem requirements.
+    """
+    try:
+        import base64
+        with open(image_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode()
+        data = _chat_json(
+            DIAGRAM_VALIDATE_SYSTEM,
+            [
+                {"type": "text", "text": f"Problem:\n{question_text}\n\nReference solution:\n{reference_solution}\n\nDoes this diagram correctly represent the problem?"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+            ],
+            max_tokens=500,
+            model="gpt-5.6-sol",
+        )
+        if isinstance(data, dict):
+            return bool(data.get("valid", False)), str(data.get("reason", ""))
+        return False, "validation failed"
+    except Exception as e:
+        return False, f"validation error: {e}"
+
+
 def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hint=""):
     """Generate a diagram with Python/matplotlib via the reasoning model.
 
@@ -617,7 +652,17 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
         except Exception:
             pass
         return None
-    return {"kind": "image", "url": f"/uploads/{name}"}
+    # Validate the generated diagram with the vision model.
+    valid, reason = _validate_diagram(out_path, question_text, reference_solution)
+    if not valid:
+        # Keep the image but flag it; the caller can decide to use fallback.
+        # For now, return None so fallback (photo crop) can try.
+        try:
+            os.remove(out_path)
+        except Exception:
+            pass
+        return None
+    return {"kind": "image", "url": f"/uploads/{name}", "validated": True, "validation_note": reason}
 
 
 def _crop_graph(image_paths, spec, upload_dir, question_text=""):

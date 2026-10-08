@@ -53,8 +53,16 @@ def stage1_rubric_creation():
         pts = [int(m) for m in re.findall(r"(\d+)\s*pt:", criteria)]
         pts_sum = sum(pts)
         pts_ok = pts_sum == int(max_score) if max_score else False
+        # Diagram check: if question needs a graph, was one generated and validated?
+        qtext = item.get("question_text", "")
+        needs_graph = grader._would_graph_help(qtext)
+        graph = item.get("graph")
+        has_graph = graph is not None
+        graph_validated = bool(graph.get("validated")) if isinstance(graph, dict) else False
+        graph_ok = (not needs_graph) or (has_graph and graph_validated)
         print(f"  Q{q}: verified={verified}, ap_format={ap_format}, "
-              f"pts_sum={pts_sum}/{max_score} ok={pts_ok}")
+              f"pts_sum={pts_sum}/{max_score} ok={pts_ok}, "
+              f"needs_graph={needs_graph} has_graph={has_graph}")
         results.append({
             "q": q,
             "verified": verified,
@@ -63,6 +71,10 @@ def stage1_rubric_creation():
             "points_sum": pts_sum,
             "max_score": max_score,
             "points_ok": pts_ok,
+            "needs_graph": needs_graph,
+            "has_graph": has_graph,
+            "graph_validated": graph_validated,
+            "graph_ok": graph_ok,
             "criteria_preview": criteria[:200],
             "origin": item.get("origin", ""),
         })
@@ -85,14 +97,19 @@ def stage1_rubric_creation():
     verified_count = sum(1 for r in results if r["verified"] == "yes")
     ap_count = sum(1 for r in results if r["ap_format"])
     pts_ok_count = sum(1 for r in results if r["points_ok"])
+    graph_ok_count = sum(1 for r in results if r.get("graph_ok"))
+    needs_graph_count = sum(1 for r in results if r.get("needs_graph"))
     print(f"\nStage 1 done in {dt:.1f}s: {len(results)} questions, "
-          f"{verified_count} verified, {ap_count} AP format, {pts_ok_count} points OK")
+          f"{verified_count} verified, {ap_count} AP format, {pts_ok_count} points OK, "
+          f"{graph_ok_count}/{needs_graph_count} graphs OK")
     return {
         "duration_s": round(dt, 1),
         "total": len(results),
         "verified": verified_count,
         "ap_format": ap_count,
         "points_ok": pts_ok_count,
+        "graphs_ok": graph_ok_count,
+        "needs_graph": needs_graph_count,
         "questions": results,
         "items": items_out,
     }
