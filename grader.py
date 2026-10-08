@@ -225,6 +225,18 @@ def normalize_latex(text):
     # drop any remaining replacement chars so they don't render as mojibake.
     text = re.sub(r"\ufffd(\d+)\ufffd", r"\1", text)
     text = text.replace("\ufffd", "")
+    # The model also emits intact circled digits ①-⑳ (U+2460-U+2473) etc.,
+    # which KaTeX cannot render (shows as �). Convert to plain digits.
+    def _circled_to_digit(m):
+        cp = ord(m.group(0))
+        if 0x2460 <= cp <= 0x2473:  # ①-⑳
+            return str(cp - 0x2460 + 1)
+        if 0x3251 <= cp <= 0x325F:  # ㉑-㉟
+            return str(cp - 0x3251 + 21)
+        if 0x32B1 <= cp <= 0x32BF:  # ㊱-㊿
+            return str(cp - 0x32B1 + 36)
+        return m.group(0)
+    text = re.sub("[\u2460-\u2473\u3251-\u325f\u32b1-\u32bf]", _circled_to_digit, text)
     # The model types literal \n (backslash + n) for line breaks between
     # formulas. KaTeX has no \n command, so it renders red. Turn it into a
     # real newline — but NOT when it's the start of a real command like

@@ -596,11 +596,24 @@
     function renderPreviews() {
       var preview = $("preview");
       preview.innerHTML = "";
-      selectedFiles.forEach(function (f) {
+      selectedFiles.forEach(function (f, idx) {
+        var wrap = document.createElement("div");
+        wrap.className = "example-item";
         var img = document.createElement("img");
         img.className = "thumb";
         img.src = URL.createObjectURL(f);
-        preview.appendChild(img);
+        var del = document.createElement("button");
+        del.type = "button";
+        del.className = "btn btn-small example-del";
+        del.textContent = "✕";
+        del.title = "Remove this photo";
+        del.addEventListener("click", function () {
+          selectedFiles.splice(idx, 1);
+          renderPreviews();
+        });
+        wrap.appendChild(img);
+        wrap.appendChild(del);
+        preview.appendChild(wrap);
       });
     }
     function handlePicked(input) {

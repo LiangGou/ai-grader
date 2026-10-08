@@ -142,5 +142,22 @@ if (canRetryMatch) {
   );
 }
 
+
+// Grading page photo delete (reported 2026-10-07): each preview thumbnail
+// must have a delete button that removes it from the selection.
+(function testGradePhotoDelete() {
+  // renderPreviews builds .example-item > img.thumb + button.example-del
+  // with textContent "✕" for each file in selectedFiles.
+  const hasDeleteInRender =
+    appJs.includes('function renderPreviews()') &&
+    appJs.includes('del.textContent = "✕"') &&
+    appJs.includes('selectedFiles.splice(idx, 1)');
+  check("grade preview has delete button", hasDeleteInRender, true);
+  // The delete button must be inside the grading-page block (not just the
+  // rubric-example block which already had one).
+  const gradeBlock = appJs.slice(appJs.indexOf("Grading page"));
+  check("grade block has its own delete", gradeBlock.includes('del.textContent = "✕"'), true);
+})();
+
 console.log(failures === 0 ? "\nAll frontend tests passed!" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

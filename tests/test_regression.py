@@ -232,6 +232,14 @@ def test_unicode_sanitization(errors):
     out2 = grader.normalize_latex("Step 2: test \ufffd content \ufffd here")
     if "\ufffd" in out2:
         errors.append("Sanitization: stray U+FFFD not dropped")
+    # Intact circled digits ①-⑳ (U+2460-U+2473): KaTeX can't render them
+    # (shows as �), so convert to plain digits. Reported 2026-10-07: the
+    # old test only covered corrupted �1�, missing this case.
+    out3 = grader.normalize_latex("Step \u2460 and \u2461 done")
+    if "\u2460" in out3 or "\u2461" in out3:
+        errors.append("Sanitization: circled digits not converted")
+    if "1" not in out3 or "2" not in out3:
+        errors.append("Sanitization: circled digit value lost")
     # Normal text untouched.
     out3 = grader.normalize_latex("Solve $x^2 = 4$ for $x$.")
     if out3 != "Solve $x^2 = 4$ for $x$.":
