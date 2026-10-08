@@ -1,0 +1,16 @@
+{
+  "quiz": "Quiz #4",
+  "images": [
+    "/home/hatch/workspace/ai-grader/eval/quiz4/quiz4_p1.jpg",
+    "/home/hatch/workspace/ai-grader/eval/quiz4/quiz4_p2.jpg",
+    "/home/hatch/workspace/ai-grader/eval/quiz4/quiz4_p3.jpg",
+    "/home/hatch/workspace/ai-grader/eval/quiz4/quiz4_p4.jpg"
+  ],
+  "stage1_rubric": {
+    "error": "Invalid port: ':1]'",
+    "questions": []
+  },
+  "stage2_grading": {
+    "error": "no rubrics from stage 1"
+  }
+}
