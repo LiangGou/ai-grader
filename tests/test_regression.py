@@ -1561,6 +1561,29 @@ def test_passwords_must_differ(errors):
     print("  done")
 
 
+def test_regenerate_rubric_endpoint(errors):
+    """POST /api/regenerate_rubric returns AP-format criteria (2026-10-07)."""
+    print("Testing /api/regenerate_rubric endpoint...")
+    import os
+    os.environ.setdefault("FLASK_SECRET_KEY", "test-secret-" + "x" * 32)
+    os.environ.setdefault("GRADER_PASSWORD", "test-grader-pass-123")
+    os.environ.setdefault("ADMIN_PASSWORD", "test-admin-pass-123")
+    import app as app_module
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "teacher", "password": "test-admin-pass-123"})
+    # Missing fields -> 400.
+    r = client.post("/api/regenerate_rubric", json={})
+    if r.status_code != 400:
+        errors.append(f"empty payload: got {r.status_code}, expected 400")
+    # Route exists (not 404).
+    r = client.post("/api/regenerate_rubric", json={
+        "q": "Q1", "question_text": "Solve x+1=2", "reference_solution": "",
+        "max_score": 2})
+    if r.status_code == 404:
+        errors.append("route /api/regenerate_rubric not found")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1603,6 +1626,7 @@ def main():
     test_ap_rubric_no_weak_fallback(errors)
     test_proactive_graph_heuristic(errors)
     test_passwords_must_differ(errors)
+    test_regenerate_rubric_endpoint(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 

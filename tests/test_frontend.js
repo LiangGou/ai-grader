@@ -159,5 +159,14 @@ if (canRetryMatch) {
   check("grade block has its own delete", gradeBlock.includes('del.textContent = "✕"'), true);
 })();
 
+
+// Regenerate rubric button (reported 2026-10-07): each rubric row must have
+// a "Regenerate" button that calls /api/regenerate_rubric.
+(function testRegenButton() {
+  const hasBtn = appJs.includes('class="btn btn-small regen-rubric"') &&
+    appJs.includes('/api/regenerate_rubric');
+  check("regen rubric button exists", hasBtn, true);
+})();
+
 console.log(failures === 0 ? "\nAll frontend tests passed!" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

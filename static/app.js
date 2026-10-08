@@ -193,13 +193,49 @@
       '<label class="rubric-field"><span>Reference solution (digitized)</span>' +
         '<textarea class="rs" rows="3" placeholder="Reference solution as read from the example">' + escapeHtml(item.reference_solution) + '</textarea>' +
         '<div class="math-preview"></div></label>' +
-      '<label class="rubric-field"><span>Scoring / deduction rules</span>' +
+      '<label class="rubric-field"><span>Scoring / deduction rules ' +
+        '<button type="button" class="btn btn-small regen-rubric" title="Regenerate rubric from the current solution using AP standards">🔄 Regenerate</button>' +
+        '<span class="regen-status muted"></span></span>' +
         '<textarea class="cr" rows="3" placeholder="Scoring/deduction rules">' + escapeHtml(item.criteria) + '</textarea></label>' +
       '<div class="graph-slot"></div>' +
       note +
       retryHtml;
     row._graph = item.graph || null;
     row.querySelector(".row-del").addEventListener("click", function () { row.remove(); scheduleAutoSave(); });
+    // Regenerate rubric from current solution, AP standards.
+    row.querySelector(".regen-rubric").addEventListener("click", function () {
+      var btn = this;
+      var status = row.querySelector(".regen-status");
+      btn.disabled = true;
+      status.textContent = " ⏳ Regenerating…";
+      fetch("/api/regenerate_rubric", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assignment_id: window.ASSIGNMENT_ID,
+          q: row.querySelector(".q").value,
+          question_text: row.querySelector(".qt").value,
+          reference_solution: row.querySelector(".rs").value,
+          max_score: parseFloat(row.querySelector(".ms").value) || 0
+        })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          btn.disabled = false;
+          if (!data.ok) {
+            status.textContent = " ❌ " + (data.error || "failed");
+            return;
+          }
+          row.querySelector(".cr").value = data.criteria || "";
+          status.textContent = " ✅ Done";
+          scheduleAutoSave();
+          setTimeout(function () { status.textContent = ""; }, 3000);
+        })
+        .catch(function (e) {
+          btn.disabled = false;
+          status.textContent = " ❌ " + e.message;
+        });
+    });
     // Retry wiring.
     var retryToggle = row.querySelector(".retry-toggle");
     if (retryToggle) {

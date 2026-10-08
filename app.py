@@ -327,6 +327,38 @@ def api_retry_question():
         return jsonify({"ok": False, "error": f"Retry failed: {e}"}), 500
     return jsonify({"ok": True, "result": result})
 
+@app.route("/api/regenerate_rubric", methods=["POST"])
+def api_regenerate_rubric():
+    """Regenerate AP-style rubric from the current reference solution.
+
+    Body: {assignment_id, q, question_text, reference_solution, max_score}.
+    Uses generate_ap_rubric_only with the AP enforcement (5 attempts + fallback).
+    Returns {ok, criteria}.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    q_label = str(data.get("q", "")).strip()
+    question_text = str(data.get("question_text", "")).strip()
+    reference_solution = str(data.get("reference_solution", "")).strip()
+    try:
+        max_score = float(data.get("max_score", 0) or 0)
+    except (TypeError, ValueError):
+        max_score = 0
+    if not question_text:
+        return jsonify({"ok": False, "error": "Question text is empty."}), 400
+    if not reference_solution:
+        return jsonify({"ok": False, "error": "Reference solution is empty."}), 400
+    if max_score <= 0:
+        return jsonify({"ok": False, "error": "Max score must be positive."}), 400
+    try:
+        criteria = grader.generate_ap_rubric_only(
+            question_text, reference_solution, max_score, q_label)
+    except Exception as e:  # noqa: BLE001
+        # generate_ap_rubric_only raises on validation failure; fall back
+        # to structural AP format so the teacher always gets usable output.
+        criteria = grader._minimal_ap_rubric(reference_solution, max_score, q_label)
+    return jsonify({"ok": True, "criteria": criteria})
+
+
 @app.route("/assignment/<int:assignment_id>/upload_rubric_example", methods=["POST"])
 def assignment_upload_rubric_example(assignment_id):
     a = db.get_assignment(assignment_id)
