@@ -1783,6 +1783,31 @@ def test_grader_uses_gpt56(errors):
     print("  done")
 
 
+def test_digitize_retry_on_bad_json(errors):
+    """digitize_example must retry on malformed JSON (bug 2026-10-08).
+
+    gpt-5.6-sol occasionally emits bad escapes; one bad response must not
+    kill the whole rubric build.
+    """
+    print("Testing digitize retry...")
+    import grader
+    from unittest.mock import patch
+    calls = {"n": 0}
+    def fake_chat(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ValueError("Invalid \\escape")
+        return {"questions": []}
+    with patch.object(grader, "_chat_json", side_effect=fake_chat):
+        try:
+            grader.digitize_example(["/tmp/fake.jpg"])
+        except Exception:
+            pass  # _data_url will fail on fake path; retry logic is what matters
+    if calls["n"] < 2:
+        errors.append("digitize_example should retry on bad JSON")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1798,6 +1823,7 @@ def main():
     test_chat_json_gpt5_compat(errors)
     test_digitize_uses_gpt56(errors)
     test_grader_uses_gpt56(errors)
+    test_digitize_retry_on_bad_json(errors)
     test_verifier_empty_response(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)

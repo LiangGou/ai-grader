@@ -742,8 +742,20 @@ def digitize_example(image_paths, hint=None):
     user_content = [{"type": "text", "text": text}]
     for p in image_paths:
         user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
-    data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=4096,
-                      model="gpt-5.6-sol")
+    data = None
+    last_err = None
+    # Retry on malformed JSON (gpt-5.6-sol occasionally emits bad escapes,
+    # 2026-10-08). Don't let one bad response kill the whole rubric build.
+    for attempt in range(3):
+        try:
+            data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=4096,
+                              model="gpt-5.6-sol")
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+    if data is None:
+        raise RuntimeError(f"Digitization failed after 3 attempts: {last_err}")
     questions = []
     for it in data.get("questions", []):
         try:

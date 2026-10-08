@@ -6,23 +6,12 @@
     "/home/hatch/workspace/ai-grader/eval/quiz4b/quiz4b_p3.jpg"
   ],
   "stage1_rubric": {
-    "duration_s": 180.6,
+    "duration_s": 165.6,
     "total": 9,
-    "verified": 7,
+    "verified": 9,
     "ap_format": 9,
     "points_ok": 9,
     "questions": [
-      {
-        "q": "Q1",
-        "verified": "yes",
-        "verify_note": "",
-        "ap_format": true,
-        "points_sum": 4,
-        "max_score": 4.0,
-        "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: converts 1 minute to 60 seconds (t = 60 s) before evaluation; 1 pt: Step 2: differentiates V to obtain dV/dt = 12t^2 + 10t; 1 pt: Step 3: substitutes t = 60 into dV/dt and carries out th",
-        "origin": "teacher_example"
-      },
       {
         "q": "Q3",
         "verified": "yes",
@@ -31,18 +20,18 @@
         "points_sum": 4,
         "max_score": 4.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: states the width of each subinterval, \u0394x = 5/n (or equivalent).; 1 pt: Step 2: defines a valid sample point on [0,5], e.g., x_k = 5k/n (or any consistent form).; 1 pt: Step 3: writes the",
+        "criteria_preview": "1 pt: Step 1: expresses the subinterval width as \u0394x = 5/n (or equivalent).; 1 pt: Step 2: chooses right-hand (or any consistent) sample points and states x_k = 5k/n (or equivalent correct formula).; 1",
         "origin": "teacher_example"
       },
       {
-        "q": "Q2",
+        "q": "Q1",
         "verified": "yes",
         "verify_note": "",
         "ap_format": true,
-        "points_sum": 7,
-        "max_score": 7.0,
+        "points_sum": 4,
+        "max_score": 4.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: differentiates f(x)=cos x to obtain f'(x) = -sin x; 1 pt: Step 2: evaluates the derivative at x = \u03c0/2 to get m_tan = -1; 1 pt: Step 3: finds the normal slope as the negative reciprocal, ",
+        "criteria_preview": "1 pt: Step 1: correctly differentiates 4t^3 to obtain 12t^2 using the power rule; 1 pt: Step 2: correctly differentiates 5t^2 to obtain 10t and writes dV/dt = 12t^2 + 10t; 1 pt: Step 3: converts 1 min",
         "origin": "teacher_example"
       },
       {
@@ -53,7 +42,18 @@
         "points_sum": 5,
         "max_score": 5.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: identifies the first midpoint x1 = 6; 1 pt: Step 2: identifies the second midpoint x2 = 10; 1 pt: Step 3: identifies the third midpoint x3 = 14; 1 pt: Step 4: sets up the midpoint sum S ",
+        "criteria_preview": "1 pt: Step 1: finds the subinterval width \u0394x = (16\u22124)/3 = 4; 2 pt: Step 2: determines all three midpoints x\u2081 = 6, x\u2082 = 10, x\u2083 = 14; 1 pt: Step 3: evaluates the function at the midpoints to obtain e\u2075, ",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q2",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 7,
+        "max_score": 7.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: differentiates f(x)=cos x correctly to obtain f'(x) = -sin x; 1 pt: Step 2: evaluates the derivative at x = \u03c0/2 to find the tangent slope m_tan = -1; 1 pt: Step 3: determines the normal ",
         "origin": "teacher_example"
       },
       {
@@ -64,7 +64,29 @@
         "points_sum": 4,
         "max_score": 4.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: correctly sets up the quotient-rule structure  f'(x)=[(x^2-3)(d/dx(2x+1))-(2x+1)(d/dx(x^2-3))]/(x^2-3)^2; 1 pt: Step 2: computes the needed derivatives  d/dx(2x+1)=2  and  d/dx(x^2-3)=2x",
+        "criteria_preview": "1 pt: Step 1: correctly differentiates the numerator (2x+1) to get 2 and the denominator (x^2\u22123) to get 2x; 1 pt: Step 2: applies the quotient rule to write f'(x) = [(x^2\u22123)(2) \u2212 (2x+1)(2x)] / (x^2\u22123)",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q4",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 10,
+        "max_score": 10.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: identifies the x-intercepts (zeros) at x = 0 and x = 5; 1 pt: Step 2: cancels (x\u22122), states x \u2260 2, and gives the hole at (2, \u22126\u20445); 1 pt: Step 3: states the vertical asymptote x = \u22123; 1 ",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q7",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 3,
+        "max_score": 3.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: states or shows on the sketch that f(x) is increasing on (-\u221e, -2) and (1, \u221e) and decreasing on (-2, 1) because f'(x) is positive or negative on those intervals.; 1 pt: Step 2: labels or ",
         "origin": "teacher_example"
       },
       {
@@ -75,18 +97,7 @@
         "points_sum": 3,
         "max_score": 3.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: differentiates the outer square to get 2((\u22125x^2 + 4)^3 + 5); 1 pt: Step 2: correctly differentiates the inner expression (\u22125x^2 + 4)^3 + 5 to obtain 3(\u22125x^2 + 4)^2(\u221210x); 1 pt: Step 3: c",
-        "origin": "teacher_example"
-      },
-      {
-        "q": "Q4",
-        "verified": "review",
-        "verify_note": "Not confirmed after 3 attempts (The photo uses (x\u22125)^2 and labels the hole at x=2 and vertical asymptotes x=\u22123,\u22121,3, so it corresponds to a different function and the supplied transcription is inaccurate.). Please review manually.",
-        "ap_format": true,
-        "points_sum": 10,
-        "max_score": 10.0,
-        "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: factors numerator/denominator and cancels the common (x\u20122) term to recognize a removable discontinuity; 1 pt: Step 2: states the x-intercept (zero) at x = 0; 1 pt: Step 3: identifies the",
+        "criteria_preview": "1 pt: Step 1 (outer square): applies the chain rule to differentiate ( (\u22125x\u00b2+4)\u00b3+5 )\u00b2, producing 2((\u22125x\u00b2+4)\u00b3+5)(\u2026); 1 pt: Step 2 (inner cube): differentiates (\u22125x\u00b2+4)\u00b3 within the product, yielding 3(\u2212",
         "origin": "teacher_example"
       },
       {
@@ -97,24 +108,13 @@
         "points_sum": 10,
         "max_score": 10.0,
         "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: differentiates f(x) correctly to obtain f'(x) = 8x^3 + 16x^2 - 2x - 4; 2 pt: Step 2: solves f'(x) = 0 and identifies the critical number x = -2; 2 pt: Step 3: solves f'(x) = 0 and identi",
+        "criteria_preview": "2 pt: Step 1: computes the derivative f'(x) = 8x^3 + 16x^2 - 2x - 4; 1 pt: Step 2: sets f'(x) = 0 to obtain 8x^3 + 16x^2 - 2x - 4 = 0; 1 pt: Step 3: factors the derivative correctly to (x + 2)(2x + 1)",
         "origin": "teacher_example"
-      },
-      {
-        "q": "Q7",
-        "verified": "review",
-        "verify_note": "No explicit formula for f' given, so numerical verification is impossible; reasoning appears internally consistent.",
-        "ap_format": true,
-        "points_sum": 3,
-        "max_score": 3.0,
-        "points_ok": true,
-        "criteria_preview": "1 pt: Step 1: Identify the x-values where f'(x)=0 on the given graph and plot the corresponding local extrema on the sketch of f(x).; 1 pt: Step 2: Draw f(x) so it is increasing on intervals where f'(",
-        "origin": "ai_solved"
       }
     ]
   },
   "stage2_grading": {
-    "duration_s": 7.9,
+    "duration_s": 27.5,
     "total": 9,
     "matched": 8,
     "questions": [
@@ -124,7 +124,7 @@
         "max_score": 4.0,
         "expected": 4.0,
         "match": true,
-        "feedback": "All steps completed: converted time, differentiated, substituted t=60, and included units."
+        "feedback": "Step 1 earned: derivative of 4t^3 is 12t^2. Step 2 earned: derivative of 5t^2 is 10t and the complete derivative is correct. Step 3 earned: 1 minute was converted to 60 seconds and substituted correctly. Step 4 earned: correct units m^3/s were stated."
       },
       {
         "q": "Q2",
@@ -132,7 +132,7 @@
         "max_score": 7.0,
         "expected": 7.0,
         "match": true,
-        "feedback": "All steps completed: derivative found, evaluated at \u03c0/2, normal line equation correct."
+        "feedback": "Steps 1-6 all earned. The derivative, tangent and normal slopes, point of tangency, point-slope equation, and simplified normal-line equation are all correct."
       },
       {
         "q": "Q3",
@@ -140,15 +140,15 @@
         "max_score": 4.0,
         "expected": 4.0,
         "match": true,
-        "feedback": "All steps completed: subintervals, sample points, and limit expression correctly set up."
+        "feedback": "Steps 1-4 all earned. The width, right-hand sample points, summand f(x_k)\u0394x, and limiting equality to the integral are correct."
       },
       {
         "q": "Q4",
-        "score": 7.0,
+        "score": 9.0,
         "max_score": 10.0,
         "expected": 10.0,
         "match": false,
-        "feedback": "Missing correct branching behavior near asymptotes and full detailed graph."
+        "feedback": "Step 1 earned: zeros x = 0 and x = 5 are identified. Step 2 lost: although an open circle is sketched, the paper does not show cancellation of x - 2, state x \u2260 2, and give the exact hole (2, -6/5). Steps 3-5 earned: all three vertical asymptotes are stated. Step 6 earned: the degree comparison and y"
       },
       {
         "q": "Q5",
@@ -156,7 +156,7 @@
         "max_score": 5.0,
         "expected": 5.0,
         "match": true,
-        "feedback": "Midpoint approximation correctly set up with function values and sum."
+        "feedback": "Steps 1-4 all earned. The width, all three midpoints, midpoint function values, and final midpoint sum are correct."
       },
       {
         "q": "Q6",
@@ -164,7 +164,7 @@
         "max_score": 4.0,
         "expected": 4.0,
         "match": true,
-        "feedback": "Correct application of quotient rule and simplifying to final derivative form."
+        "feedback": "Steps 1-4 all earned. The numerator and denominator derivatives are used correctly, the quotient-rule setup is correct, and both the expanded numerator and squared denominator are correct."
       },
       {
         "q": "Q7",
@@ -172,7 +172,7 @@
         "max_score": 3.0,
         "expected": 3.0,
         "match": true,
-        "feedback": "Correct sketch of f(x) with all sign changes and concavity adjustments."
+        "feedback": "Step 1 earned: the increasing/decreasing behavior agrees with the sign of f'. Step 2 earned: the local maximum at x = -2 and local minimum near x = 1 are depicted. Step 3 earned: the sketch changes from concave down to concave up near the midpoint of the derivative's zeros."
       },
       {
         "q": "Q8",
@@ -180,7 +180,7 @@
         "max_score": 3.0,
         "expected": 3.0,
         "match": true,
-        "feedback": "Chain rule applied correctly with proper differentiation of outer and inner functions."
+        "feedback": "Steps 1-3 all earned. The outer square contributes the factor 2, the inner cube contributes 3(-5x^2+4)^2, and the innermost quadratic contributes -10x."
       },
       {
         "q": "Q9",
@@ -188,7 +188,7 @@
         "max_score": 10.0,
         "expected": 10.0,
         "match": true,
-        "feedback": "All critical points and classifications correctly determined with supporting reasoning."
+        "feedback": "Steps 1-9 all earned. The derivative and equation f'(x)=0 are correct; the factorization and critical numbers are complete; the sign chart correctly classifies minima at x = -2 and x = 1/2 and a maximum at x = -1/2; all three function values and final ordered pairs are correct."
       }
     ]
   }
