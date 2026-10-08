@@ -584,22 +584,30 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
         f"{hint_line}"
         "Write Python code that draws the diagram for this problem."
     )
-    try:
-        data = _chat_json(
-            DIAGRAM_GEN_SYSTEM,
-            [{"type": "text", "text": prompt}],
-            max_tokens=2000,
-            model="gpt-5.6-sol",  # was o3; gpt-5.6-sol is more reliable (2026-10-08)
-        )
-        code = data.get("code", "") if isinstance(data, dict) else ""
-        if not code or not isinstance(code, str):
-            # The model may return the code under a different key or as raw text.
-            code = str(data) if data else ""
-        # Strip markdown fences if the model added them despite instructions.
-        code = re.sub(r"^```(?:python)?\s*", "", code.strip())
-        code = re.sub(r"\s*```$", "", code.strip())
-    except Exception:
-        return None
+    # Retry up to 3 times: gpt-5.6-sol sometimes returns empty responses
+    # for complex prompts (seen 2026-10-08 on rational function graphs).
+    code = ""
+    for attempt in range(3):
+        try:
+            data = _chat_json(
+                DIAGRAM_GEN_SYSTEM,
+                [{"type": "text", "text": prompt}],
+                max_tokens=2000,
+                model="gpt-5.6-sol",  # was o3; gpt-5.6-sol is more reliable (2026-10-08)
+            )
+            code = data.get("code", "") if isinstance(data, dict) else ""
+            if not code or not isinstance(code, str):
+                # The model may return the code under a different key or as raw text.
+                code = str(data) if data else ""
+            # Strip markdown fences if the model added them despite instructions.
+            code = re.sub(r"^```(?:python)?\s*", "", code.strip())
+            code = re.sub(r"\s*```$", "", code.strip())
+            if code:
+                break
+        except Exception:
+            if attempt == 2:
+                return None
+            continue
     if not code or len(code) > 8000:
         return None
     lowered = code.lower()

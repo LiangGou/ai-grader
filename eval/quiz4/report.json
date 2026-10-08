@@ -7,10 +7,219 @@
     "/home/hatch/workspace/ai-grader/eval/quiz4/quiz4_p4.jpg"
   ],
   "stage1_rubric": {
-    "error": "Digitization failed after 3 attempts: Invalid port: ':1]'",
-    "questions": []
+    "duration_s": 191.3,
+    "total": 9,
+    "verified": 9,
+    "ap_format": 9,
+    "points_ok": 9,
+    "graphs_ok": 2,
+    "needs_graph": 7,
+    "questions": [
+      {
+        "q": "Q1",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "needs_graph": false,
+        "has_graph": false,
+        "graph_ok": true,
+        "criteria_preview": "1 pt: Step 1: differentiates s=3t^2-2t+2 to obtain ds/dt = 6t - 2; 1 pt: Step 2: converts 2 minutes to 120 seconds (correct time conversion); 1 pt: Step 3: substitutes t = 120 s into ds/dt (e.g., 6(12",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q3",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 3,
+        "max_score": 3.0,
+        "points_ok": true,
+        "needs_graph": true,
+        "has_graph": false,
+        "graph_ok": false,
+        "criteria_preview": "1 pt: Step 1: differentiates the outer square to write f'(x)=2((x+3)^5-5)\u00b7(d/dx[(x+3)^5-5]); 1 pt: Step 2: differentiates the inner expression correctly, giving d/dx[(x+3)^5-5]=5(x+3)^4; 1 pt: Step 3:",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q2",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 7,
+        "max_score": 7.0,
+        "points_ok": true,
+        "needs_graph": true,
+        "has_graph": false,
+        "graph_ok": false,
+        "criteria_preview": "1 pt: Step 1: differentiates f(x)=cos x to obtain f'(x) = -sin x; 1 pt: Step 2: substitutes x = \u03c0/4 into f'(x); 1 pt: Step 3: evaluates f'(\u03c0/4) correctly as \u2212\u221a2\u20442 (tangent slope); 1 pt: Step 4: finds ",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q5",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 5,
+        "max_score": 5.0,
+        "points_ok": true,
+        "needs_graph": true,
+        "has_graph": false,
+        "graph_ok": false,
+        "criteria_preview": "1 pt: Step 1: computes the subinterval width \u0394x = (10\u22121)/3 = 3; 1 pt: Step 2: identifies the three midpoints 5/2, 11/2, and 17/2 for n = 3 on [1,10]; 1 pt: Step 3: evaluates the function y = e^{x+2} a",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q4",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 10,
+        "max_score": 10.0,
+        "points_ok": true,
+        "needs_graph": true,
+        "has_graph": false,
+        "graph_ok": false,
+        "criteria_preview": "1 pt: Step 1: cancels the common factor (x\u22123) to produce the simplified rational function; 1 pt: Step 2: identifies and labels the removable discontinuity (hole) at x = 3; 1 pt: Step 3: gives the x-in",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q6",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "needs_graph": true,
+        "has_graph": false,
+        "graph_ok": false,
+        "criteria_preview": "1 pt: Step 1: identifies u = 3x \u2212 4 and v = 2x + 1 and computes u\u2032 = 3, v\u2032 = 2 (sets up for the quotient rule); 1 pt: Step 2: applies the quotient rule to write f\u2032(x) = [(2x+1)(3) \u2212 (3x\u22124)(2)] / (2x+1",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q7",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "needs_graph": false,
+        "has_graph": false,
+        "graph_ok": true,
+        "criteria_preview": "1 pt: Step 1: states \u0394x = (1\u22120)/n = 1/n (may include the notation \u0394x = 1/n \u2192 0 as n \u2192 \u221e); 1 pt: Step 2: identifies sample points x_k = 0 + k\u0394x = k/n and specifies the index k = 1 to n; 1 pt: Step 3: b",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q9",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 10,
+        "max_score": 10.0,
+        "points_ok": true,
+        "needs_graph": true,
+        "has_graph": false,
+        "graph_ok": false,
+        "criteria_preview": "2 pt: Step 1: differentiates f(x) term-by-term to obtain f'(x)=4x^3-12x^2-x+3; 1 pt: Step 2: sets f'(x)=0 and correctly factors to (4x^2-1)(x-3)=0; 1 pt: Step 3: solves the factored equation to list a",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q8",
+        "verified": "yes",
+        "verify_note": "Solution gives textual sketch; no actual drawing provided.",
+        "ap_format": true,
+        "points_sum": 5,
+        "max_score": 5.0,
+        "points_ok": true,
+        "needs_graph": true,
+        "has_graph": false,
+        "graph_ok": false,
+        "criteria_preview": "1 pt: Step 1: From the sketch of f'(x), correctly identify and mark every x\u2013value where f'(x)=0 or f'(x) is undefined (the critical points for f).; 1 pt: Step 2: Determine the sign of f'(x) on each in",
+        "origin": "ai_solved"
+      }
+    ]
   },
   "stage2_grading": {
-    "error": "no rubrics from stage 1"
+    "duration_s": 42.9,
+    "total": 9,
+    "matched": 8,
+    "questions": [
+      {
+        "q": "Q1",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "Step 1 earned: correct derivative. Step 2 earned: correct time conversion. Step 3 earned: evaluation at t = 120 gives 718. Step 4 earned: correct units m/s."
+      },
+      {
+        "q": "Q2",
+        "score": 7.0,
+        "max_score": 7.0,
+        "expected": 7.0,
+        "match": true,
+        "feedback": "Steps 1-7 all earned: the derivative, substitution, tangent slope, negative reciprocal, tangency point, point-slope setup, and final normal-line equation are all correct."
+      },
+      {
+        "q": "Q3",
+        "score": 3.0,
+        "max_score": 3.0,
+        "expected": 3.0,
+        "match": true,
+        "feedback": "Steps 1-3 all earned: the outer square and inner expression were differentiated correctly and the factors were combined correctly."
+      },
+      {
+        "q": "Q4",
+        "score": 10.0,
+        "max_score": 10.0,
+        "expected": 10.0,
+        "match": true,
+        "feedback": "Steps 1-10 earned. The common factor is canceled; the hole, both zeros, and all three vertical asymptotes are identified. The degree comparison supports horizontal asymptote y = 0, the graph approaches it at both ends, crosses at x = -3, touches at the double zero x = 2, and marks the hole at x = 3."
+      },
+      {
+        "q": "Q5",
+        "score": 5.0,
+        "max_score": 5.0,
+        "expected": 5.0,
+        "match": true,
+        "feedback": "Steps 1-5 all earned: width, midpoints, function evaluations, midpoint-sum setup, and final expression are correct."
+      },
+      {
+        "q": "Q6",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "Steps 1-4 all earned. The numerator and denominator derivatives are correctly incorporated in the quotient-rule setup, and the expansion and simplification are correct."
+      },
+      {
+        "q": "Q7",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "Steps 1-4 all earned: Delta x = 1/n, sample points k/n with k = 1 to n, the correct integrand and width, and the limiting summation are all shown."
+      },
+      {
+        "q": "Q8",
+        "score": 0,
+        "max_score": 5.0,
+        "expected": 5.0,
+        "match": false,
+        "feedback": "Step 1 lost: no critical values are identified. Step 2 lost: no increasing/decreasing intervals are indicated. Step 3 lost: no relative minimum or maximum is classified. Step 4 lost: no concavity or inflection point is shown. Step 5 lost: no final sketch consistent with the given f'(x) is visible on"
+      },
+      {
+        "q": "Q9",
+        "score": 10.0,
+        "max_score": 10.0,
+        "expected": 10.0,
+        "match": true,
+        "feedback": "Steps 1-8 all earned. The derivative, factorization, critical numbers, classifications, function values 383/16, 415/16, and 5/2, and the final labeled extrema are all correct."
+      }
+    ]
   }
 }
