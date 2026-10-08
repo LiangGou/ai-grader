@@ -44,5 +44,103 @@ check("ai_solved + ok → false",
 check("teacher_example + ok → false",
   canRetryQuestion({ origin: "teacher_example" }, "ok"), false);
 
+const assignmentGateLine =
+  appJs.split(/\r?\n/).find(
+    line =>
+      line.includes("if (") &&
+      line.includes("window.ASSIGNMENT_ID") &&
+      line.includes('"itemsRows"')
+  ) || "";
+
+check(
+  "assignment initializer gate exists",
+  assignmentGateLine !== "",
+  true
+);
+check(
+  "assignment initializer gate references solveRubricBtn",
+  assignmentGateLine.includes('$("solveRubricBtn")'),
+  true
+);
+check(
+  "assignment initializer gate does not reference deleted generateRubricBtn",
+  assignmentGateLine.includes('$("generateRubricBtn")'),
+  false
+);
+check(
+  "assignment initializer gate requires itemsRows",
+  assignmentGateLine.includes('$("itemsRows")'),
+  true
+);
+check(
+  "assignment initializer gate requires ASSIGNMENT_ID",
+  assignmentGateLine.includes('typeof window.ASSIGNMENT_ID !== "undefined"'),
+  true
+);
+
+{
+  const fsForAssignmentTest = require("fs");
+  const pathForAssignmentTest = require("path");
+  const assignmentHtml = fsForAssignmentTest.readFileSync(
+    pathForAssignmentTest.join(
+      __dirname,
+      "..",
+      "templates",
+      "assignment.html"
+    ),
+    "utf8"
+  );
+
+  for (const id of ["itemsRows", "solveRubricBtn"]) {
+    const idPattern = new RegExp(
+      String.raw`\bid\s*=\s*["']${id}["']`
+    );
+    check(
+      `assignment template contains #${id}`,
+      idPattern.test(assignmentHtml),
+      true
+    );
+  }
+}
+
+const canRetryMatch = appJs.match(
+  /function canRetryQuestion\(item, state\) \{[\s\S]*?\n  \}/
+);
+check(
+  "canRetryQuestion standalone function exists",
+  Boolean(canRetryMatch),
+  true
+);
+
+if (canRetryMatch) {
+  const canRetryQuestion = eval("(" + canRetryMatch[0] + ")");
+
+  check(
+    "warn state permits retry",
+    canRetryQuestion({}, "warn"),
+    true
+  );
+  check(
+    "error state does not permit retry",
+    canRetryQuestion({}, "error"),
+    false
+  );
+  check(
+    "success state does not permit retry",
+    canRetryQuestion({}, "success"),
+    false
+  );
+  check(
+    "pending state does not permit retry",
+    canRetryQuestion({}, "pending"),
+    false
+  );
+  check(
+    "missing state does not permit retry",
+    canRetryQuestion({}, undefined),
+    false
+  );
+}
+
 console.log(failures === 0 ? "\nAll frontend tests passed!" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

@@ -352,6 +352,394 @@ def test_frontend_logic(errors):
         errors.append(f"Could not run frontend tests: {e}")
 
 
+def test_normalize_latex_environments(errors):
+    import grader
+
+    print("Testing normalize_latex environment protection...")
+
+    cases = [
+        (
+            "undelimited aligned",
+            r"\begin{aligned}x &= 1 \\ y &= 2\end{aligned}",
+            r"$$\begin{aligned}x &= 1 \\ y &= 2\end{aligned}$$",
+        ),
+        (
+            "delimited aligned",
+            r"$$\begin{aligned}x &= 1 \\ y &= 2\end{aligned}$$",
+            r"$$\begin{aligned}x &= 1 \\ y &= 2\end{aligned}$$",
+        ),
+        (
+            "undelimited align",
+            r"\begin{align}a &= b+c \\ d &= e-f\end{align}",
+            r"$$\begin{align}a &= b+c \\ d &= e-f\end{align}$$",
+        ),
+        (
+            "delimited align",
+            r"$$\begin{align}a &= b+c \\ d &= e-f\end{align}$$",
+            r"$$\begin{align}a &= b+c \\ d &= e-f\end{align}$$",
+        ),
+        (
+            "undelimited cases",
+            r"\begin{cases}x^2 & x>0 \\ 0 & x\leq 0\end{cases}",
+            r"$$\begin{cases}x^2 & x>0 \\ 0 & x\leq 0\end{cases}$$",
+        ),
+        (
+            "delimited cases",
+            r"$$\begin{cases}x^2 & x>0 \\ 0 & x\leq 0\end{cases}$$",
+            r"$$\begin{cases}x^2 & x>0 \\ 0 & x\leq 0\end{cases}$$",
+        ),
+        (
+            "single-dollar delimited environment",
+            r"$\begin{aligned}x &= 1 \\ y &= 2\end{aligned}$",
+            r"$\begin{aligned}x &= 1 \\ y &= 2\end{aligned}$",
+        ),
+    ]
+
+    for name, value, expected in cases:
+        out = grader.normalize_latex(value)
+        if out != expected:
+            errors.append(
+                f"normalize_latex {name}: got {out!r}, expected {expected!r}"
+            )
+
+        if out.count(r"\begin") != 1 or out.count(r"\end") != 1:
+            errors.append(
+                f"normalize_latex {name}: environment was fragmented: {out!r}"
+            )
+
+    print("  done")
+
+def test_normalize_latex_multiple_environments(errors):
+    import grader
+
+    print("Testing multiple protected LaTeX environments...")
+
+    value = (
+        r"\begin{aligned}x &= 1 \\ y &= 2\end{aligned}"
+        " and "
+        r"\begin{cases}1 & x>0 \\ 0 & x\leq 0\end{cases}"
+    )
+    expected = (
+        r"$$\begin{aligned}x &= 1 \\ y &= 2\end{aligned}$$"
+        " and "
+        r"$$\begin{cases}1 & x>0 \\ 0 & x\leq 0\end{cases}$$"
+    )
+
+    out = grader.normalize_latex(value)
+    if out != expected:
+        errors.append(
+            f"normalize_latex multiple environments: got {out!r}, "
+            f"expected {expected!r}"
+        )
+
+    if out.count(r"\begin") != 2 or out.count(r"\end") != 2:
+        errors.append(
+            f"normalize_latex multiple environments were fragmented: {out!r}"
+        )
+
+    print("  done")
+
+def test_normalize_latex_external_line_separators(errors):
+    import grader
+
+    print("Testing LaTeX separators outside protected environments...")
+
+    cases = [
+        (
+            "commands on both lines",
+            r"\alpha \\ \beta",
+            "$\\alpha$\n$\\beta$",
+        ),
+        (
+            "plain text on both lines",
+            r"Before \\ after",
+            "Before\nafter",
+        ),
+        (
+            "separator following an environment",
+            r"\begin{aligned}x &= 1 \\ y &= 2\end{aligned} \\ \gamma",
+            (
+                r"$$\begin{aligned}x &= 1 \\ y &= 2\end{aligned}$$"
+                "\n"
+                r"$\gamma$"
+            ),
+        ),
+    ]
+
+    for name, value, expected in cases:
+        out = grader.normalize_latex(value)
+        if out != expected:
+            errors.append(
+                f"normalize_latex external separator {name}: "
+                f"got {out!r}, expected {expected!r}"
+            )
+
+    print("  done")
+
+def test_balance_braces_edge_cases(errors):
+    import grader
+
+    print("Testing _balance_braces edge cases...")
+
+    cases = [
+        ("empty", "", ""),
+        ("plain text", "plain text", "plain text"),
+        ("stray closing brace", "(slope}=0)", "(slope=0)"),
+        ("missing closing brace", r"\frac{1}{2", r"\frac{1}{2}"),
+        ("escaped braces", r"\{a\}", r"\{a\}"),
+        ("nested missing close", "{{x}", "{{x}}"),
+        ("already balanced", r"\frac{a+b}{c-d}", r"\frac{a+b}{c-d}"),
+        ("leading unmatched closes", "}}x", "x"),
+        ("several missing closes", "{{{x", "{{{x}}}"),
+        ("mixed unmatched braces", "}a{b}}c{", "a{b}c{}"),
+        ("escaped open brace only", r"\{x", r"\{x"),
+        ("escaped close brace only", r"x\}", r"x\}"),
+        ("escaped and structural braces", r"{\{x\}}", r"{\{x\}}"),
+        ("multiple balanced groups", "{a}{b}{c}", "{a}{b}{c}"),
+    ]
+
+    for name, value, expected in cases:
+        out = grader._balance_braces(value)
+        if out != expected:
+            errors.append(
+                f"_balance_braces {name}: got {out!r}, expected {expected!r}"
+            )
+
+    print("  done")
+
+def test_normalize_latex_brace_repair(errors):
+    import grader
+
+    print("Testing normalize_latex brace repair...")
+
+    cases = [
+        ("stray close", "(slope}=0)", "(slope=0)"),
+        ("missing fraction close", r"\frac{1}{2", r"$\frac{1}{2}$"),
+        ("escaped braces", r"\{a\}", r"$\{a\}$"),
+        (
+            "brace repair inside environment",
+            r"\begin{aligned}x &= \frac{1}{2 \\ y &= 3\end{aligned}",
+            r"$$\begin{aligned}x &= \frac{1}{2 \\ y &= 3\end{aligned}}$$",
+        ),
+    ]
+
+    for name, value, expected in cases:
+        out = grader.normalize_latex(value)
+        if out != expected:
+            errors.append(
+                f"normalize_latex brace repair {name}: "
+                f"got {out!r}, expected {expected!r}"
+            )
+
+    print("  done")
+
+def test_normalize_latex_idempotency(errors):
+    import grader
+
+    print("Testing normalize_latex idempotency...")
+
+    inputs = [
+        "",
+        "Plain English passes through unchanged.",
+        r"\frac{1}{2",
+        r"\alpha \\ \beta",
+        r"\begin{aligned}x &= 1 \\ y &= 2\end{aligned}",
+        r"$$\begin{cases}1 & x>0 \\ 0 & x\leq 0\end{cases}$$",
+        r"$\[x+1\]$",
+        "\ufffd1\ufffd and \ufffd2\ufffd",
+    ]
+
+    for value in inputs:
+        once = grader.normalize_latex(value)
+        twice = grader.normalize_latex(once)
+        if twice != once:
+            errors.append(
+                f"normalize_latex is not idempotent for {value!r}: "
+                f"once={once!r}, twice={twice!r}"
+            )
+
+    print("  done")
+
+def test_normalize_latex_misc_edge_cases(errors):
+    import grader
+
+    print("Testing miscellaneous normalize_latex edge cases...")
+
+    cases = [
+        ("empty string", "", ""),
+        ("None", None, None),
+        ("plain English", "No mathematical notation here.", "No mathematical notation here."),
+        ("literal newline escape", r"first\nsecond", "first\nsecond"),
+        ("mixed display delimiters", r"$\[x+1\]$", "$$x+1$$"),
+        ("odd lone dollar", "Cost is $5", "Cost is 5"),
+        ("corrupted circled digit", "\ufffd1\ufffd", "1"),
+        ("multiple corrupted digits", "\ufffd1\ufffd + \ufffd2\ufffd", "1 + 2"),
+        ("stray replacement character", "ab\ufffdcd", "abcd"),
+    ]
+
+    for name, value, expected in cases:
+        out = grader.normalize_latex(value)
+        if out != expected:
+            errors.append(
+                f"normalize_latex {name}: got {out!r}, expected {expected!r}"
+            )
+
+    print("  done")
+
+def test_step_number_word_boundaries(errors):
+    import re
+
+    print("Testing step-number word boundaries...")
+
+    for num in range(1, 13):
+        pat = r"Step\s*%d\b" % num
+
+        positive = [
+            f"Step {num}",
+            f"step {num}: explanation",
+            f"STEP  {num}",
+            f"Step     {num} is complete",
+            f"Use Step{num}.",
+        ]
+        for text in positive:
+            if not re.search(pat, text, re.IGNORECASE):
+                errors.append(
+                    f"step regex {pat!r} should match {text!r}"
+                )
+
+        larger = num * 10
+        negative = [
+            f"Step {larger}",
+            f"Step  {larger}: explanation",
+            f"STEP{larger}",
+        ]
+        for text in negative:
+            if re.search(pat, text, re.IGNORECASE):
+                errors.append(
+                    f"step regex {pat!r} incorrectly matched {text!r}"
+                )
+
+    explicit_negative_cases = [
+        (1, "Step 10"),
+        (1, "Step 11"),
+        (1, "Step 100"),
+        (2, "Step 20"),
+        (2, "Step 21"),
+        (2, "Step 200"),
+        (12, "Step 120"),
+    ]
+    for num, text in explicit_negative_cases:
+        pat = r"Step\s*%d\b" % num
+        if re.search(pat, text, re.IGNORECASE):
+            errors.append(
+                f"step regex {pat!r} incorrectly matched {text!r}"
+            )
+
+    print("  done")
+
+def test_part_step_regex_variants(errors):
+    import re
+
+    print("Testing Part/Step regex variants...")
+
+    validation_pat = r"Part\s*\(a\)\s*Step\s*1\b"
+    positive = [
+        "Part (a) Step 1",
+        "part(a)step1",
+        "PART   (a)   STEP  1:",
+        "Part(a) Step     1 is complete",
+    ]
+    for text in positive:
+        if not re.search(validation_pat, text, re.IGNORECASE):
+            errors.append(
+                f"part-step validation regex should match {text!r}"
+            )
+
+    negative = [
+        "Part (a) Step 10",
+        "Part (a) Step 11",
+        "Part (b) Step 1",
+        "Part (a) Step 100",
+    ]
+    for text in negative:
+        if re.search(validation_pat, text, re.IGNORECASE):
+            errors.append(
+                f"part-step validation regex incorrectly matched {text!r}"
+            )
+
+    parser = re.compile(
+        r"(?:Part\s*\(([a-zA-Z])\)\s*)?Step\s*(\d+)",
+        re.IGNORECASE,
+    )
+    parse_cases = [
+        ("Step 1", (None, "1")),
+        ("step   12", (None, "12")),
+        ("Part (a) Step 1", ("a", "1")),
+        ("part(B)step10", ("B", "10")),
+        ("PART   (c)   STEP  12:", ("c", "12")),
+    ]
+
+    for text, expected_groups in parse_cases:
+        match = parser.search(text)
+        actual_groups = match.groups() if match else None
+        if actual_groups != expected_groups:
+            errors.append(
+                f"step-reference parser for {text!r}: "
+                f"got {actual_groups!r}, expected {expected_groups!r}"
+            )
+
+    print("  done")
+
+def test_solve_rubric_route_exists(errors):
+    print("Testing /api/solve_rubric route existence...")
+
+    try:
+        import app as app_module
+        client = app_module.app.test_client()
+    except Exception as exc:
+        errors.append(f"could not create Flask test client: {exc!r}")
+        print("  done")
+        return
+
+    requests = [
+        ("missing image list", {}),
+        ("empty image list", {"images": []}),
+    ]
+
+    for name, payload in requests:
+        try:
+            response = client.post("/api/solve_rubric", json=payload)
+        except Exception as exc:
+            errors.append(
+                f"/api/solve_rubric {name} request raised {exc!r}"
+            )
+            continue
+
+        if response.status_code == 404:
+            errors.append(
+                f"/api/solve_rubric {name}: route returned 404"
+            )
+            continue
+
+        if response.status_code != 400:
+            errors.append(
+                f"/api/solve_rubric {name}: got status "
+                f"{response.status_code}, expected 400"
+            )
+
+        body = response.get_json(silent=True)
+        if not isinstance(body, dict):
+            errors.append(
+                f"/api/solve_rubric {name}: expected a JSON object, got {body!r}"
+            )
+        elif "error" not in body:
+            errors.append(
+                f"/api/solve_rubric {name}: JSON response lacks 'error': {body!r}"
+            )
+
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -361,6 +749,17 @@ def main():
     test_unicode_sanitization(errors)
     test_duplicate_assignment_rejected(errors)
     test_is_ap_format(errors)
+    # gpt-5.6-sol generated tests (no API calls)
+    test_normalize_latex_environments(errors)
+    test_normalize_latex_multiple_environments(errors)
+    test_normalize_latex_external_line_separators(errors)
+    test_balance_braces_edge_cases(errors)
+    test_normalize_latex_brace_repair(errors)
+    test_normalize_latex_idempotency(errors)
+    test_normalize_latex_misc_edge_cases(errors)
+    test_step_number_word_boundaries(errors)
+    test_part_step_regex_variants(errors)
+    test_solve_rubric_route_exists(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 
