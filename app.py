@@ -62,6 +62,10 @@ if not GRADER_PASSWORD or len(GRADER_PASSWORD) < 12:
     raise RuntimeError("GRADER_PASSWORD (>=12 chars) must be set")
 if not ADMIN_PASSWORD or len(ADMIN_PASSWORD) < 12:
     raise RuntimeError("ADMIN_PASSWORD (>=12 chars) must be set")
+# Identical passwords would silently promote testers to admin (admin check
+# runs first). Fail closed instead. Found by gpt-5.6 review 2026-10-07.
+if GRADER_PASSWORD == ADMIN_PASSWORD:
+    raise RuntimeError("GRADER_PASSWORD and ADMIN_PASSWORD must differ")
 
 # Auth version: changing either password invalidates all sessions.
 # HMAC-keyed with the server secret so the cookie value (signed, not encrypted)
@@ -572,7 +576,10 @@ def _write_env(api_key, model):
 @app.route("/uploads/<path:filename>")
 def uploaded_file(filename):
     # Block path traversal (e.g. ../../ai_grader.db): only serve files
-    # physically inside UPLOAD_DIR.
+    # physically inside UPLOAD_DIR. Also reject backslashes (Windows-style
+    # traversal) for defense in depth.
+    if "\\" in filename:
+        return jsonify({"ok": False, "error": "Not found."}), 404
     safe = os.path.realpath(os.path.join(UPLOAD_DIR, filename))
     if not safe.startswith(os.path.realpath(UPLOAD_DIR) + os.sep):
         return jsonify({"ok": False, "error": "Not found."}), 404

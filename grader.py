@@ -239,9 +239,12 @@ def normalize_latex(text):
     text = re.sub("[\u2460-\u2473\u3251-\u325f\u32b1-\u32bf]", _circled_to_digit, text)
     # The model types literal \n (backslash + n) for line breaks between
     # formulas. KaTeX has no \n command, so it renders red. Turn it into a
-    # real newline — but NOT when it's the start of a real command like
-    # \neq, \nabla, \nu. Found by claude-opus-5-5 review 2026-10-07.
-    text = re.sub(r"\\n(?![a-zA-Z])", "\n", text)
+    # real newline — but NOT when the 'n' starts a real LaTeX command like
+    # \neq, \nabla. The regex consumes '\n'; the lookahead checks the
+    # remainder with a word boundary (so "\nunder" -> newline, not \nu).
+    # Found by claude-opus-5-5 2026-10-07.
+    _N_CMD_REST = r"(?:eq|abla|u|ot|i|eg|earrow|warrow|mid|parallel|less|gtr|leq|geq|sim|cong|vdash|vDash|Vdash|VDash|exists|in|otin)"
+    text = re.sub(r"\\n(?!" + _N_CMD_REST + r"\b)", "\n", text)
     # The model sometimes mixes delimiters like $\[...\]$ or $\(...\)$.
     # Drop a single $ hugging \[ \] \( \) first (a $$ pair is left alone),
     # then convert \[...\] -> $$...$$ and \(...\) -> $...$.
@@ -319,8 +322,12 @@ def normalize_latex(text):
         if s == "\n":
             result = result.rstrip(" ") + "\n"
         else:
-            if result and not result.endswith("\n"):
+            # Don't add space before punctuation (.,;:!?) to avoid "word ."
+            if result and not result.endswith("\n") and not re.match(r"^[.,;:!?)]", s):
                 result += " "
+            # Balance braces in non-math segments too (e.g. "(slope}=0)").
+            if not (s.startswith("$") and s.endswith("$") and len(s) >= 2):
+                s = _balance_braces(s)
             result += s
     return result.strip(" ")
     """Extract float numbers from a string for numeric comparison."""
@@ -1912,8 +1919,19 @@ def rubric_items_to_text(items):
     for it in items:
         ms = it.get("max_score", 0)
         ms_s = int(ms) if float(ms).is_integer() else ms
-        lines.append(f"{it.get('q', '')} (max {ms_s} pts): {it.get('criteria', '')}")
-        sol = (it.get("reference_solution") or "").strip()
+        # Accept multiple key variants for label/question/solution.
+        label = it.get("q") or it.get("label") or it.get("question_label") or ""
+        criteria = it.get("criteria", "")
+        if isinstance(criteria, list):
+            criteria = "; ".join(
+                f"{c.get('points', 1)} pt: {c.get('criterion', c.get('description', ''))}"
+                for c in criteria if isinstance(c, dict)
+            )
+        lines.append(f"{label} (max {ms_s} pts): {criteria}")
+        qt = (it.get("question_text") or it.get("question") or "").strip()
+        if qt:
+            lines.append(f"  Question: {qt}")
+        sol = (it.get("reference_solution") or it.get("solution") or "").strip()
         if sol:
             lines.append(f"  Reference solution: {sol}")
     return "\n".join(lines)
