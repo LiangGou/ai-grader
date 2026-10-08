@@ -2072,7 +2072,8 @@ def grade_paper(rubric_text, rubric_items, image_paths, reference_image_paths=No
             {"type": "image_url", "image_url": {"url": _data_url(p)}}
         )
 
-    data = _chat_json(GRADER_SYSTEM, user_content, max_tokens=4096)
+    data = _chat_json(GRADER_SYSTEM, user_content, max_tokens=4096,
+                      model="gpt-5.6-sol")
 
     # Normalize + safety checks.
     questions = []

@@ -1772,6 +1772,17 @@ def test_digitize_uses_gpt56(errors):
     print("  done")
 
 
+def test_grader_uses_gpt56(errors):
+    """Grading must use gpt-5.6-sol (user req 2026-10-08)."""
+    print("Testing grader model...")
+    import grader
+    import inspect
+    src_code = inspect.getsource(grader.grade_paper)
+    if 'model="gpt-5.6-sol"' not in src_code:
+        errors.append("grade_paper should use gpt-5.6-sol")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1786,6 +1797,7 @@ def main():
     test_verifier_uses_reasoning_model(errors)
     test_chat_json_gpt5_compat(errors)
     test_digitize_uses_gpt56(errors)
+    test_grader_uses_gpt56(errors)
     test_verifier_empty_response(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
