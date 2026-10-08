@@ -763,13 +763,15 @@ def digitize_example(image_paths, hint=None):
     return questions
 
 
-def validate_question(question_text, reference_solution, retry_hint=""):
+def validate_question(question_text, reference_solution, retry_hint="", image_paths=None):
     """Independently re-solve a question and compare with the reference solution.
 
     Returns {"verdict": "confirmed"|"mismatch"|"unsure", "note": str}.
     Uses an LLM re-solve plus a safe Python numeric check when applicable.
     retry_hint: previous verification failure note, to help the model
     reconsider (e.g. transcription may have misread the handwriting).
+    image_paths: original photos for OCR error checking — when verification
+    fails, the model can re-examine the handwriting (user req 2026-10-07).
     """
     if not (question_text or "").strip() or not (reference_solution or "").strip():
         return {"verdict": "unsure", "note": "No question text or reference solution to validate."}
@@ -783,7 +785,20 @@ def validate_question(question_text, reference_solution, retry_hint=""):
             "The transcription may have misread the handwriting, or the teacher "
             "may have made an error. Re-examine carefully."
         )
-    data = _chat_json(VALIDATE_SYSTEM, user_msg,
+    # OCR error check: on retry, include the original photos so the model can
+    # verify the transcription against the actual handwriting.
+    # (User requirement 2026-10-07.)
+    user_content = user_msg
+    if retry_hint and image_paths:
+        user_content = [{"type": "text", "text": user_msg}]
+        for p in image_paths[:4]:  # limit to 4 images
+            try:
+                user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
+            except Exception:
+                pass
+        user_msg += "\n\n[Original photos attached — verify the transcription against the handwriting.]"
+        user_content[0] = {"type": "text", "text": user_msg}
+    data = _chat_json(VALIDATE_SYSTEM, user_content,
         max_tokens=2048,
     )
     agrees = data.get("agrees")
@@ -1633,7 +1648,8 @@ def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
             try:
                 verdict = validate_question(q.get("question_text", ""),
                                             q.get("reference_solution", ""),
-                                            retry_hint=last_note)
+                                            retry_hint=last_note,
+                                            image_paths=image_paths)
             except Exception as e:  # noqa: BLE001
                 last_note = str(e)
                 continue

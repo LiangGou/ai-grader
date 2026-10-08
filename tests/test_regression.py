@@ -1700,6 +1700,21 @@ def test_verifier_equivalent_forms_prompt(errors):
     print("  done")
 
 
+def test_validate_ocr_check(errors):
+    """validate_question must accept image_paths for OCR error checking.
+
+    On retry (retry_hint present), original photos are attached so the model
+    can verify transcription vs handwriting (user req 2026-10-07).
+    """
+    print("Testing validate OCR check...")
+    import grader
+    import inspect
+    sig = inspect.signature(grader.validate_question)
+    if "image_paths" not in sig.parameters:
+        errors.append("validate_question missing image_paths param")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1710,6 +1725,7 @@ def main():
     test_duplicate_assignment_rejected(errors)
     test_is_ap_format(errors)
     test_verifier_equivalent_forms_prompt(errors)
+    test_validate_ocr_check(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)
