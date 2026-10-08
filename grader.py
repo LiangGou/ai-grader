@@ -727,7 +727,7 @@ Output ONLY a JSON object, no explanations:
 """
 
 
-def generate_ap_rubric_only(question_text, reference_solution, max_score, q_label=""):
+def generate_ap_rubric_only(question_text, reference_solution, max_score, q_label="", retry_hint=""):
     """Generate AP-style rubric points from an existing question + solution.
 
     Used when the teacher's example has no usable rubric markings — instead of
@@ -739,6 +739,11 @@ def generate_ap_rubric_only(question_text, reference_solution, max_score, q_labe
         f"Reference solution:\n{reference_solution}\n\n"
         "Create the AP-style scoring rubric."
     )
+    if retry_hint:
+        prompt += (
+            "\n\nIMPORTANT — A previous attempt failed validation. Learn from this:\n"
+            f"{retry_hint}\nCorrect the rubric accordingly."
+        )
     data = _chat_json(
         AP_RUBRIC_ONLY_SYSTEM,
         [{"type": "text", "text": prompt}],
@@ -896,6 +901,41 @@ If the photos yield no questions at all, output {"questions": []}.
 """
 
 
+AP_PLAN_SYSTEM = """You are an expert AP Calculus teacher designing the scoring plan for a question BEFORE anyone solves it.
+Given a question and its point value:
+
+1. Break the question into its natural AP-style STEPS (Step 1, Step 2, ...). Each step is one distinct, checkable mathematical action an AP grader would award points for.
+   - For multi-part questions, group by part: Part (a) Step 1, Part (a) Step 2, Part (b) Step 1, etc.
+   - Typical steps: SETUP (writing the rule/formula to use), MATHEMATICAL WORK (differentiating, simplifying, substituting values), final ANSWER (with units/justification where applicable).
+2. Assign points to each step following AP free-response conventions:
+   - Points reward correct mathematical work at each step, not just the final answer.
+   - An arithmetic slip in one step does not forfeit later steps if the method stays correct (follow-through credit).
+   - Any mathematically valid method earns full credit.
+
+CRITICAL: The point breakdown MUST sum to EXACTLY the given max_score. You are distributing exactly that many points — never more, never fewer.
+
+Output ONLY a JSON object, no explanations:
+{
+  "ap_points": [{"points": 1, "for": "Step 1: <what this step requires>"}, ...]
+}
+"""
+
+
+SOLVE_FROM_PLAN_SYSTEM = """You are an expert calculus teacher writing a complete worked solution.
+You are GIVEN the question and its AP scoring plan (the numbered steps and what each requires).
+
+Write the full solution FOLLOWING THE PLAN'S STEPS EXACTLY:
+- Use the same step labels in the same order (Step 1, Step 2, ...).
+- Each step must show the actual mathematical work — no skipped algebra.
+- The solution will be used as the answer key for grading, so every step must be correct and verifiable.
+
+Output ONLY a JSON object, no explanations:
+{
+  "solution": "<numbered steps, e.g. 'Step 1: ...\\nStep 2: ...'. Mathematics in LaTeX with $...$ delimiters>"
+}
+"""
+
+
 SOLVE_RUBRIC_SYSTEM = """You are an expert AP Calculus teacher creating an answer key and scoring rubric from scratch.
 Given a question and its point value:
 
@@ -970,7 +1010,11 @@ def transcribe_questions_only(image_paths):
 
 def solve_and_rubric(question_text, max_score, q_label="", image_paths=None,
                    model=None, reasoning_effort=None, _debug=None, retry_hint=""):
-    """Reasoning-model pass: solve the question and generate an AP-style rubric.
+    """AP-first: plan the steps + rubric from the question, then solve following the plan.
+
+    Phase 1: Generate the AP step plan (numbered steps + point breakdown) from
+    the question alone — the rubric drives the solution, not the other way around.
+    Phase 2: Write the complete worked solution following the plan's steps exactly.
 
     Returns {solution, ap_points, notes}. The ap_points sum to exactly max_score.
     When image_paths is given, the model also sees the original photos so it
@@ -979,49 +1023,117 @@ def solve_and_rubric(question_text, max_score, q_label="", image_paths=None,
     `retry_hint` (optional) describes what went wrong in a previous attempt so
     the model can correct itself.
     """
-    prompt = (
+    use_model = model or REASONING_MODEL
+
+    # Shared image content (both phases see the printed question).
+    def _with_images(text):
+        user_content = [{"type": "text", "text": text}]
+        if image_paths:
+            user_content[0]["text"] += (
+                "\n\nThe attached photos show the printed question. Read the PRINTED "
+                "question text from the photos to double-check the transcription above "
+                "(in particular, read exponents and fractions very carefully). "
+                "IGNORE all handwriting in the photos."
+            )
+            for p in image_paths:
+                try:
+                    user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
+                except Exception:
+                    pass
+        return user_content
+
+    # ---- Phase 1: AP plan (steps + rubric) from the question ----
+    plan_prompt = (
         f"Question {q_label} (worth {max_score:g} points):\n{question_text}\n\n"
-        "Solve it and create the AP-style rubric."
+        "Design the AP scoring plan: break into steps and assign points."
     )
     if retry_hint:
-        prompt += (
+        plan_prompt += (
             "\n\nIMPORTANT — A previous attempt failed. Learn from this:\n"
             f"{retry_hint}\n"
-            "Double-check the question (especially exponents, fractions, and signs), "
-            "solve carefully step by step, and make sure your answer is correct."
+            "Fix the plan accordingly (clearer steps, correct point distribution)."
         )
-    user_content = [{"type": "text", "text": prompt}]
-    if image_paths:
-        user_content[0]["text"] += (
-            "\n\nThe attached photos show the printed question. Read the PRINTED "
-            "question text from the photos to double-check the transcription above "
-            "(in particular, read exponents and fractions very carefully). "
-            "IGNORE all handwriting in the photos."
-        )
-        for p in image_paths:
-            try:
-                user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
-            except Exception:
-                pass
-    data = _chat_json(
-        SOLVE_RUBRIC_SYSTEM,
-        user_content,
-        max_tokens=4096,
-        model=model or REASONING_MODEL,
+    plan_debug = []
+    plan_data = _chat_json(
+        AP_PLAN_SYSTEM,
+        _with_images(plan_prompt),
+        max_tokens=2048,
+        model=use_model,
         reasoning_effort=reasoning_effort,
-        _raw=_debug,
+        _raw=plan_debug,
     )
-    pts = data.get("ap_points") or []
-    solution = normalize_latex(str(data.get("solution", "")).strip())
-    # Hard guardrails: validate steps, granularity, and point sum.
-    # Raises with actionable feedback so the retry loop can correct it.
-    pts, issues = _check_ap_output(solution, pts, max_score)
-    if issues:
-        raise ValueError("Rubric validation failed: " + "; ".join(issues))
+    if _debug is not None:
+        for d in plan_debug:
+            d = dict(d)
+            d["phase"] = "ap_plan"
+            _debug.append(d)
+    pts = plan_data.get("ap_points") or []
+    # Validate the plan on its own (no solution yet): steps sequential, sum correct.
+    pts, plan_issues = _check_ap_output(None, pts, max_score, strict_steps=False)
+    if plan_issues:
+        raise ValueError("AP plan validation failed: " + "; ".join(plan_issues))
+
+    # ---- Phase 2: Solution following the plan's steps exactly ----
+    plan_text = "\n".join(
+        f'{p.get("points", 1)} pt — {p.get("for", "")}' for p in pts
+    )
+    solve_prompt = (
+        f"Question {q_label} (worth {max_score:g} points):\n{question_text}\n\n"
+        f"AP scoring plan (follow these steps EXACTLY):\n{plan_text}\n\n"
+        "Write the complete worked solution using the plan's step labels in order."
+    )
+    if retry_hint:
+        solve_prompt += (
+            "\n\nIMPORTANT — A previous attempt failed. Learn from this:\n"
+            f"{retry_hint}\n"
+            "Make sure the solution follows every plan step with correct mathematics."
+        )
+    solve_debug = []
+    solve_data = _chat_json(
+        SOLVE_FROM_PLAN_SYSTEM,
+        _with_images(solve_prompt),
+        max_tokens=4096,
+        model=use_model,
+        reasoning_effort=reasoning_effort,
+        _raw=solve_debug,
+    )
+    if _debug is not None:
+        for d in solve_debug:
+            d = dict(d)
+            d["phase"] = "solution"
+            _debug.append(d)
+    solution = normalize_latex(str(solve_data.get("solution", "")).strip())
+    # Validate the solution follows the plan: substantive, and every planned
+    # step label appears in the solution text.
+    sol_issues = []
+    if len(solution.strip()) < 50:
+        sol_issues.append(
+            f"Solution is empty or too short ({len(solution.strip())} chars). "
+            "Write the complete worked solution following every plan step.")
+    # Every step referenced by the rubric must appear in the solution.
+    for p in pts:
+        m = re.search(r"(?:Part\s*\(([a-zA-Z])\)\s*)?Step\s*(\d+)",
+                      str(p.get("for", "")), re.IGNORECASE)
+        if not m:
+            continue
+        part = m.group(1).lower() if m.group(1) else None
+        num = int(m.group(2))
+        # Look for this specific step label in the solution.
+        pat = r"Step\s*%d" % num
+        if part:
+            pat = r"Part\s*\(%s\)\s*Step\s*%d" % (part, num)
+        if not re.search(pat, solution, re.IGNORECASE):
+            label = f"Step {num}" + (f" of Part ({part})" if part else "")
+            sol_issues.append(
+                f"Solution is missing {label} from the AP plan. "
+                "Follow every plan step in order.")
+    if sol_issues:
+        raise ValueError("Solution validation failed: " + "; ".join(sol_issues))
+
     return {
         "solution": solution,
         "ap_points": pts,
-        "notes": str(data.get("notes", "")).strip(),
+        "notes": "",
     }
 
 
@@ -1092,7 +1204,8 @@ def retry_solve_question(question_text, max_score, q_label="", model="o3",
                 reasoning_effort=effort, _debug=solve_debug,
                 retry_hint=retry_hint)
             for d in solve_debug:
-                debug.append({"step": f"solve (try {attempt})", "model": d["model"],
+                phase = d.get("phase", "solve")
+                debug.append({"step": f"{phase} (try {attempt})", "model": d["model"],
                               "effort": d["effort"], "raw": d["raw"]})
             verdict = verify_solution(question_text, solved["solution"],
                                       model=use_model, reasoning_effort=effort,
@@ -1295,16 +1408,38 @@ def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
             default_note = "Max score set by AI default — please confirm."
         else:
             default_note = ""
-        verdict = validate_question(q.get("question_text", ""),
-                                    q.get("reference_solution", ""))
+        # Retry validation up to 3 times; a persistent mismatch is flagged
+        # for the teacher (only after 3 tries do we ask the user).
+        verdict = None
+        last_note = ""
+        for _ in range(3):
+            try:
+                verdict = validate_question(q.get("question_text", ""),
+                                            q.get("reference_solution", ""))
+            except Exception as e:  # noqa: BLE001
+                last_note = str(e)
+                continue
+            if verdict["verdict"] == "confirmed":
+                break
+            last_note = verdict.get("note", "")
+        if verdict is None or verdict["verdict"] != "confirmed":
+            verdict = {"verdict": "review",
+                       "note": f"Not confirmed after 3 attempts ({last_note}). "
+                               "Please review manually."}
         criteria = q.get("criteria", "")
         if _criteria_is_weak(criteria):
-            try:
-                criteria = generate_ap_rubric_only(
-                    q.get("question_text", ""), q.get("reference_solution", ""),
-                    max_score, q_label)
-            except Exception:
-                pass
+            # Retry AP rubric generation up to 3 times with validation feedback.
+            rubric_hint = ""
+            for attempt in range(3):
+                try:
+                    criteria = generate_ap_rubric_only(
+                        q.get("question_text", ""), q.get("reference_solution", ""),
+                        max_score, q_label, retry_hint=rubric_hint)
+                    break
+                except Exception as e:  # noqa: BLE001
+                    rubric_hint = str(e)
+                    if attempt == 2:
+                        pass  # keep the weak criteria; teacher reviews
         if default_note and default_note not in (criteria or ""):
             criteria = f"{criteria} ({default_note})" if criteria else default_note
         return {
