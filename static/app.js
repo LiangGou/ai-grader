@@ -149,8 +149,11 @@
     var note = (state === "warn" && item.verify_note)
       ? '<p class="verify-note">' + escapeHtml(item.verify_note) + '</p>' : "";
     // Retry panel for AI-solved questions that failed verification.
+    // Shows for ai_solved items, or older items with no solution to lose.
+    var canRetry = item.origin === "ai_solved" ||
+      (!item.origin && state === "warn" && !(item.reference_solution || "").trim());
     var retryHtml = "";
-    if (item.origin === "ai_solved" && state === "warn") {
+    if (canRetry) {
       retryHtml =
         '<div class="retry-box">' +
           '<button type="button" class="btn btn-small retry-toggle">🔄 Retry with AI</button>' +
