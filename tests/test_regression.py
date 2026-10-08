@@ -1837,6 +1837,25 @@ def test_q_placeholder_conversion(errors):
     print("  done")
 
 
+def test_graph_keywords_trigger_diagram(errors):
+    """Questions mentioning graph/sketch/plot must trigger diagram generation.
+
+    User requirement 2026-10-08: "题目中有明确说要用graph的，你要用Python去画图"
+    """
+    print("Testing graph keyword detection...")
+    import grader
+    # Must trigger
+    for q in ["Graph the function f(x) = x^2", "Sketch the graph of f(x)",
+              "Plot the curve", "Draw a diagram of the triangle"]:
+        if not grader._would_graph_help(q):
+            errors.append(f"_would_graph_help missed: {q}")
+    # Must NOT trigger for non-visual questions
+    for q in ["Solve for x: 2x + 3 = 7", "Find the derivative of x^2"]:
+        if grader._would_graph_help(q):
+            errors.append(f"_would_graph_help false positive: {q}")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1855,6 +1874,7 @@ def main():
     test_digitize_retry_on_bad_json(errors)
     test_verifier_empty_response(errors)
     test_q_placeholder_conversion(errors)
+    test_graph_keywords_trigger_diagram(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)

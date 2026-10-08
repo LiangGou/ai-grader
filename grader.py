@@ -554,7 +554,7 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
             DIAGRAM_GEN_SYSTEM,
             [{"type": "text", "text": prompt}],
             max_tokens=2000,
-            model=REASONING_MODEL,
+            model="gpt-5.6-sol",  # was o3; gpt-5.6-sol is more reliable (2026-10-08)
         )
         code = data.get("code", "") if isinstance(data, dict) else ""
         if not code or not isinstance(code, str):
@@ -1174,6 +1174,8 @@ Given a question and its point value:
 
 2. CREATE an AP-style scoring rubric where EACH point maps to ONE solution step. The "for" of each ap_point MUST start with the step label, e.g. "Step 2: correctly applies the quotient rule to get ...". A grader checks each labeled step against its point — no guessing which step earns what.
 
+DIAGRAM REQUIREMENT: If the question mentions "graph", "sketch", "plot", or "diagram" (e.g. "Graph the function", "sketch the graph of f(x)"), the solution MUST describe the required diagram in detail (axes, key points, asymptotes, curve shape, labels). The system generates diagrams with Python/matplotlib from your description, so be specific about coordinates and visual features.
+
 AP conventions to follow:
 - Points reward correct mathematical work at each step, not just the final answer.
 - An arithmetic slip in one step does not forfeit later steps if the method stays correct (follow-through credit).
@@ -1196,6 +1198,7 @@ Your job is NOT to re-solve from scratch (that causes false mismatches). Instead
 2. For each key claim, provide a Python expression (using only arithmetic operators and the math module) that VERIFIES the claim by direct computation. Example: to verify "f'(x) = 4x^3 - 12x^2 - x + 3" at x=2, use "(4*2**3 - 12*2**2 - 2 + 3) - (4*2**3 - 12*2**2 - 2 + 3)" which should be 0. To verify critical points, plug each into f'(x) and check it equals 0.
 3. EQUIVALENT FORMS: If the teacher's answer looks different from what you'd expect (e.g. "y - √2/2 = √2(x-π/4)" vs "y = √2(x-π/4) + √2/2"), do NOT flag it as wrong. Instead, verify by SUBSTITUTION: pick a specific x value, compute y from both forms, and check they match. Only flag if substitution PROVES they're different.
 4. If the teacher's solution is correct, the Python checks will pass. Only flag a problem if the Python computation PROVES the teacher wrong.
+5. DIAGRAM CHECK: If the question mentions "graph", "sketch", "plot", or "diagram", verify that the solution describes or includes the required diagram. If the solution lacks a diagram description for a graph-type question, note this in the "note" field.
 Output ONLY a JSON object, no explanations:
 {"claims": ["<claim 1>", "<claim 2>"], "python_checks": ["<expr 1>", "<expr 2>"], "agrees": true/false, "confidence": "high/medium/low", "note": "<one sentence, or empty>"}
 Set "agrees" to true if the teacher's claims verify (or if there are no verifiable numerical claims but the reasoning looks sound).
