@@ -63,7 +63,9 @@ def index():
     classes = db.list_classes()
     for c in classes:
         c["assignments"] = db.list_assignments(c["id"])
-    return render_template("index.html", classes=classes, env=_env_status())
+    dup = request.args.get("dup")
+    return render_template("index.html", classes=classes, env=_env_status(),
+                           dup_name=dup)
 
 
 @app.route("/class/new", methods=["POST"])
@@ -79,7 +81,11 @@ def assignment_new():
     class_id = request.form.get("class_id")
     name = (request.form.get("name") or "").strip()
     if class_id and name:
-        aid = db.create_assignment(int(class_id), name)
+        try:
+            aid = db.create_assignment(int(class_id), name)
+        except ValueError:
+            # Duplicate name in this class — bounce back with an error flag.
+            return redirect(url_for("index", dup=name))
         return redirect(url_for("assignment_page", assignment_id=aid))
     return redirect(url_for("index"))
 

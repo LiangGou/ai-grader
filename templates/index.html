@@ -13,6 +13,9 @@
 
 <div class="card">
   <h3>＋ New Grading Assignment</h3>
+  {% if dup_name %}
+  <p class="error">An assignment named “{{ dup_name }}” already exists in the selected class. Please use a different name.</p>
+  {% endif %}
   <form method="post" action="{{ url_for('assignment_new') }}" class="inline-form">
     <select name="class_id" required>
       <option value="">Select a class…</option>

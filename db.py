@@ -94,6 +94,14 @@ def get_class(class_id):
 def create_assignment(class_id, name):
     conn = _connect()
     cur = conn.cursor()
+    # Reject duplicate names within the same class (user directive 2026-10-07).
+    cur.execute(
+        "SELECT id FROM assignments WHERE class_id = ? AND name = ?",
+        (class_id, name),
+    )
+    if cur.fetchone():
+        conn.close()
+        raise ValueError(f"Assignment '{name}' already exists in this class.")
     cur.execute(
         "INSERT INTO assignments (class_id, name, created_at) VALUES (?, ?, ?)",
         (class_id, name, now()),

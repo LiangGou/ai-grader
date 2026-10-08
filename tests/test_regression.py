@@ -239,6 +239,50 @@ def test_unicode_sanitization(errors):
     print("  Sanitization checks done")
 
 
+def test_duplicate_assignment_rejected(errors):
+    """Duplicate assignment names in the same class must be rejected
+    (reported 2026-10-07: double-tap created two 'T5's)."""
+    import db
+
+    print("Testing duplicate assignment rejection...")
+    # Use a temp class so we don't touch real data.
+    cid = db.create_class("TEST-DUP-CLASS")
+    try:
+        aid1 = db.create_assignment(cid, "TEST-DUP-NAME")
+        assert aid1, "first create failed"
+        # Second create with same name in same class must raise.
+        try:
+            db.create_assignment(cid, "TEST-DUP-NAME")
+            errors.append("Duplicate: second create_assignment did not raise")
+        except ValueError:
+            pass  # expected
+        # Same name in a DIFFERENT class is fine.
+        cid2 = db.create_class("TEST-DUP-CLASS-2")
+        try:
+            aid2 = db.create_assignment(cid2, "TEST-DUP-NAME")
+            assert aid2, "cross-class create failed"
+        except ValueError:
+            errors.append("Duplicate: rejected same name in different class")
+        finally:
+            _cleanup_class(cid2)
+    finally:
+        _cleanup_class(cid)
+    print("  Duplicate checks done")
+
+
+def _cleanup_class(cid):
+    import sqlite3
+    conn = sqlite3.connect(
+        __import__("os").path.join(
+            __import__("os").path.dirname(
+                __import__("os").path.abspath(__file__)), "..", "ai_grader.db"))
+    cur = conn.cursor()
+    cur.execute("DELETE FROM assignments WHERE class_id=?", (cid,))
+    cur.execute("DELETE FROM classes WHERE id=?", (cid,))
+    conn.commit()
+    conn.close()
+
+
 def test_validation_guardrails(errors):
     """Test _check_ap_output catches bad output (no API calls)."""
     import grader
@@ -294,6 +338,7 @@ def main():
     # Always run the no-API guardrail tests.
     test_validation_guardrails(errors)
     test_unicode_sanitization(errors)
+    test_duplicate_assignment_rejected(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 
