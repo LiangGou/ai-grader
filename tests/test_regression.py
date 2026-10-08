@@ -1716,16 +1716,33 @@ def test_validate_ocr_check(errors):
 
 
 def test_verifier_uses_reasoning_model(errors):
-    """Verifier must use the reasoning model (o3), not gpt-4o.
+    """Verifier must NOT use o3 (reverted 2026-10-07).
 
-    User request 2026-10-07: try a better model for math verification.
+    o3 was more confidently wrong, slower, pricier, and crashed on empty
+    responses. gpt-4o + Python checks is the reliable combo.
     """
-    print("Testing verifier reasoning model...")
+    print("Testing verifier does NOT use o3...")
     import grader
     import inspect
     src_code = inspect.getsource(grader.validate_question)
-    if "REASONING_MODEL" not in src_code:
-        errors.append("validate_question should use REASONING_MODEL (o3)")
+    if "model=REASONING_MODEL" in src_code:
+        errors.append("validate_question should NOT use o3 (reverted)")
+    print("  done")
+
+
+def test_verifier_empty_response(errors):
+    """Verifier must handle empty/invalid LLM response gracefully.
+
+    Bug 2026-10-07: o3 returned empty, caused 'NoneType' subscriptable crash.
+    """
+    print("Testing verifier empty response...")
+    import grader
+    from unittest.mock import patch
+    with patch.object(grader, "_chat_json", return_value=None), \
+         patch.object(grader, "solve_and_rubric", return_value={"solution": "x"}):
+        result = grader.validate_question("Q?", "sol")
+    if result.get("verdict") != "unsure":
+        errors.append(f"Empty response should be 'unsure', got {result}")
     print("  done")
 
 
@@ -1741,6 +1758,7 @@ def main():
     test_verifier_equivalent_forms_prompt(errors)
     test_validate_ocr_check(errors)
     test_verifier_uses_reasoning_model(errors)
+    test_verifier_empty_response(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)

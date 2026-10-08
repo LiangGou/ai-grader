@@ -798,11 +798,15 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
                 pass
         user_msg += "\n\n[Original photos attached — verify the transcription against the handwriting.]"
         user_content[0] = {"type": "text", "text": user_msg}
-    # Use the reasoning model (o3) for verification — much better at math
-    # than gpt-4o (user request 2026-10-07: "try a better model").
+    # NOTE (2026-10-07): tried o3 for verification — worse than gpt-4o.
+    # o3 was more confidently wrong, slower, more expensive, and introduced
+    # empty-response/parsing crashes. gpt-4o + Python checks is more reliable.
     data = _chat_json(VALIDATE_SYSTEM, user_content,
-        max_tokens=2048, model=REASONING_MODEL,
+        max_tokens=2048,
     )
+    # Fail-safe: empty/invalid LLM response (seen with o3, 2026-10-07).
+    if not isinstance(data, dict):
+        return {"verdict": "unsure", "note": "Verifier returned no usable response; please review manually."}
     agrees = data.get("agrees")
     confidence = str(data.get("confidence", "")).lower()
     note = str(data.get("note", "")).strip()
