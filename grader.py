@@ -25,8 +25,8 @@ EXAMPLE_RUBRIC_SYSTEM = """You are digitizing a teacher's reference example (a h
 For each question, transcribe and extract:
 - "q": the question label, use short format like "Q1", "Q2", "Q3" (not "Question 1").
 - "question_text": the question itself, transcribed faithfully. Write ALL mathematics in LaTeX: use $...$ for inline math (e.g. $2x + 6 = 14$) and $$...$$ for display math (e.g. $$\\int_0^1 x^2 dx$$). EVERY math fragment MUST be wrapped in $ delimiters — never leave LaTeX commands like \\frac outside $...$. NEVER use \\[...\\] or \\(...\\) delimiters, only $...$ and $$...$$.
-- "reference_solution": the teacher's correct solution / working / final answer, transcribed faithfully, with mathematics in LaTeX as above (every fragment wrapped in $...$). Capture the final answer at minimum; include key working steps if shown, separating distinct steps with a line break.
-- "max_score": the max points for the question.
+- "reference_solution": the teacher's correct solution / worked example / answer key, IF SHOWN in the photos (printed answer key, teacher\'s handwritten worked solutions, or graded examples with correct working). Transcribe faithfully with mathematics in LaTeX as above. IMPORTANT: if the photos show ONLY blank questions with no solutions, answer key, or worked examples, leave this EMPTY (""). Do NOT invent a solution. Do NOT copy student scratch work as the reference solution — only the teacher\'s authoritative solution.
+- "max_score": the max points for the question, as PRINTED on the paper (the teacher assigns this — look for "(5 pts)", "[10]", "5 points", etc.).
 - "criteria": the scoring/deduction rules you can infer from the teacher's markings (check marks, crosses, circled mistakes, handwritten notes like "-2"). For example, if the teacher wrote "-2" next to a missing unit, include "deduct 2 points for a missing/wrong unit".
 - "has_diagram": true or false — REQUIRED. Look carefully at the example photo: does this question show ANY diagram, graph, plot, coordinate system, or geometric figure? You must answer this for every question.
 - "diagram_hint": REQUIRED when has_diagram is true, omitted otherwise. One sentence describing what the diagram shows (e.g. "graph of a rational function with vertical asymptotes and a hole", "bar chart of test scores", "midpoint rectangles under a curve"). This helps regenerate the diagram accurately.
@@ -1158,6 +1158,165 @@ def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
     if last_exc is not None and solved is None:
         raise last_exc
     return solved, verdict
+
+
+
+def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
+                                   on_total=None, on_item=None):
+    """One-button rubric pipeline: example-aware, AP-style rubrics.
+
+    1. Digitizes the photos (printed questions + point values; teacher's
+       worked solutions/answer key IF shown — blank questions get an empty
+       reference_solution).
+    2. Per question, concurrently:
+       - If a teacher reference solution was found: validate it and use it.
+         If the teacher's markings yield no usable scoring rules, generate
+         an AP-style rubric from the reference solution automatically.
+       - If no reference solution: solve with the reasoning model (up to 3
+         attempts, each seeing the previous failure) and generate an AP-style
+         rubric from the AI solution.
+    3. Per-question max_score always comes from the printed point value
+       (teacher-assigned); AP points are distributed to sum to exactly that.
+    4. Streams each completed item via on_item(item).
+
+    Returns {"items": [...]} with idx, q, question_text, reference_solution,
+    max_score, criteria, verified ("yes"|"review"), verify_note, origin, graph.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _build_from_example(idx, q):
+        """Example path: teacher's solution exists."""
+        q_label = q.get("q", f"Q{idx + 1}")
+        max_score = q.get("max_score", 0) or 0
+        if not max_score:
+            max_score = 5
+            default_note = "Max score set by AI default — please confirm."
+        else:
+            default_note = ""
+        verdict = validate_question(q.get("question_text", ""),
+                                    q.get("reference_solution", ""))
+        criteria = q.get("criteria", "")
+        if _criteria_is_weak(criteria):
+            try:
+                criteria = generate_ap_rubric_only(
+                    q.get("question_text", ""), q.get("reference_solution", ""),
+                    max_score, q_label)
+            except Exception:
+                pass
+        if default_note and default_note not in (criteria or ""):
+            criteria = f"{criteria} ({default_note})" if criteria else default_note
+        return {
+            "idx": idx,
+            "q": q_label,
+            "question_text": q.get("question_text", ""),
+            "reference_solution": q.get("reference_solution", ""),
+            "max_score": max_score,
+            "criteria": criteria,
+            "has_diagram": q.get("has_diagram", False),
+            "verified": "yes" if verdict["verdict"] == "confirmed" else "review",
+            "verify_note": "" if verdict["verdict"] == "confirmed" else verdict["note"],
+            "origin": "teacher_example",
+            "graph": _process_graph(q, image_paths, upload_dir),
+        }
+
+    def _build_from_solve(idx, q):
+        """Solve path: no teacher solution — AI solves it."""
+        q_label = q.get("q", f"Q{idx + 1}")
+        max_score = q.get("max_score", 0) or 0
+        if not max_score:
+            max_score = 5
+            default_note = "Max score set by AI default — please confirm."
+        else:
+            default_note = ""
+        try:
+            solved, verdict = _solve_with_retries(
+                q.get("question_text", ""), max_score, q_label,
+                image_paths=image_paths, max_attempts=3)
+        except Exception as e:  # noqa: BLE001
+            return {
+                "idx": idx,
+                "q": q_label,
+                "question_text": q.get("question_text", ""),
+                "reference_solution": "",
+                "max_score": max_score,
+                "criteria": "",
+                "has_diagram": q.get("has_diagram", False),
+                "verified": "review",
+                "verify_note": f"AI solving failed after 3 attempts ({e}). Please solve manually or tap Retry.",
+                "origin": "ai_solved",
+                "graph": None,
+            }
+        verified = "yes" if verdict["verdict"] == "confirmed" else "review"
+        note = verdict.get("note", "")
+        if verified == "review" and not note:
+            note = "AI could not verify the solution after 3 attempts. Please review or tap Retry."
+        criteria = "; ".join(
+            f"{p.get('points', 1)} pt: {p.get('for', '')}"
+            for p in solved["ap_points"] if isinstance(p, dict)
+        )
+        if default_note:
+            criteria = f"{criteria} ({default_note})" if criteria else default_note
+        item = {
+            "idx": idx,
+            "q": q_label,
+            "question_text": q.get("question_text", ""),
+            "reference_solution": solved["solution"],
+            "max_score": max_score,
+            "criteria": criteria,
+            "has_diagram": q.get("has_diagram", False),
+            "verified": verified,
+            "verify_note": note,
+            "origin": "ai_solved",
+            "graph": None,
+        }
+        try:
+            gq = dict(q)
+            gq["reference_solution"] = solved["solution"]
+            gq["criteria"] = criteria
+            item["graph"] = _process_graph(gq, image_paths, upload_dir)
+        except Exception:
+            item["graph"] = None
+        return item
+
+    def _build(idx, q):
+        # Route per question: teacher example if a reference solution was
+        # found, otherwise AI solves it.
+        if (q.get("reference_solution") or "").strip():
+            return _build_from_example(idx, q)
+        return _build_from_solve(idx, q)
+
+    questions = digitize_example(image_paths)
+    total = len(questions)
+    if on_total:
+        on_total(total)
+    if not questions:
+        return {"items": []}
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futs = {pool.submit(_build, i, q): i for i, q in enumerate(questions)}
+        for f in as_completed(futs):
+            i = futs[f]
+            try:
+                item = f.result()
+            except Exception as e:  # noqa: BLE001
+                q = questions[i]
+                item = {
+                    "idx": i,
+                    "q": q.get("q", f"Q{i + 1}"),
+                    "question_text": q.get("question_text", ""),
+                    "reference_solution": q.get("reference_solution", ""),
+                    "max_score": q.get("max_score", 0) or 5,
+                    "criteria": "",
+                    "verified": "review",
+                    "verify_note": f"Processing failed ({e}). Please review or tap Retry.",
+                    "origin": "ai_solved",
+                    "graph": None,
+                }
+            results[i] = item
+            if on_item:
+                on_item(item)
+    return {"items": [results[i] for i in sorted(results)]}
 
 
 def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,

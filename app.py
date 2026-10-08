@@ -113,36 +113,6 @@ _rubric_jobs = {}
 _rubric_jobs_lock = threading.Lock()
 
 
-@app.route("/api/rubric_from_example", methods=["POST"])
-def api_rubric_from_example():
-    """Start rubric digitization as a background job; returns immediately.
-
-    Digitizing + validating takes ~1 minute, too long for one fragile HTTP
-    request (a restart or tunnel blip kills it). The client polls
-    /api/rubric_job/<job_id> for the result instead.
-    """
-    data = request.get_json(force=True, silent=True) or {}
-    assignment_id = data.get("assignment_id")
-    include = data.get("include") or []
-    if not assignment_id:
-        return jsonify({"ok": False, "error": "Missing assignment."}), 400
-    # Only allow files from this assignment's saved rubric-example library
-    # (guards against path traversal).
-    saved = db.get_rubric_example_images(assignment_id)
-    saved_names = {os.path.basename(p): p for p in saved if os.path.exists(p)}
-    paths = [saved_names[n] for n in include if n in saved_names]
-    if not paths:
-        return jsonify({"ok": False, "error": "No example photos selected. Please add a reference example first."}), 400
-    job_id = uuid.uuid4().hex[:12]
-    with _rubric_jobs_lock:
-        now = time.time()
-        for jid in [j for j, j in _rubric_jobs.items() if now - j.get("created", now) > 1800]:
-            del _rubric_jobs[jid]
-        _rubric_jobs[job_id] = {"status": "running", "created": now}
-    threading.Thread(target=_run_rubric_job, args=(job_id, paths), daemon=True).start()
-    return jsonify({"ok": True, "job_id": job_id})
-
-
 @app.route("/api/rubric_job/<job_id>")
 def api_rubric_job(job_id):
     with _rubric_jobs_lock:
@@ -160,66 +130,6 @@ def api_rubric_job(job_id):
     return jsonify(out)
 
 
-def _run_rubric_job(job_id, paths):
-    def _on_total(total):
-        with _rubric_jobs_lock:
-            if job_id in _rubric_jobs:
-                _rubric_jobs[job_id]["total"] = total
-
-    def _on_item(item):
-        with _rubric_jobs_lock:
-            if job_id in _rubric_jobs:
-                _rubric_jobs[job_id]["done"].append(item)
-
-    try:
-        with _rubric_jobs_lock:
-            _rubric_jobs[job_id]["done"] = []
-            _rubric_jobs[job_id]["total"] = 0
-        result = grader.build_example_rubric_streaming(
-            paths, upload_dir=UPLOAD_DIR, on_total=_on_total, on_item=_on_item)
-        with _rubric_jobs_lock:
-            _rubric_jobs[job_id] = {"status": "done", "items": result["items"],
-                                   "done": result["items"], "total": len(result["items"]),
-                                   "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
-    except RuntimeError as e:
-        with _rubric_jobs_lock:
-            _rubric_jobs[job_id] = {"status": "error", "error": str(e),
-                                   "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
-    except Exception as e:  # noqa: BLE001
-        with _rubric_jobs_lock:
-            _rubric_jobs[job_id] = {"status": "error", "error": f"Failed to generate rubric: {e}",
-                                   "created": _rubric_jobs.get(job_id, {}).get("created", time.time())}
-
-
-@app.route("/api/solve_rubric", methods=["POST"])
-def api_solve_rubric():
-    """Start the solve-first rubric job; returns immediately.
-
-    The teacher uploads question photos with NO answer key (or untrusted
-    student work). The AI transcribes the printed questions, solves each one
-    itself with the reasoning model, verifies the solution, and generates an
-    AP-style rubric. The client polls /api/rubric_job/<job_id> for results.
-    """
-    data = request.get_json(force=True, silent=True) or {}
-    assignment_id = data.get("assignment_id")
-    include = data.get("include") or []
-    if not assignment_id:
-        return jsonify({"ok": False, "error": "Missing assignment."}), 400
-    saved = db.get_rubric_example_images(assignment_id)
-    saved_names = {os.path.basename(p): p for p in saved if os.path.exists(p)}
-    paths = [saved_names[n] for n in include if n in saved_names]
-    if not paths:
-        return jsonify({"ok": False, "error": "No question photos selected. Please add them first."}), 400
-    job_id = uuid.uuid4().hex[:12]
-    with _rubric_jobs_lock:
-        now = time.time()
-        for jid in [j for j, j in _rubric_jobs.items() if now - j.get("created", now) > 1800]:
-            del _rubric_jobs[jid]
-        _rubric_jobs[job_id] = {"status": "running", "created": now}
-    threading.Thread(target=_run_solve_job, args=(job_id, paths), daemon=True).start()
-    return jsonify({"ok": True, "job_id": job_id})
-
-
 def _run_solve_job(job_id, paths):
     def _on_total(total):
         with _rubric_jobs_lock:
@@ -235,7 +145,7 @@ def _run_solve_job(job_id, paths):
         with _rubric_jobs_lock:
             _rubric_jobs[job_id]["done"] = []
             _rubric_jobs[job_id]["total"] = 0
-        result = grader.build_solve_rubric_streaming(
+        result = grader.build_unified_rubric_streaming(
             paths, upload_dir=UPLOAD_DIR, on_total=_on_total, on_item=_on_item)
         with _rubric_jobs_lock:
             _rubric_jobs[job_id] = {"status": "done", "items": result["items"],
