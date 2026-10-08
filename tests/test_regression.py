@@ -1570,16 +1570,38 @@ def test_login_required_and_usage_logging(errors):
     with open(os.path.join(base, "app.py")) as f:
         app_src = f.read()
     for needle in ["_require_login", '/login', "GRADER_USER", "GRADER_PASSWORD",
-                   "secret_key", "usage_logger"]:
+                   "secret_key", "usage_logger", "ADMIN_PASSWORD", "_is_admin",
+                   "AUTH_VERSION", "compare_digest", "budget_checker",
+                   "SESSION_COOKIE_SECURE"]:
         if needle not in app_src:
             errors.append(f"login/usage wiring missing in app.py: {needle}")
+    # Fail-closed: no hardcoded default password in production path.
+    if '"alpha-grader-2026"' in app_src:
+        errors.append("hardcoded default password still present")
+    # Re-review fixes (2026-10-07): empty password must never match;
+    # AUTH_VERSION must be HMAC-keyed, not plain SHA-256.
+    if "bool(pw) and bool(s)" not in app_src:
+        errors.append("empty-password guard missing in login")
+    if "hmac.new(" not in app_src or "app.secret_key" not in app_src:
+        errors.append("AUTH_VERSION not HMAC-keyed with secret")
+    if "FLASK_SECRET_KEY (>=32 chars) must be set" not in app_src:
+        errors.append("secret_key fail-closed check missing")
+    if "must be set in production" not in app_src:
+        errors.append("fail-closed check missing")
+    # /settings must require admin.
+    if "_is_admin()" not in app_src:
+        errors.append("/settings not gated on _is_admin")
+    # API paths must get JSON 401, not HTML redirect.
+    if '"auth_required"' not in app_src:
+        errors.append("API 401 JSON response missing")
     if "db.log_api_usage" not in app_src:
         errors.append("usage logger not wired to db.log_api_usage")
     # --- grader hook ---
     with open(os.path.join(base, "grader.py")) as f:
         g_src = f.read()
-    if "usage_logger" not in g_src:
-        errors.append("grader.py missing usage_logger hook")
+    for needle in ["usage_logger", "budget_checker"]:
+        if needle not in g_src:
+            errors.append(f"grader.py missing {needle} hook")
     # --- login template exists ---
     if not os.path.exists(os.path.join(base, "templates", "login.html")):
         errors.append("templates/login.html missing")

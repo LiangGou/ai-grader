@@ -83,6 +83,7 @@ def init_db():
             updated REAL NOT NULL
         )
     """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created)")
     conn.commit()
     conn.close()
 
@@ -386,16 +387,15 @@ def log_api_usage(endpoint, model, prompt_tokens, completion_tokens):
 def get_api_usage_summary(since_ts=0):
     """Returns {calls, prompt_tokens, completion_tokens, by_model: {...}}."""
     conn = _connect()
-    rows = conn.execute(
-        "SELECT endpoint, model, prompt_tokens, completion_tokens FROM api_usage"
-        " WHERE created >= ?", (since_ts,)).fetchall()
+    row = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0)"
+        " FROM api_usage WHERE created >= ?", (since_ts,)).fetchone()
+    by_model = {}
+    for m, c, pt, ct in conn.execute(
+            "SELECT model, COUNT(*), COALESCE(SUM(prompt_tokens),0),"
+            " COALESCE(SUM(completion_tokens),0) FROM api_usage"
+            " WHERE created >= ? GROUP BY model", (since_ts,)).fetchall():
+        by_model[m or "?"] = {"calls": c, "tokens": (pt or 0) + (ct or 0)}
     conn.close()
-    out = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "by_model": {}}
-    for r in rows:
-        out["calls"] += 1
-        out["prompt_tokens"] += r["prompt_tokens"] or 0
-        out["completion_tokens"] += r["completion_tokens"] or 0
-        m = out["by_model"].setdefault(r["model"] or "?", {"calls": 0, "tokens": 0})
-        m["calls"] += 1
-        m["tokens"] += (r["prompt_tokens"] or 0) + (r["completion_tokens"] or 0)
-    return out
+    return {"calls": row[0], "prompt_tokens": row[1], "completion_tokens": row[2],
+            "by_model": by_model}

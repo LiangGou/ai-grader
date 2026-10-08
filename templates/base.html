@@ -15,7 +15,7 @@
   <nav>
     <a href="{{ url_for('index') }}">Home</a>
     <a href="{{ url_for('settings_page') }}">Settings</a>
-    <a href="{{ url_for('logout_page') }}">Logout</a>
+    <form method="post" action="{{ url_for('logout_page') }}" style="display:inline"><button type="submit" class="linkbtn">Logout</button></form>
   </nav>
 </header>
 {% if env is defined and not env.key_set %}

@@ -113,6 +113,9 @@ def _data_url(path):
 # Optional hook: set by app.py to log every OpenAI call for cost tracking.
 # Signature: fn(endpoint_label, model, prompt_tokens, completion_tokens).
 usage_logger = None
+# Optional hook: set by app.py; returns True if the call may proceed.
+# Signature: fn() -> bool. Used to enforce a daily token budget.
+budget_checker = None
 # Label for the current high-level operation (set by callers, e.g. "solve_rubric").
 current_operation = "general"
 
@@ -137,6 +140,8 @@ def _chat_json(system, user_content, max_tokens, model=None, reasoning_effort=No
     else:
         kwargs["max_tokens"] = max_tokens
         kwargs["response_format"] = {"type": "json_object"}
+    if budget_checker is not None and not budget_checker():
+        raise RuntimeError("Daily API budget exceeded — please try again tomorrow.")
     resp = client.chat.completions.create(**kwargs)
     if usage_logger is not None:
         try:

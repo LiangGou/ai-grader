@@ -12,16 +12,18 @@ for _pv in ("NO_PROXY", "no_proxy"):
         os.environ[_pv] = "localhost,127.0.0.1,::1"
 
 import csv
+import hashlib
+import hmac
 import io
 import json
 import random
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
+from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
 
 import db
 import grader
@@ -35,44 +37,103 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # max 32MB per request
 
-# Sessions: secret from env so logins survive restarts; random fallback.
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32).hex()
+# Sessions: must be set so login cookies work across gunicorn workers and
+# survive restarts. Fail closed: no silent random fallback.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY")
+if not app.secret_key or len(app.secret_key) < 32:
+    raise RuntimeError("FLASK_SECRET_KEY (>=32 chars) must be set")
 
-# Shared alpha login (owner shares these with testers; override via env).
+# Cookie hardening (H3).
+app.config.update(
+    SESSION_COOKIE_SECURE=True,      # Render serves HTTPS
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+
+# Shared alpha login. Two roles, one form:
+#   GRADER_PASSWORD -> tester (uses the app, no /settings)
+#   ADMIN_PASSWORD  -> admin (full access incl. /settings)
+# Fail closed: no silent defaults anywhere (empty password must never match).
 GRADER_USER = os.environ.get("GRADER_USER", "teacher")
-GRADER_PASSWORD = os.environ.get("GRADER_PASSWORD", "alpha-grader-2026")
+GRADER_PASSWORD = os.environ.get("GRADER_PASSWORD")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+if not GRADER_PASSWORD or len(GRADER_PASSWORD) < 12:
+    raise RuntimeError("GRADER_PASSWORD (>=12 chars) must be set")
+if not ADMIN_PASSWORD or len(ADMIN_PASSWORD) < 12:
+    raise RuntimeError("ADMIN_PASSWORD (>=12 chars) must be set")
+
+# Auth version: changing either password invalidates all sessions.
+# HMAC-keyed with the server secret so the cookie value (signed, not encrypted)
+# doesn't leak a crackable password hash.
+AUTH_VERSION = hmac.new(
+    app.secret_key.encode(),
+    f"{GRADER_PASSWORD}:{ADMIN_PASSWORD}".encode(),
+    hashlib.sha256).hexdigest()[:32]
 
 # Log every OpenAI call for owner cost visibility.
 grader.usage_logger = db.log_api_usage
+
+# Daily token budget (M1): refuse new API calls once exceeded.
+DAILY_TOKEN_BUDGET = int(os.environ.get("DAILY_TOKEN_BUDGET", "2000000"))
+
+
+def _budget_ok():
+    start_of_day = time.time() - (time.time() % 86400)
+    s = db.get_api_usage_summary(since_ts=start_of_day)
+    return (s["prompt_tokens"] + s["completion_tokens"]) < DAILY_TOKEN_BUDGET
+
+
+grader.budget_checker = _budget_ok
 
 db.init_db()
 
 
 @app.before_request
 def _require_login():
-    from flask import request, session, redirect, url_for
     if request.path == "/login" or request.path.startswith("/static/"):
         return None
-    if not session.get("logged_in"):
+    if session.get("auth_v") != AUTH_VERSION:
+        session.clear()
+        # API/AJAX callers get JSON 401, browsers get the login page (M4).
+        if request.path.startswith("/api/") or request.headers.get(
+                "X-Requested-With") == "XMLHttpRequest":
+            return jsonify({"ok": False, "error": "auth_required"}), 401
         return redirect(url_for("login_page"))
+
+
+def _is_admin():
+    return session.get("auth_v") == AUTH_VERSION and session.get("role") == "admin"
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
-    from flask import request, session, redirect, url_for, render_template
     err = ""
     if request.method == "POST":
-        if (request.form.get("username") == GRADER_USER
-                and request.form.get("password") == GRADER_PASSWORD):
-            session["logged_in"] = True
+        session.clear()  # prevent session fixation (L2)
+        pw = (request.form.get("password") or "").encode()
+        user = request.form.get("username") or ""
+        # Never match an empty password (fail closed).
+        def _match(secret):
+            s = (secret or "").encode()
+            return bool(pw) and bool(s) and hmac.compare_digest(pw, s)
+        # Constant-time comparison (L1).
+        if user == GRADER_USER and _match(ADMIN_PASSWORD):
+            session["auth_v"] = AUTH_VERSION
+            session["role"] = "admin"
+            session.permanent = True
+            return redirect(url_for("index"))
+        if user == GRADER_USER and _match(GRADER_PASSWORD):
+            session["auth_v"] = AUTH_VERSION
+            session["role"] = "tester"
+            session.permanent = True
             return redirect(url_for("index"))
         err = "Wrong username or password."
     return render_template("login.html", error=err)
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["POST"])
 def logout_page():
-    from flask import session, redirect, url_for
     session.clear()
     return redirect(url_for("login_page"))
 
@@ -206,6 +267,7 @@ def api_solve_rubric():
 
 
 def _run_solve_job(job_id, paths):
+    grader.current_operation = "solve_rubric"
     # Job state lives in the DB (not process memory) so any gunicorn worker
     # can serve poll requests and jobs survive restarts.
     def _on_total(total):
@@ -359,6 +421,7 @@ def grade_page(assignment_id):
 
 @app.route("/api/grade", methods=["POST"])
 def api_grade():
+    grader.current_operation = "grade"
     assignment_id = request.form.get("assignment_id")
     student_name = (request.form.get("student_name") or "").strip()
     if not assignment_id:
@@ -464,6 +527,9 @@ def grade_detail_page(grade_id):
 # ---------- Settings ----------
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
+    # Testers share the app login but must not change the owner's API key (H2).
+    if not _is_admin():
+        return redirect(url_for("index"))
     msg = ""
     if request.method == "POST":
         api_key = (request.form.get("api_key") or "").strip()
