@@ -20,7 +20,12 @@ if USE_POSTGRES:
         import psycopg2.extras
         _psycopg2 = psycopg2
     except ImportError:
-        USE_POSTGRES = False  # fall back to SQLite if driver missing
+        # Critical: if DATABASE_URL is set but driver missing, fail loudly.
+        # Silent SQLite fallback on ephemeral Render disk = data loss.
+        raise RuntimeError(
+            "DATABASE_URL is set but psycopg2 is not installed. "
+            "Add psycopg2-binary to requirements.txt."
+        )
 
 
 def _connect():
@@ -33,8 +38,35 @@ def _connect():
 
 
 def _q(sql):
-    """Convert ? placeholders to %s for Postgres."""
-    return sql.replace("?", "%s") if USE_POSTGRES else sql
+    """Convert ? placeholders to %s for Postgres.
+
+    Handles % in literals (escapes to %%) and ? inside quoted strings
+    (leaves them alone). Without this, psycopg2 misinterprets % as
+    format markers and ? in literals gets corrupted.
+    """
+    if not USE_POSTGRES:
+        return sql
+    out = []
+    in_str = False
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if ch == "'":
+            # Handle escaped quotes ('')
+            if in_str and i + 1 < len(sql) and sql[i + 1] == "'":
+                out.append("''")
+                i += 2
+                continue
+            in_str = not in_str
+            out.append(ch)
+        elif ch == "%" and not in_str:
+            out.append("%%")
+        elif ch == "?" and not in_str:
+            out.append("%s")
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _rows_to_dicts(rows, cursor=None):

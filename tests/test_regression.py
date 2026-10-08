@@ -1808,6 +1808,35 @@ def test_digitize_retry_on_bad_json(errors):
     print("  done")
 
 
+def test_q_placeholder_conversion(errors):
+    """_q() must handle % literals and ? in strings correctly.
+
+    Bug found by Claude review 2026-10-08: naive ? -> %s replacement
+    corrupts string literals and % format markers.
+    """
+    print("Testing _q conversion...")
+    import db
+    # Force Postgres mode for the test
+    orig = db.USE_POSTGRES
+    db.USE_POSTGRES = True
+    try:
+        # Basic placeholder
+        check = db._q("SELECT * FROM t WHERE a = ?") == "SELECT * FROM t WHERE a = %s"
+        if not check:
+            errors.append("_q basic placeholder failed")
+        # % in literal must be escaped
+        r = db._q("SELECT * FROM t WHERE a LIKE '%foo%'")
+        if "%%foo%%" not in r:
+            errors.append(f"_q % escape failed: {r}")
+        # ? inside string literal must NOT be converted
+        r2 = db._q("SELECT 'Why?' WHERE a = ?")
+        if r2.count("%s") != 1 or "Why?" not in r2:
+            errors.append(f"_q ? in literal failed: {r2}")
+    finally:
+        db.USE_POSTGRES = orig
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1825,6 +1854,7 @@ def main():
     test_grader_uses_gpt56(errors)
     test_digitize_retry_on_bad_json(errors)
     test_verifier_empty_response(errors)
+    test_q_placeholder_conversion(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)
