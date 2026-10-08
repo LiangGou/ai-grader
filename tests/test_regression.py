@@ -1386,6 +1386,64 @@ def test_rubric_items_to_text_preserves_grading_content(errors):
     print("  done")
 
 
+
+def test_safe_eval_dos_guard(errors):
+    """_safe_eval must not hang on huge exponents (claude-opus-5-5, 2026-10-07)."""
+    import grader, time
+    print("Testing _safe_eval DoS guard...")
+    # Huge exponent should return None quickly, not hang.
+    start = time.time()
+    r = grader._safe_eval("9**9**9")
+    elapsed = time.time() - start
+    if elapsed > 5:
+        errors.append(f"_safe_eval took {elapsed:.1f}s on 9**9**9 (DoS)")
+    if r is not None:
+        errors.append(f"_safe_eval(9**9**9) should be None, got {r}")
+    # String multiplication bomb
+    r2 = grader._safe_eval('"a"*10**10')
+    if r2 is not None:
+        errors.append(f"_safe_eval string bomb should be None, got {r2}")
+    # Normal pow still works
+    r3 = grader._safe_eval("2**10")
+    if r3 != 1024.0:
+        errors.append(f"_safe_eval(2**10) should be 1024, got {r3}")
+    print("  done")
+
+
+def test_latex_n_preserves_commands(errors):
+    """\\n -> newline must not break \\neq, \\nabla etc. (claude-opus-5-5)."""
+    import grader
+    print("Testing \\n command preservation...")
+    out = grader.normalize_latex("$a \\neq b$")
+    if "\\neq" not in out:
+        errors.append(f"\\neq was destroyed: {out!r}")
+    out2 = grader.normalize_latex("line1\\nline2")
+    if out2 != "line1\nline2":
+        errors.append(f"literal \\n not converted: {out2!r}")
+    print("  done")
+
+
+def test_balance_braces_double_backslash(errors):
+    """\\\\{ is line break + real brace, not escaped (claude-opus-5-5)."""
+    import grader
+    print("Testing \\\\{ handling...")
+    out = grader._balance_braces("a \\\\{b}")
+    if out != "a \\\\{b}":
+        errors.append(f"\\{{ mishandled: got {out!r}")
+    print("  done")
+
+
+def test_parse_json_loose_multiple_fences(errors):
+    """Must try all fences, not just first (claude-opus-5-5)."""
+    import grader
+    print("Testing multiple fence handling...")
+    text = '```python\nx=1\n```\n```json\n{"a": 1}\n```'
+    out = grader._parse_json_loose(text)
+    if out != {"a": 1}:
+        errors.append(f"wrong fence picked: {out!r}")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1415,6 +1473,11 @@ def main():
     test_verify_solution_python_check_confirmed_and_mismatch(errors)
     test_safe_eval_and_digits_of_numeric_edge_cases(errors)
     test_rubric_items_to_text_preserves_grading_content(errors)
+    # claude-opus-5-5 review fixes (2026-10-07)
+    test_safe_eval_dos_guard(errors)
+    test_latex_n_preserves_commands(errors)
+    test_balance_braces_double_backslash(errors)
+    test_parse_json_loose_multiple_fences(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 

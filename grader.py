@@ -81,13 +81,14 @@ def _parse_json_loose(text):
         return json.loads(text)
     except (json.JSONDecodeError, TypeError):
         pass
-    m = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
-    if m:
-        text = m.group(1).strip()
+    # Try EVERY code fence (not just the first) — the model might put a
+    # ```python block before the ```json block. Found by claude-opus-5-5
+    # review 2026-10-07.
+    for m in re.finditer(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL):
         try:
-            return json.loads(text)
+            return json.loads(m.group(1).strip())
         except (json.JSONDecodeError, TypeError):
-            pass
+            continue
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -157,10 +158,12 @@ def _balance_braces(s):
     n = len(s)
     while i < n:
         ch = s[i]
-        if ch == "\\" and i + 1 < n and s[i + 1] in "{}":
-            # Escaped brace: literal character, not grouping.
-            result.append(ch)
-            result.append(s[i + 1])
+        if ch == "\\" and i + 1 < n:
+            # Consume backslash + next char together. After a backslash the
+            # next char is never a structural brace: \{ \} are literals,
+            # \\ is a line break, \f etc. are commands.
+            # Found by claude-opus-5-5 review 2026-10-07.
+            result.append(s[i:i+2])
             i += 2
             continue
         if ch == "{":
@@ -200,12 +203,13 @@ def normalize_latex(text):
     # The model sometimes emits invalid Unicode (U+FFFD replacement chars),
     # e.g. corrupted circled digits like �1� (meant ①). Recover the digit,
     # drop any remaining replacement chars so they don't render as mojibake.
-    text = re.sub("\ufffd(\d+)\ufffd", r"\1", text)
+    text = re.sub(r"\ufffd(\d+)\ufffd", r"\1", text)
     text = text.replace("\ufffd", "")
     # The model types literal \n (backslash + n) for line breaks between
     # formulas. KaTeX has no \n command, so it renders red. Turn it into a
-    # real newline (whitespace outside math, harmless inside).
-    text = text.replace("\\n", "\n")
+    # real newline — but NOT when it's the start of a real command like
+    # \neq, \nabla, \nu. Found by claude-opus-5-5 review 2026-10-07.
+    text = re.sub(r"\\n(?![a-zA-Z])", "\n", text)
     # The model sometimes mixes delimiters like $\[...\]$ or $\(...\)$.
     # Drop a single $ hugging \[ \] \( \) first (a $$ pair is left alone),
     # then convert \[...\] -> $$...$$ and \(...\) -> $...$.
@@ -325,6 +329,19 @@ def _safe_eval(expr, extra_names=None):
             return None
         if isinstance(node, ast.Call) and not isinstance(node.func, ast.Name):
             return None
+        # DoS guard: only numeric constants (no str/bytes that Mult could
+        # blow up, no bool). Found by claude-opus-5-5 review 2026-10-07.
+        if isinstance(node, ast.Constant) and not isinstance(node.value, (int, float)):
+            return None
+        # DoS guard: bound Pow exponents (9**9**9**9 hangs forever).
+        # Only allow literal numeric exponents; nested power towers like
+        # 9**(9**9) have a BinOp exponent and are rejected.
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            exp = node.right
+            if not (isinstance(exp, ast.Constant)
+                    and isinstance(exp.value, (int, float))
+                    and abs(exp.value) <= 100):
+                return None
     try:
         return float(eval(compile(tree, "<check>", "eval"), {"__builtins__": {}}, allowed_names))  # noqa: S307
     except Exception:
