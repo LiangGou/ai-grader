@@ -110,6 +110,13 @@ def _data_url(path):
     return f"data:{media_type};base64,{data}"
 
 
+# Optional hook: set by app.py to log every OpenAI call for cost tracking.
+# Signature: fn(endpoint_label, model, prompt_tokens, completion_tokens).
+usage_logger = None
+# Label for the current high-level operation (set by callers, e.g. "solve_rubric").
+current_operation = "general"
+
+
 def _chat_json(system, user_content, max_tokens, model=None, reasoning_effort=None, _raw=None):
     client = _get_client()
     model = model or DEFAULT_MODEL
@@ -131,6 +138,14 @@ def _chat_json(system, user_content, max_tokens, model=None, reasoning_effort=No
         kwargs["max_tokens"] = max_tokens
         kwargs["response_format"] = {"type": "json_object"}
     resp = client.chat.completions.create(**kwargs)
+    if usage_logger is not None:
+        try:
+            u = getattr(resp, "usage", None)
+            usage_logger(current_operation, model,
+                         getattr(u, "prompt_tokens", 0) if u else 0,
+                         getattr(u, "completion_tokens", 0) if u else 0)
+        except Exception:
+            pass
     text = (resp.choices[0].message.content or "").strip()
     if _raw is not None:
         _raw.append({"model": model, "effort": reasoning_effort, "raw": text})

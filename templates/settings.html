@@ -27,6 +27,23 @@
 </div>
 
 <div class="card">
+  <h3>📊 API Usage (last 30 days)</h3>
+  <p><strong>{{ usage.calls }}</strong> calls ·
+     <strong>{{ usage.prompt_tokens + usage.completion_tokens }}</strong> tokens
+     ({{ usage.prompt_tokens }} in / {{ usage.completion_tokens }} out)</p>
+  {% if usage.by_model %}
+  <ul>
+    {% for model, m in usage.by_model.items() %}
+    <li><code>{{ model }}</code>: {{ m.calls }} calls, {{ m.tokens }} tokens</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No API calls logged yet.</p>
+  {% endif %}
+  <p class="muted">Tip: set a hard budget on this key at platform.openai.com → Limits to cap spending.</p>
+</div>
+
+<div class="card">
   <h3>How to get a key</h3>
   <ol class="howto">
     <li>Open <code>platform.openai.com</code>, sign in, and go to the <strong>API keys</strong> page;</li>

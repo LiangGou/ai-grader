@@ -15,6 +15,7 @@
   <nav>
     <a href="{{ url_for('index') }}">Home</a>
     <a href="{{ url_for('settings_page') }}">Settings</a>
+    <a href="{{ url_for('logout_page') }}">Logout</a>
   </nav>
 </header>
 {% if env is defined and not env.key_set %}

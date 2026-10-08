@@ -58,6 +58,17 @@ def init_db():
     gcols = [r[1] for r in cur.execute("PRAGMA table_info(grades)").fetchall()]
     if "images" not in gcols:
         cur.execute("ALTER TABLE grades ADD COLUMN images TEXT DEFAULT '[]'")
+    # API usage log: every OpenAI call, for owner cost visibility.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS api_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            endpoint TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT '',
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            created REAL NOT NULL
+        )
+    """)
     # Rubric generation jobs: DB-backed so jobs survive multi-worker gunicorn
     # and Render restarts (in-memory dict lost jobs with --workers 2).
     cur.execute("""
@@ -355,3 +366,36 @@ def cleanup_old_rubric_jobs(max_age_seconds=1800):
     conn.execute("DELETE FROM rubric_jobs WHERE created < ?", (time.time() - max_age_seconds,))
     conn.commit()
     conn.close()
+
+
+# ---------- API usage tracking ----------
+# Every OpenAI call is logged so the owner can see (and cap) spending when
+# sharing the deployment with alpha testers.
+
+def log_api_usage(endpoint, model, prompt_tokens, completion_tokens):
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO api_usage (endpoint, model, prompt_tokens, completion_tokens, created)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (endpoint, model, prompt_tokens or 0, completion_tokens or 0, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_api_usage_summary(since_ts=0):
+    """Returns {calls, prompt_tokens, completion_tokens, by_model: {...}}."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT endpoint, model, prompt_tokens, completion_tokens FROM api_usage"
+        " WHERE created >= ?", (since_ts,)).fetchall()
+    conn.close()
+    out = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "by_model": {}}
+    for r in rows:
+        out["calls"] += 1
+        out["prompt_tokens"] += r["prompt_tokens"] or 0
+        out["completion_tokens"] += r["completion_tokens"] or 0
+        m = out["by_model"].setdefault(r["model"] or "?", {"calls": 0, "tokens": 0})
+        m["calls"] += 1
+        m["tokens"] += (r["prompt_tokens"] or 0) + (r["completion_tokens"] or 0)
+    return out

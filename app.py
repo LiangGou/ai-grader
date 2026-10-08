@@ -35,7 +35,46 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # max 32MB per request
 
+# Sessions: secret from env so logins survive restarts; random fallback.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32).hex()
+
+# Shared alpha login (owner shares these with testers; override via env).
+GRADER_USER = os.environ.get("GRADER_USER", "teacher")
+GRADER_PASSWORD = os.environ.get("GRADER_PASSWORD", "alpha-grader-2026")
+
+# Log every OpenAI call for owner cost visibility.
+grader.usage_logger = db.log_api_usage
+
 db.init_db()
+
+
+@app.before_request
+def _require_login():
+    from flask import request, session, redirect, url_for
+    if request.path == "/login" or request.path.startswith("/static/"):
+        return None
+    if not session.get("logged_in"):
+        return redirect(url_for("login_page"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    from flask import request, session, redirect, url_for, render_template
+    err = ""
+    if request.method == "POST":
+        if (request.form.get("username") == GRADER_USER
+                and request.form.get("password") == GRADER_PASSWORD):
+            session["logged_in"] = True
+            return redirect(url_for("index"))
+        err = "Wrong username or password."
+    return render_template("login.html", error=err)
+
+
+@app.route("/logout")
+def logout_page():
+    from flask import session, redirect, url_for
+    session.clear()
+    return redirect(url_for("login_page"))
 
 
 def _save_upload(file_storage, prefix):
@@ -435,7 +474,8 @@ def settings_page():
             os.environ["OPENAI_API_KEY"] = api_key
         os.environ["OPENAI_MODEL"] = model
         msg = "Saved."
-    return render_template("settings.html", env=_env_status(), msg=msg)
+    usage = db.get_api_usage_summary(since_ts=time.time() - 30 * 86400)
+    return render_template("settings.html", env=_env_status(), msg=msg, usage=usage)
 
 
 def _write_env(api_key, model):

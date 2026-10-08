@@ -1543,6 +1543,49 @@ def test_upload_path_traversal_blocked(errors):
     print("  done")
 
 
+def test_login_required_and_usage_logging(errors):
+    """Login gate + API usage tracking (2026-10-07 deployment hardening)."""
+    import tempfile
+    import db as dbmod
+    print("Testing login gate + usage logging...")
+    # --- usage logging on temp DB ---
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    orig = dbmod.DB_PATH
+    dbmod.DB_PATH = tmp.name
+    try:
+        dbmod.init_db()
+        dbmod.log_api_usage("solve_rubric", "o3", 1000, 500)
+        dbmod.log_api_usage("grade", "gpt-4o", 2000, 300)
+        s = dbmod.get_api_usage_summary()
+        if s["calls"] != 2 or s["prompt_tokens"] != 3000 or s["completion_tokens"] != 800:
+            errors.append(f"usage summary wrong: {s}")
+        if s["by_model"].get("o3", {}).get("calls") != 1:
+            errors.append(f"by_model breakdown wrong: {s['by_model']}")
+    finally:
+        dbmod.DB_PATH = orig
+        os.unlink(tmp.name)
+    # --- login gate in app.py ---
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(base, "app.py")) as f:
+        app_src = f.read()
+    for needle in ["_require_login", '/login', "GRADER_USER", "GRADER_PASSWORD",
+                   "secret_key", "usage_logger"]:
+        if needle not in app_src:
+            errors.append(f"login/usage wiring missing in app.py: {needle}")
+    if "db.log_api_usage" not in app_src:
+        errors.append("usage logger not wired to db.log_api_usage")
+    # --- grader hook ---
+    with open(os.path.join(base, "grader.py")) as f:
+        g_src = f.read()
+    if "usage_logger" not in g_src:
+        errors.append("grader.py missing usage_logger hook")
+    # --- login template exists ---
+    if not os.path.exists(os.path.join(base, "templates", "login.html")):
+        errors.append("templates/login.html missing")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1581,6 +1624,7 @@ def main():
     test_rubric_jobs_db_backed(errors)
     test_upgrade_to_ap_removed(errors)
     test_upload_path_traversal_blocked(errors)
+    test_login_required_and_usage_logging(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 
