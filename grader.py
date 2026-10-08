@@ -1195,6 +1195,7 @@ def retry_solve_question(question_text, max_score, q_label="", model="o3",
 
     solved, verdict, last_exc = None, None, None
     retry_hint = ""
+    prev_solution = None
     for attempt in range(1, max_attempts + 1):
         solve_debug, verify_debug = [], []
         try:
@@ -1221,6 +1222,14 @@ def retry_solve_question(question_text, max_score, q_label="", model="o3",
             continue
         if verdict["verdict"] == "confirmed":
             break
+        # Same answer twice: further retries won't help.
+        cur = (solved["solution"] or "").strip()
+        if prev_solution is not None and cur == prev_solution:
+            verdict = {"verdict": "review",
+                       "note": (verdict.get("note", "") +
+                                " (Same answer twice; further retries unlikely to help.)").strip()}
+            break
+        prev_solution = cur
         retry_hint = (
             f"Attempt {attempt} was NOT confirmed ({verdict['verdict']}): "
             f"{verdict.get('note', '')} Attempted solution: {solved['solution'][:500]}"
@@ -1348,6 +1357,7 @@ def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
     last_exc = None
     solved, verdict = None, None
     retry_hint = ""
+    prev_solution = None
     for attempt in range(1, max_attempts + 1):
         try:
             solved = solve_and_rubric(question_text, max_score, q_label,
@@ -1363,6 +1373,15 @@ def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
             continue
         if verdict["verdict"] == "confirmed":
             return solved, verdict
+        # If the model produced the exact same solution twice, retrying is
+        # pointless — stop early and let the teacher review.
+        cur = (solved["solution"] or "").strip()
+        if prev_solution is not None and cur == prev_solution:
+            verdict = {"verdict": "review",
+                       "note": (verdict.get("note", "") +
+                                " (Model produced the same answer twice; further retries unlikely to help.)").strip()}
+            break
+        prev_solution = cur
         # Verification failed: feed the discrepancy back for the next attempt.
         retry_hint = (
             f"Attempt {attempt} produced a solution, but independent verification "
