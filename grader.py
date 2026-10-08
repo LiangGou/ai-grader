@@ -197,6 +197,11 @@ def normalize_latex(text):
     """
     if not text:
         return text
+    # The model sometimes emits invalid Unicode (U+FFFD replacement chars),
+    # e.g. corrupted circled digits like �1� (meant ①). Recover the digit,
+    # drop any remaining replacement chars so they don't render as mojibake.
+    text = re.sub("\ufffd(\d+)\ufffd", r"\1", text)
+    text = text.replace("\ufffd", "")
     # The model types literal \n (backslash + n) for line breaks between
     # formulas. KaTeX has no \n command, so it renders red. Turn it into a
     # real newline (whitespace outside math, harmless inside).

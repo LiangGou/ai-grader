@@ -213,6 +213,32 @@ def test_ap_first_solve(errors):
     print(f"  Solution steps: {sorted(set(steps))}, points: {len(pts)}, sum: {total}")
 
 
+def test_unicode_sanitization(errors):
+    """No U+FFFD replacement chars in output (reported 2026-10-07: �1� mojibake).
+
+    The model sometimes emits corrupted circled digits like �1� (meant ①).
+    normalize_latex must recover the digit and drop stray replacement chars.
+    """
+    import grader
+
+    print("Testing Unicode sanitization...")
+    # Corrupted circled digits → recover the digit.
+    out = grader.normalize_latex("we have\n$$\n\ufffd1\ufffd\n$$\nTherefore")
+    if "\ufffd" in out:
+        errors.append("Sanitization: U+FFFD not removed")
+    if "1" not in out:
+        errors.append("Sanitization: digit not recovered from \ufffd1\ufffd")
+    # Stray replacement chars → dropped.
+    out2 = grader.normalize_latex("Step 2: test \ufffd content \ufffd here")
+    if "\ufffd" in out2:
+        errors.append("Sanitization: stray U+FFFD not dropped")
+    # Normal text untouched.
+    out3 = grader.normalize_latex("Solve $x^2 = 4$ for $x$.")
+    if out3 != "Solve $x^2 = 4$ for $x$.":
+        errors.append(f"Sanitization: altered clean text: {out3!r}")
+    print("  Sanitization checks done")
+
+
 def test_validation_guardrails(errors):
     """Test _check_ap_output catches bad output (no API calls)."""
     import grader
@@ -267,6 +293,7 @@ def main():
 
     # Always run the no-API guardrail tests.
     test_validation_guardrails(errors)
+    test_unicode_sanitization(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 
