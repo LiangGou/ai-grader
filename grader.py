@@ -701,6 +701,67 @@ def validate_question(question_text, reference_solution):
     return {"verdict": "unsure", "note": note or "Could not confidently validate the reference solution."}
 
 
+
+AP_RUBRIC_ONLY_SYSTEM = """You are an expert AP Calculus teacher creating a scoring rubric.
+Given a question, its correct reference solution, and the total point value:
+
+CREATE an AP-style scoring rubric: break the total points into specific, observable criteria following AP free-response conventions:
+- Award points for specific steps (setup, correct mathematical work, final answer), not just the final answer.
+- Typical: 1 point for correct setup, 1-2 points for correct work/computation, 1 point for the final answer (with correct units or justification where applicable).
+- Each criterion must state exactly what earns the point.
+- Base the criteria on the reference solution's steps.
+
+CRITICAL: The point breakdown MUST sum to EXACTLY the given max_score. You are distributing exactly that many points — never more, never fewer.
+
+Output ONLY a JSON object, no explanations:
+{
+  "ap_points": [{"points": 1, "for": "<what earns this point>"}, ...]
+}
+"""
+
+
+def generate_ap_rubric_only(question_text, reference_solution, max_score, q_label=""):
+    """Generate AP-style rubric points from an existing question + solution.
+
+    Used when the teacher's example has no usable rubric markings — instead of
+    making the teacher click "Compare with AP Standard", we generate the AP
+    rubric directly. Returns a criteria string; points sum to max_score.
+    """
+    prompt = (
+        f"Question {q_label} (worth {max_score:g} points):\n{question_text}\n\n"
+        f"Reference solution:\n{reference_solution}\n\n"
+        "Create the AP-style scoring rubric."
+    )
+    data = _chat_json(
+        AP_RUBRIC_ONLY_SYSTEM,
+        [{"type": "text", "text": prompt}],
+        max_tokens=2048,
+        model=REASONING_MODEL,
+    )
+    pts = data.get("ap_points") or []
+    target = int(round(max_score))
+    total = sum(int(p.get("points", 0) or 0) for p in pts if isinstance(p, dict))
+    diff = target - total
+    if diff != 0 and pts and isinstance(pts[-1], dict):
+        pts[-1]["points"] = int(pts[-1].get("points", 0) or 0) + diff
+    criteria = "; ".join(
+        f"{p.get('points', 1)} pt: {p.get('for', '')}"
+        for p in pts if isinstance(p, dict)
+    )
+    return criteria
+
+
+def _criteria_is_weak(criteria):
+    """True if the digitized criteria has no real scoring rules."""
+    c = (criteria or "").strip()
+    if not c:
+        return True
+    if len(c) < 40:
+        return True
+    weak_markers = ["please confirm", "no rubric", "not shown", "unclear"]
+    return any(m in c.lower() for m in weak_markers)
+
+
 def build_example_rubric_streaming(image_paths, upload_dir=None, max_workers=5,
                                    on_total=None, on_item=None):
     """Full pipeline with per-question progress.
@@ -718,13 +779,23 @@ def build_example_rubric_streaming(image_paths, upload_dir=None, max_workers=5,
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def _build(idx, q, verdict):
+        criteria = q["criteria"]
+        # If the example has no usable rubric markings, generate AP-style
+        # rubric directly — no extra button click needed.
+        if _criteria_is_weak(criteria) and q.get("reference_solution", "").strip():
+            try:
+                criteria = generate_ap_rubric_only(
+                    q["question_text"], q["reference_solution"],
+                    q["max_score"] or 5, q["q"])
+            except Exception:
+                pass  # keep the original (weak) criteria on failure
         return {
             "idx": idx,
             "q": q["q"],
             "question_text": q["question_text"],
             "reference_solution": q["reference_solution"],
             "max_score": q["max_score"],
-            "criteria": q["criteria"],
+            "criteria": criteria,
             "verified": "yes" if verdict["verdict"] == "confirmed" else "review",
             "verify_note": "" if verdict["verdict"] == "confirmed" else verdict["note"],
             "graph": _process_graph(q, image_paths, upload_dir),
