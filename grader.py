@@ -49,9 +49,11 @@ Set "agrees" to true only if you are confident the two answers match (allowing f
 GRADER_SYSTEM = """You are a strict grader who scores exactly by the rubric. Rules:
 1. Score ONLY what you can actually see in the student's paper photos. If a question is missing, illegible, or unanswered, give it 0 and note why in feedback.
 2. No question's score may exceed its max score.
-3. The rubric criteria name specific STEPS (e.g. "Step 1: setup", "Step 2: computation"). Award each point ONLY if the student's paper shows that step done correctly — check step by step against the reference solution's steps.
-4. First briefly describe the student answer you detected for each question (quote or summarize it), then score it step-by-step against the rubric — this reduces hallucination.
-5. Output ONLY a JSON object, no explanations, in this format:
+3. The rubric criteria name specific STEPS (e.g. "Step 1: setup", "Part (b) Step 2: computation"). Award each point ONLY if the student's paper shows that step done correctly — check step by step.
+4. Follow-through credit: an arithmetic slip in one step does not forfeit later steps if the student's method stays correct.
+5. Any mathematically valid method earns full credit, even if the student's steps differ from the reference solution's steps — match by mathematical content, not by step order.
+6. First briefly describe the student answer you detected for each question (quote or summarize it), then score it step-by-step against the rubric — this reduces hallucination.
+7. Output ONLY a JSON object, no explanations, in this format:
 {"questions": [{"q": "question label", "score": numeric score, "max_score": numeric max, "answer_seen": "brief description of the detected student answer", "feedback": "reason for the score/deductions, naming which steps earned/lost points"}],
  "total": numeric total, "max_total": numeric max total, "overall_feedback": "overall comment"}
 total must equal the sum of the question scores, and max_total must equal the sum of the max scores.
@@ -706,17 +708,21 @@ def validate_question(question_text, reference_solution):
 AP_RUBRIC_ONLY_SYSTEM = """You are an expert AP Calculus teacher creating a scoring rubric.
 Given a question, its correct reference solution, and the total point value:
 
-CREATE an AP-style scoring rubric where EACH point maps to ONE distinct step of the reference solution. Follow AP free-response conventions:
-- Identify the solution's natural steps: SETUP (e.g. writing the correct formula/rule), MATHEMATICAL WORK (e.g. differentiating, simplifying, substituting), and final ANSWER (with units/justification where applicable).
-- Each ap_point's "for" MUST name the step it rewards, e.g. "Setup step: writes the quotient rule ..." or "Computation step: simplifies to ...". This creates a direct step-to-point mapping so a grader can check each step against its point.
-- Award points for specific observable steps, not just the final answer.
+CREATE an AP-style scoring rubric where EACH point maps to ONE distinct step of the reference solution.
+- Identify the solution's natural steps (for multi-part questions, group by part: Part (a) Step 1, etc.).
+- Each ap_point's "for" MUST name the step it rewards, e.g. "Step 2: applies the quotient rule to get ..." or "Part (b) Step 1: sets up the integral ...". A grader checks each labeled step against its point.
+- Award points for correct mathematical work at each step, not just the final answer.
 - Base every criterion on an actual step visible in the reference solution.
+
+AP conventions to follow:
+- An arithmetic slip in one step does not forfeit later steps if the method stays correct (follow-through credit).
+- Any mathematically valid method earns full credit, even if different from the reference steps.
 
 CRITICAL: The point breakdown MUST sum to EXACTLY the given max_score. You are distributing exactly that many points — never more, never fewer.
 
 Output ONLY a JSON object, no explanations:
 {
-  "ap_points": [{"points": 1, "for": "<step name>: <what earns this point>"}, ...]
+  "ap_points": [{"points": 1, "for": "<step label>: <what earns this point>"}, ...]
 }
 """
 
@@ -893,13 +899,17 @@ If the photos yield no questions at all, output {"questions": []}.
 SOLVE_RUBRIC_SYSTEM = """You are an expert AP Calculus teacher creating an answer key and scoring rubric from scratch.
 Given a question and its point value:
 
-1. SOLVE the question completely and correctly, writing the solution as NUMBERED AP-style steps (Step 1, Step 2, ...). Each step must be one distinct, observable mathematical action that an AP grader would award points for:
-   - Step 1 is typically the SETUP (e.g. writing the correct formula/rule, setting up the integral, identifying what to find).
-   - Middle steps are the MATHEMATICAL WORK (e.g. differentiating, simplifying, substituting values).
-   - The final step is the ANSWER (with correct units or justification where applicable).
-   Every step must be shown — no skipped algebra. This answer key will be used to grade students, so each step must be checkable.
+1. SOLVE the question completely and correctly, writing the solution as NUMBERED steps (Step 1, Step 2, ...). Break the solution into its natural mathematical steps — each step is one distinct, checkable action:
+   - For multi-part questions, group steps by part: Part (a) Step 1, Part (a) Step 2, Part (b) Step 1, etc.
+   - Typical steps: setup (writing the rule/formula to use), computation (differentiating, simplifying, substituting), and final answer (with units/justification where applicable).
+   - Show every step — no skipped algebra. This answer key will be used to grade students, so each step must be verifiable.
 
-2. CREATE an AP-style scoring rubric where EACH point maps to ONE solution step. The "for" of each ap_point MUST start with the step number, e.g. "Step 2: correctly applies the quotient rule to get ...". This creates a direct step-to-point mapping so a grader can check each step against its point.
+2. CREATE an AP-style scoring rubric where EACH point maps to ONE solution step. The "for" of each ap_point MUST start with the step label, e.g. "Step 2: correctly applies the quotient rule to get ...". A grader checks each labeled step against its point — no guessing which step earns what.
+
+AP conventions to follow:
+- Points reward correct mathematical work at each step, not just the final answer.
+- An arithmetic slip in one step does not forfeit later steps if the method stays correct (follow-through credit).
+- Any mathematically valid method earns full credit, even if different from your steps.
 
 CRITICAL: The point breakdown MUST sum to EXACTLY the given max_score. You are distributing exactly that many points — never more, never fewer.
 
