@@ -1,4 +1,8 @@
-"""SQLite data layer: table setup + CRUD (stdlib sqlite3 only, no ORM)."""
+"""Data layer: SQLite (local dev) or Postgres (production via DATABASE_URL).
+
+Uses stdlib sqlite3 by default. If DATABASE_URL is set, uses psycopg2
+with Postgres (Neon). No ORM.
+"""
 import json
 import os
 import sqlite3
@@ -6,27 +10,79 @@ import time
 from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_grader.db")
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+USE_POSTGRES = bool(DATABASE_URL)
+
+_psycopg2 = None
+if USE_POSTGRES:
+    try:
+        import psycopg2
+        import psycopg2.extras
+        _psycopg2 = psycopg2
+    except ImportError:
+        USE_POSTGRES = False  # fall back to SQLite if driver missing
 
 
 def _connect():
+    if USE_POSTGRES:
+        conn = _psycopg2.connect(DATABASE_URL)
+        return conn
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+def _q(sql):
+    """Convert ? placeholders to %s for Postgres."""
+    return sql.replace("?", "%s") if USE_POSTGRES else sql
+
+
+def _rows_to_dicts(rows, cursor=None):
+    """Normalize rows to list of dicts for both drivers."""
+    if not rows:
+        return []
+    if USE_POSTGRES:
+        cols = [d[0] for d in cursor.description]
+        return [dict(zip(cols, r)) for r in rows]
+    return [dict(r) for r in rows]
+
+
+def _one_to_dict(row, cursor=None):
+    if row is None:
+        return None
+    if USE_POSTGRES:
+        cols = [d[0] for d in cursor.description]
+        return dict(zip(cols, row))
+    return dict(row)
+
+
+def _id_col():
+    return "SERIAL PRIMARY KEY" if USE_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+
+
+def _table_cols(conn, table):
+    """Return list of column names for a table (both drivers)."""
+    cur = conn.cursor()
+    if USE_POSTGRES:
+        cur.execute(_q("SELECT column_name FROM information_schema.columns WHERE table_name = ?"), (table,))
+        return [r[0] for r in cur.fetchall()]
+    return [r[1] for r in cur.execute("PRAGMA table_info(%s)" % table).fetchall()]
+
+
 def init_db():
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("""
+    idcol = _id_col()
+    cur.execute(f"""
         CREATE TABLE IF NOT EXISTS classes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {idcol},
             name TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
     """)
-    cur.execute("""
+    cur.execute(f"""
         CREATE TABLE IF NOT EXISTS assignments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {idcol},
             class_id INTEGER NOT NULL REFERENCES classes(id),
             name TEXT NOT NULL,
             rubric_text TEXT DEFAULT '',
@@ -35,9 +91,9 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
-    cur.execute("""
+    cur.execute(f"""
         CREATE TABLE IF NOT EXISTS grades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {idcol},
             assignment_id INTEGER NOT NULL REFERENCES assignments(id),
             student_name TEXT NOT NULL,
             questions_json TEXT NOT NULL,
@@ -48,20 +104,20 @@ def init_db():
         )
     """)
     # Migration: rubric example images library (added after initial release).
-    cols = [r[1] for r in cur.execute("PRAGMA table_info(assignments)").fetchall()]
+    cols = _table_cols(conn, "assignments")
     if "rubric_example_images" not in cols:
         cur.execute("ALTER TABLE assignments ADD COLUMN rubric_example_images TEXT DEFAULT '[]'")
     # Migration: saved AP standard comparison (added after initial release).
     if "ap_comparison" not in cols:
         cur.execute("ALTER TABLE assignments ADD COLUMN ap_comparison TEXT DEFAULT ''")
     # Migration: student paper photos linked to each grade.
-    gcols = [r[1] for r in cur.execute("PRAGMA table_info(grades)").fetchall()]
+    gcols = _table_cols(conn, "grades")
     if "images" not in gcols:
         cur.execute("ALTER TABLE grades ADD COLUMN images TEXT DEFAULT '[]'")
     # API usage log: every OpenAI call, for owner cost visibility.
-    cur.execute("""
+    cur.execute(f"""
         CREATE TABLE IF NOT EXISTS api_usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {idcol},
             endpoint TEXT NOT NULL DEFAULT '',
             model TEXT NOT NULL DEFAULT '',
             prompt_tokens INTEGER NOT NULL DEFAULT 0,
@@ -71,7 +127,7 @@ def init_db():
     """)
     # Rubric generation jobs: DB-backed so jobs survive multi-worker gunicorn
     # and Render restarts (in-memory dict lost jobs with --workers 2).
-    cur.execute("""
+    cur.execute(f"""
         CREATE TABLE IF NOT EXISTS rubric_jobs (
             job_id TEXT PRIMARY KEY,
             status TEXT NOT NULL DEFAULT 'running',
@@ -93,11 +149,20 @@ def now():
 
 
 # ---------- Classes ----------
+def _insert_returning_id(cur, sql, params):
+    """INSERT and return the new row id (both drivers)."""
+    if USE_POSTGRES:
+        cur.execute(_q(sql + " RETURNING id"), params)
+        return cur.fetchone()[0]
+    cur.execute(sql, params)
+    return cur.lastrowid
+
+
 def create_class(name):
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("INSERT INTO classes (name, created_at) VALUES (?, ?)", (name, now()))
-    cid = cur.lastrowid
+    cid = _insert_returning_id(cur,
+        "INSERT INTO classes (name, created_at) VALUES (?, ?)", (name, now()))
     conn.commit()
     conn.close()
     return cid
@@ -105,16 +170,20 @@ def create_class(name):
 
 def list_classes():
     conn = _connect()
-    rows = conn.execute("SELECT * FROM classes ORDER BY id DESC").fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM classes ORDER BY id DESC")
+    rows = _rows_to_dicts(cur.fetchall(), cur)
     conn.close()
-    return [dict(r) for r in rows]
+    return rows
 
 
 def get_class(class_id):
     conn = _connect()
-    row = conn.execute("SELECT * FROM classes WHERE id = ?", (class_id,)).fetchone()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM classes WHERE id = ?"), (class_id,))
+    row = _one_to_dict(cur.fetchone(), cur)
     conn.close()
-    return dict(row) if row else None
+    return row
 
 
 # ---------- Grading assignments ----------
@@ -123,17 +192,15 @@ def create_assignment(class_id, name):
     cur = conn.cursor()
     # Reject duplicate names within the same class (user directive 2026-10-07).
     cur.execute(
-        "SELECT id FROM assignments WHERE class_id = ? AND name = ?",
+        _q("SELECT id FROM assignments WHERE class_id = ? AND name = ?"),
         (class_id, name),
     )
     if cur.fetchone():
         conn.close()
         raise ValueError(f"Assignment '{name}' already exists in this class.")
-    cur.execute(
+    aid = _insert_returning_id(cur,
         "INSERT INTO assignments (class_id, name, created_at) VALUES (?, ?, ?)",
-        (class_id, name, now()),
-    )
-    aid = cur.lastrowid
+        (class_id, name, now()))
     conn.commit()
     conn.close()
     return aid
@@ -141,25 +208,28 @@ def create_assignment(class_id, name):
 
 def list_assignments(class_id):
     conn = _connect()
-    rows = conn.execute(
-        "SELECT * FROM assignments WHERE class_id = ? ORDER BY id DESC", (class_id,)
-    ).fetchall()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM assignments WHERE class_id = ? ORDER BY id DESC"), (class_id,))
+    rows = _rows_to_dicts(cur.fetchall(), cur)
     conn.close()
-    return [dict(r) for r in rows]
+    return rows
 
 
 def get_assignment(assignment_id):
     conn = _connect()
-    row = conn.execute("SELECT * FROM assignments WHERE id = ?", (assignment_id,)).fetchone()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM assignments WHERE id = ?"), (assignment_id,))
+    row = _one_to_dict(cur.fetchone(), cur)
     conn.close()
-    return dict(row) if row else None
+    return row
 
 
 def save_rubric(assignment_id, rubric_text, rubric_items):
     """Save the structured rubric (JSON) plus the auto-generated plain-text version."""
     conn = _connect()
-    conn.execute(
-        "UPDATE assignments SET rubric_text = ?, rubric_json = ? WHERE id = ?",
+    cur = conn.cursor()
+    cur.execute(
+        _q("UPDATE assignments SET rubric_text = ?, rubric_json = ? WHERE id = ?"),
         (rubric_text, json.dumps(rubric_items, ensure_ascii=False), assignment_id),
     )
     conn.commit()
@@ -168,8 +238,9 @@ def save_rubric(assignment_id, rubric_text, rubric_items):
 
 def save_reference_images(assignment_id, paths):
     conn = _connect()
-    conn.execute(
-        "UPDATE assignments SET reference_images = ? WHERE id = ?",
+    cur = conn.cursor()
+    cur.execute(
+        _q("UPDATE assignments SET reference_images = ? WHERE id = ?"),
         (json.dumps(paths, ensure_ascii=False), assignment_id),
     )
     conn.commit()
@@ -180,7 +251,7 @@ def save_reference_images(assignment_id, paths):
 def save_grade(assignment_id, student_name, questions, total, max_total, overall_feedback, images=None):
     conn = _connect()
     cur = conn.cursor()
-    cur.execute(
+    gid = _insert_returning_id(cur,
         """INSERT INTO grades
            (assignment_id, student_name, questions_json, total, max_total, overall_feedback, images, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -193,9 +264,7 @@ def save_grade(assignment_id, student_name, questions, total, max_total, overall
             overall_feedback,
             json.dumps(images or [], ensure_ascii=False),
             now(),
-        ),
-    )
-    gid = cur.lastrowid
+        ))
     conn.commit()
     conn.close()
     return gid
@@ -203,19 +272,23 @@ def save_grade(assignment_id, student_name, questions, total, max_total, overall
 
 def list_grades(assignment_id):
     conn = _connect()
-    rows = conn.execute(
-        "SELECT * FROM grades WHERE assignment_id = ? ORDER BY total DESC, id ASC",
+    cur = conn.cursor()
+    cur.execute(
+        _q("SELECT * FROM grades WHERE assignment_id = ? ORDER BY total DESC, id ASC"),
         (assignment_id,),
-    ).fetchall()
+    )
+    rows = _rows_to_dicts(cur.fetchall(), cur)
     conn.close()
-    return [dict(r) for r in rows]
+    return rows
 
 
 def get_grade(grade_id):
     conn = _connect()
-    row = conn.execute("SELECT * FROM grades WHERE id = ?", (grade_id,)).fetchone()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM grades WHERE id = ?"), (grade_id,))
+    row = _one_to_dict(cur.fetchone(), cur)
     conn.close()
-    return dict(row) if row else None
+    return row
 
 
 def get_rubric_example_images(assignment_id):
@@ -230,8 +303,9 @@ def get_rubric_example_images(assignment_id):
 
 def save_rubric_example_images(assignment_id, paths):
     conn = _connect()
-    conn.execute(
-        "UPDATE assignments SET rubric_example_images = ? WHERE id = ?",
+    cur = conn.cursor()
+    cur.execute(
+        _q("UPDATE assignments SET rubric_example_images = ? WHERE id = ?"),
         (json.dumps(paths, ensure_ascii=False), assignment_id),
     )
     conn.commit()
@@ -241,8 +315,9 @@ def save_rubric_example_images(assignment_id, paths):
 def save_ap_comparison(assignment_id, comparison):
     """Persist the AP standard comparison so suggestions survive page refresh."""
     conn = _connect()
-    conn.execute(
-        "UPDATE assignments SET ap_comparison = ? WHERE id = ?",
+    cur = conn.cursor()
+    cur.execute(
+        _q("UPDATE assignments SET ap_comparison = ? WHERE id = ?"),
         (json.dumps(comparison, ensure_ascii=False), assignment_id),
     )
     conn.commit()
@@ -274,8 +349,9 @@ def remove_ap_question(assignment_id, q_label):
 def delete_assignment(assignment_id):
     """Delete an assignment and all of its saved grades."""
     conn = _connect()
-    conn.execute("DELETE FROM grades WHERE assignment_id = ?", (assignment_id,))
-    conn.execute("DELETE FROM assignments WHERE id = ?", (assignment_id,))
+    cur = conn.cursor()
+    cur.execute(_q("DELETE FROM grades WHERE assignment_id = ?"), (assignment_id,))
+    cur.execute(_q("DELETE FROM assignments WHERE id = ?"), (assignment_id,))
     conn.commit()
     conn.close()
 
@@ -290,41 +366,57 @@ JOB_STALE_SECONDS = 900  # a "running" job with no update for 15 min is dead
 
 def create_rubric_job(job_id):
     conn = _connect()
+    cur = conn.cursor()
     now_ts = time.time()
-    conn.execute(
-        "INSERT OR REPLACE INTO rubric_jobs (job_id, status, total, done_json, items_json, error, created, updated)"
-        " VALUES (?, 'running', 0, '[]', '[]', '', ?, ?)",
-        (job_id, now_ts, now_ts),
-    )
+    if USE_POSTGRES:
+        cur.execute(_q(
+            "INSERT INTO rubric_jobs (job_id, status, total, done_json, items_json, error, created, updated)"
+            " VALUES (?, 'running', 0, '[]', '[]', '', ?, ?)"
+            " ON CONFLICT (job_id) DO UPDATE SET status='running', total=0,"
+            " done_json='[]', items_json='[]', error='', created=EXCLUDED.created, updated=EXCLUDED.updated"),
+            (job_id, now_ts, now_ts),
+        )
+    else:
+        cur.execute(
+            "INSERT OR REPLACE INTO rubric_jobs (job_id, status, total, done_json, items_json, error, created, updated)"
+            " VALUES (?, 'running', 0, '[]', '[]', '', ?, ?)",
+            (job_id, now_ts, now_ts),
+        )
     conn.commit()
     conn.close()
 
 
 def get_rubric_job(job_id):
     conn = _connect()
-    row = conn.execute("SELECT * FROM rubric_jobs WHERE job_id = ?", (job_id,)).fetchone()
-    conn.close()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM rubric_jobs WHERE job_id = ?"), (job_id,))
+    row = cur.fetchone()
     if not row:
+        conn.close()
         return None
+    d = _one_to_dict(row, cur)
+    conn.close()
     return {
-        "job_id": row["job_id"],
-        "status": row["status"],
-        "total": row["total"],
-        "done": json.loads(row["done_json"] or "[]"),
-        "items": json.loads(row["items_json"] or "[]"),
-        "error": row["error"] or "",
-        "created": row["created"],
-        "updated": row["updated"],
+        "job_id": d["job_id"],
+        "status": d["status"],
+        "total": d["total"],
+        "done": json.loads(d["done_json"] or "[]"),
+        "items": json.loads(d["items_json"] or "[]"),
+        "error": d["error"] or "",
+        "created": d["created"],
+        "updated": d["updated"],
     }
 
 
 def _touch_job(conn, job_id):
-    conn.execute("UPDATE rubric_jobs SET updated = ? WHERE job_id = ?", (time.time(), job_id))
+    cur = conn.cursor()
+    cur.execute(_q("UPDATE rubric_jobs SET updated = ? WHERE job_id = ?"), (time.time(), job_id))
 
 
 def set_rubric_job_total(job_id, total):
     conn = _connect()
-    conn.execute("UPDATE rubric_jobs SET total = ? WHERE job_id = ?", (total, job_id))
+    cur = conn.cursor()
+    cur.execute(_q("UPDATE rubric_jobs SET total = ? WHERE job_id = ?"), (total, job_id))
     _touch_job(conn, job_id)
     conn.commit()
     conn.close()
@@ -332,11 +424,14 @@ def set_rubric_job_total(job_id, total):
 
 def append_rubric_job_item(job_id, item):
     conn = _connect()
-    row = conn.execute("SELECT done_json FROM rubric_jobs WHERE job_id = ?", (job_id,)).fetchone()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT done_json FROM rubric_jobs WHERE job_id = ?"), (job_id,))
+    row = cur.fetchone()
     if row:
-        done = json.loads(row["done_json"] or "[]")
+        d = _one_to_dict(row, cur)
+        done = json.loads(d["done_json"] or "[]")
         done.append(item)
-        conn.execute("UPDATE rubric_jobs SET done_json = ? WHERE job_id = ?", (json.dumps(done), job_id))
+        cur.execute(_q("UPDATE rubric_jobs SET done_json = ? WHERE job_id = ?"), (json.dumps(done), job_id))
         _touch_job(conn, job_id)
         conn.commit()
     conn.close()
@@ -344,9 +439,10 @@ def append_rubric_job_item(job_id, item):
 
 def finish_rubric_job(job_id, items):
     conn = _connect()
+    cur = conn.cursor()
     payload = json.dumps(items)
-    conn.execute(
-        "UPDATE rubric_jobs SET status = 'done', items_json = ?, done_json = ?, total = ? WHERE job_id = ?",
+    cur.execute(
+        _q("UPDATE rubric_jobs SET status = 'done', items_json = ?, done_json = ?, total = ? WHERE job_id = ?"),
         (payload, payload, len(items), job_id),
     )
     _touch_job(conn, job_id)
@@ -356,7 +452,8 @@ def finish_rubric_job(job_id, items):
 
 def fail_rubric_job(job_id, error):
     conn = _connect()
-    conn.execute("UPDATE rubric_jobs SET status = 'error', error = ? WHERE job_id = ?", (str(error), job_id))
+    cur = conn.cursor()
+    cur.execute(_q("UPDATE rubric_jobs SET status = 'error', error = ? WHERE job_id = ?"), (str(error), job_id))
     _touch_job(conn, job_id)
     conn.commit()
     conn.close()
@@ -364,7 +461,8 @@ def fail_rubric_job(job_id, error):
 
 def cleanup_old_rubric_jobs(max_age_seconds=1800):
     conn = _connect()
-    conn.execute("DELETE FROM rubric_jobs WHERE created < ?", (time.time() - max_age_seconds,))
+    cur = conn.cursor()
+    cur.execute(_q("DELETE FROM rubric_jobs WHERE created < ?"), (time.time() - max_age_seconds,))
     conn.commit()
     conn.close()
 
@@ -375,9 +473,10 @@ def cleanup_old_rubric_jobs(max_age_seconds=1800):
 
 def log_api_usage(endpoint, model, prompt_tokens, completion_tokens):
     conn = _connect()
-    conn.execute(
-        "INSERT INTO api_usage (endpoint, model, prompt_tokens, completion_tokens, created)"
-        " VALUES (?, ?, ?, ?, ?)",
+    cur = conn.cursor()
+    cur.execute(
+        _q("INSERT INTO api_usage (endpoint, model, prompt_tokens, completion_tokens, created)"
+        " VALUES (?, ?, ?, ?, ?)"),
         (endpoint, model, prompt_tokens or 0, completion_tokens or 0, time.time()),
     )
     conn.commit()
@@ -387,14 +486,17 @@ def log_api_usage(endpoint, model, prompt_tokens, completion_tokens):
 def get_api_usage_summary(since_ts=0):
     """Returns {calls, prompt_tokens, completion_tokens, by_model: {...}}."""
     conn = _connect()
-    row = conn.execute(
-        "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0)"
-        " FROM api_usage WHERE created >= ?", (since_ts,)).fetchone()
+    cur = conn.cursor()
+    cur.execute(
+        _q("SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0)"
+        " FROM api_usage WHERE created >= ?"), (since_ts,))
+    row = cur.fetchone()
     by_model = {}
-    for m, c, pt, ct in conn.execute(
-            "SELECT model, COUNT(*), COALESCE(SUM(prompt_tokens),0),"
-            " COALESCE(SUM(completion_tokens),0) FROM api_usage"
-            " WHERE created >= ? GROUP BY model", (since_ts,)).fetchall():
+    cur.execute(
+        _q("SELECT model, COUNT(*), COALESCE(SUM(prompt_tokens),0),"
+        " COALESCE(SUM(completion_tokens),0) FROM api_usage"
+        " WHERE created >= ? GROUP BY model"), (since_ts,))
+    for m, c, pt, ct in cur.fetchall():
         by_model[m or "?"] = {"calls": c, "tokens": (pt or 0) + (ct or 0)}
     conn.close()
     return {"calls": row[0], "prompt_tokens": row[1], "completion_tokens": row[2],

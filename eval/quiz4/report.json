@@ -7,10 +7,190 @@
     "/home/hatch/workspace/ai-grader/eval/quiz4/quiz4_p4.jpg"
   ],
   "stage1_rubric": {
-    "error": "Invalid \\escape: line 1 column 3726 (char 3725)",
-    "questions": []
+    "duration_s": 272.9,
+    "total": 9,
+    "verified": 9,
+    "ap_format": 9,
+    "points_ok": 9,
+    "questions": [
+      {
+        "q": "Q1",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: differentiates s = 3t^2 - 2t + 2 to obtain ds/dt = 6t - 2; 1 pt: Step 2: converts 2 minutes to the equivalent value of 120 seconds; 1 pt: Step 3: substitutes t = 120 s into ds/dt and sim",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q3",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 3,
+        "max_score": 3.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: applies the chain rule to the outer square, writing f'(x)=2((x+3)^5-5)\u00b7[d/dx((x+3)^5-5)]; 1 pt: Step 2: differentiates the inner expression (x+3)^5\u22125 to obtain 5(x+3)^4; 1 pt: Step 3: co",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q2",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 7,
+        "max_score": 7.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: differentiates f(x)=cos x to obtain f'(x) = -sin x; 1 pt: Step 2: substitutes x = \u03c0/4 into f'(x) (computes f'(\u03c0/4)); 1 pt: Step 3: simplifies f'(\u03c0/4) to -\u221a2/2, identifying the tangent sl",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q6",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: correctly identifies the need for the quotient rule (sets u = 3x\u22124, v = 2x+1 or equivalent).; 1 pt: Step 2: applies the quotient rule to obtain f'(x) = [(2x+1)(3) \u2212 (3x\u22124)(2)]/(2x+1)^2 (",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q5",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 5,
+        "max_score": 5.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: computes the subinterval width \u0394x = (10\u22121)/3 = 3; 1 pt: Step 2: lists all three correct midpoints 5/2, 11/2, and 17/2 (order unimportant); 1 pt: Step 3: sets up the midpoint Riemann sum ",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q4",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 10,
+        "max_score": 10.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: cancels the common factor (x\u22123) to obtain the simplified rational function; 1 pt: Step 2: determines the zeros/x-intercepts of the simplified function at x = \u22123 and x = 2; 1 pt: Step 3: ",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q7",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 4,
+        "max_score": 4.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: defines the subinterval width \u0394x as (1\u22120)/n = 1/n; 1 pt: Step 2: specifies right-endpoint sample points x_k = 0 + k\u0394x (equivalently k/n); 1 pt: Step 3: forms the finite Riemann sum \u0394x \u03a3_",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q9",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 10,
+        "max_score": 10.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: differentiates to obtain f'(x)=4x^3-12x^2-x+3; 1 pt: Step 2: sets f'(x)=0 and factors to (4x^2-1)(x-3)=0 (or equivalent); 1 pt: Step 3: correctly identifies all critical numbers x = -1/2",
+        "origin": "teacher_example"
+      },
+      {
+        "q": "Q8",
+        "verified": "yes",
+        "verify_note": "",
+        "ap_format": true,
+        "points_sum": 3,
+        "max_score": 3.0,
+        "points_ok": true,
+        "criteria_preview": "1 pt: Step 1: Identify/label all x-values where f'(x)=0 or is undefined on the given sketch, marking these as critical points of f.; 1 pt: Step 2: Determine the sign of f'(x) on each interval between ",
+        "origin": "ai_solved"
+      }
+    ]
   },
   "stage2_grading": {
-    "error": "no rubrics from stage 1"
+    "duration_s": 27.9,
+    "total": 9,
+    "matched": 8,
+    "questions": [
+      {
+        "q": "Q1",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "Step 1 earned: correct derivative. Step 2 earned: correct conversion to 120 seconds. Step 3 earned: correct substitution and value 718. Step 4 earned: correct units of m/s."
+      },
+      {
+        "q": "Q2",
+        "score": 7.0,
+        "max_score": 7.0,
+        "expected": 7.0,
+        "match": true,
+        "feedback": "Steps 1\u20137 all earned: the derivative, substitution, tangent slope, negative-reciprocal relationship, normal slope, point, and normal-line equation are all correct."
+      },
+      {
+        "q": "Q3",
+        "score": 3.0,
+        "max_score": 3.0,
+        "expected": 3.0,
+        "match": true,
+        "feedback": "Steps 1\u20133 all earned: the outer chain-rule factor, inner derivative, and simplified derivative are correct."
+      },
+      {
+        "q": "Q4",
+        "score": 10.0,
+        "max_score": 10.0,
+        "expected": 10.0,
+        "match": true,
+        "feedback": "Steps 1\u201310 all earned. The cancellation and listed features are correct, the intercepts and all three vertical asymptotes are plotted, the hole is marked at x = 3, branch behavior is consistent near the asymptotes, and the outer branches approach y = 0."
+      },
+      {
+        "q": "Q5",
+        "score": 5.0,
+        "max_score": 5.0,
+        "expected": 5.0,
+        "match": true,
+        "feedback": "Steps 1\u20135 all earned: width, midpoints, sum setup, function evaluations, and final expression are correct."
+      },
+      {
+        "q": "Q6",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "Steps 1\u20134 all earned: quotient-rule identification/application, numerator simplification, and final derivative are correct."
+      },
+      {
+        "q": "Q7",
+        "score": 4.0,
+        "max_score": 4.0,
+        "expected": 4.0,
+        "match": true,
+        "feedback": "Steps 1\u20134 all earned. Although the limit notation is included while defining Delta x, the work clearly uses Delta x = 1/n and gives a correct right-endpoint Riemann-sum limit."
+      },
+      {
+        "q": "Q8",
+        "score": 0,
+        "max_score": 3.0,
+        "expected": 3.0,
+        "match": false,
+        "feedback": "Step 1 not earned: no critical points of f are identified. Step 2 not earned: no sign or increasing/decreasing analysis is shown. Step 3 not earned: no continuous curve for f is drawn in the answer grid."
+      },
+      {
+        "q": "Q9",
+        "score": 10.0,
+        "max_score": 10.0,
+        "expected": 10.0,
+        "match": true,
+        "feedback": "Steps 1\u201310 all earned: the derivative, factorization, critical numbers, classifications, evaluations 383/16, 415/16, and 5/2, and final ordered-pair extrema are correct."
+      }
+    ]
   }
 }
