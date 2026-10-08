@@ -1760,6 +1760,18 @@ def test_chat_json_gpt5_compat(errors):
     print("  done")
 
 
+def test_digitize_uses_gpt56(errors):
+    """Digitization (OCR) must use gpt-5.6-sol (user req 2026-10-08)."""
+    print("Testing digitize model...")
+    import grader
+    import inspect
+    for fn_name in ("digitize_example", "transcribe_questions_only"):
+        src_code = inspect.getsource(getattr(grader, fn_name))
+        if 'model="gpt-5.6-sol"' not in src_code:
+            errors.append(f"{fn_name} should use gpt-5.6-sol")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1773,6 +1785,7 @@ def main():
     test_validate_ocr_check(errors)
     test_verifier_uses_reasoning_model(errors)
     test_chat_json_gpt5_compat(errors)
+    test_digitize_uses_gpt56(errors)
     test_verifier_empty_response(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)

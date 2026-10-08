@@ -742,7 +742,8 @@ def digitize_example(image_paths, hint=None):
     user_content = [{"type": "text", "text": text}]
     for p in image_paths:
         user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
-    data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=4096)
+    data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=4096,
+                      model="gpt-5.6-sol")
     questions = []
     for it in data.get("questions", []):
         try:
@@ -1205,7 +1206,8 @@ def transcribe_questions_only(image_paths):
     ]
     for p in image_paths:
         user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
-    data = _chat_json(QUESTIONS_ONLY_SYSTEM, user_content, max_tokens=4096)
+    data = _chat_json(QUESTIONS_ONLY_SYSTEM, user_content, max_tokens=4096,
+                      model="gpt-5.6-sol")
     questions = []
     for it in data.get("questions", []):
         try:
