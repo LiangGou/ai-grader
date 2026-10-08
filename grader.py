@@ -140,6 +140,41 @@ def _digits_of(text):
     return [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", text or "")]
 
 
+def _balance_braces(s):
+    """Repair unbalanced { } in a LaTeX math fragment.
+
+    The model sometimes emits stray } (e.g. "(slope}=0)") or unclosed {,
+    which makes KaTeX fail and render red. This drops } with no matching {
+    and appends } for unclosed {. Escaped \\{ \\} are literal braces and
+    don't affect the count. Valid LaTeX passes through unchanged.
+    """
+    result = []
+    depth = 0
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n and s[i + 1] in "{}":
+            # Escaped brace: literal character, not grouping.
+            result.append(ch)
+            result.append(s[i + 1])
+            i += 2
+            continue
+        if ch == "{":
+            depth += 1
+            result.append(ch)
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                result.append(ch)
+            # else: drop unmatched }
+        else:
+            result.append(ch)
+        i += 1
+    result.append("}" * depth)
+    return "".join(result)
+
+
 def normalize_latex(text):
     r"""Normalize LaTeX math delimiters in digitized/AI-generated text.
 
@@ -175,7 +210,11 @@ def normalize_latex(text):
     spans = []
 
     def _save(m):
-        spans.append(m.group(0))
+        body = m.group(0)
+        # Balance braces inside $$...$$ (keep the delimiters).
+        if body.startswith("$$") and body.endswith("$$") and len(body) >= 4:
+            body = "$$" + _balance_braces(body[2:-2]) + "$$"
+        spans.append(body)
         return "\x00%d\x00" % len(spans)
 
     # Protect \begin{env}...\end{env} blocks FIRST: they must stay together as
@@ -190,6 +229,9 @@ def normalize_latex(text):
             pass  # already delimited, keep as-is
         else:
             body = "$$" + body.strip() + "$$"
+        # Balance braces inside the math (preserve the $$ delimiters).
+        if body.startswith("$$") and body.endswith("$$") and len(body) >= 4:
+            body = "$$" + _balance_braces(body[2:-2]) + "$$"
         spans.append(body)
         return "\x00%d\x00" % len(spans)
 
@@ -210,7 +252,13 @@ def normalize_latex(text):
         if not tok:
             continue
         if len(tok) >= 2 and tok.startswith("$") and tok.endswith("$"):
-            segs.append(tok)  # already-delimited math, keep as-is
+            # Already-delimited math: balance braces inside, keep delimiters.
+            if tok.startswith("$$") and tok.endswith("$$") and len(tok) >= 4:
+                segs.append("$$" + _balance_braces(tok[2:-2]) + "$$")
+            elif len(tok) >= 2:
+                segs.append("$" + _balance_braces(tok[1:-1]) + "$")
+            else:
+                segs.append(tok)
             continue
         for part in re.split(r"(\\\\)", tok):
             if part == "\\\\":
@@ -220,7 +268,7 @@ def normalize_latex(text):
             if not part:
                 continue
             if re.search(r"\\[a-zA-Z%$&#_{}]", part):
-                part = "$" + part.replace("$", "") + "$"
+                part = "$" + _balance_braces(part.replace("$", "")) + "$"
             segs.append(part)
     result = ""
     for s in segs:
