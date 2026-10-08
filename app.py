@@ -201,6 +201,44 @@ def _run_solve_job(job_id, paths):
 
 
 
+@app.route("/api/upgrade_to_ap", methods=["POST"])
+def api_upgrade_to_ap():
+    """Upgrade non-AP criteria to AP step format for an assignment.
+
+    Body: {assignment_id}. For each item whose criteria is not already in
+    AP format ("N pt: Step M"), generates AP steps from the question +
+    existing solution. Returns {upgraded: [q labels], skipped: [q labels]}.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    assignment_id = data.get("assignment_id")
+    a = db.get_assignment(assignment_id)
+    if not a:
+        return jsonify({"ok": False, "error": "Assignment not found"}), 404
+    items = json.loads(a["rubric_json"] or "[]")
+    upgraded, skipped, failed = [], [], []
+    for it in items:
+        q_label = it.get("q", "?")
+        if grader._is_ap_format(it.get("criteria")):
+            skipped.append(q_label)
+            continue
+        try:
+            criteria = grader.generate_ap_rubric_only(
+                it.get("question_text", ""),
+                it.get("reference_solution", ""),
+                float(it.get("max_score") or 0),
+                q_label=q_label,
+            )
+            it["criteria"] = criteria
+            upgraded.append(q_label)
+        except Exception as e:
+            failed.append(f"{q_label}: {e}")
+    if upgraded:
+        rubric_text = grader.rubric_items_to_text(items)
+        db.save_rubric(assignment_id, rubric_text, items)
+    return jsonify({"ok": True, "upgraded": upgraded, "skipped": skipped,
+                    "failed": failed})
+
+
 @app.route("/api/retry_question", methods=["POST"])
 def api_retry_question():
     """Retry AI-solving a single question with debug output.

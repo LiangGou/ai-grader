@@ -732,6 +732,21 @@ Output ONLY a JSON object, no explanations:
 """
 
 
+def _is_ap_format(criteria):
+    """True if criteria is already in AP step format ('N pt: Step M: ...')."""
+    c = (criteria or "").strip()
+    if not c:
+        return False
+    # Need at least one "N pt:" segment referencing a Step.
+    pts = [seg.strip() for seg in c.split(";") if seg.strip()]
+    ap_count = 0
+    for seg in pts:
+        if re.match(r"\d+\s*pt\s*:", seg, re.IGNORECASE) and re.search(r"Step\s*\d+", seg, re.IGNORECASE):
+            ap_count += 1
+    # Majority of segments must be AP-formatted.
+    return ap_count > 0 and ap_count >= len(pts) / 2
+
+
 def generate_ap_rubric_only(question_text, reference_solution, max_score, q_label="", retry_hint=""):
     """Generate AP-style rubric points from an existing question + solution.
 

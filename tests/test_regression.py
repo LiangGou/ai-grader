@@ -239,6 +239,27 @@ def test_unicode_sanitization(errors):
     print("  Sanitization checks done")
 
 
+def test_is_ap_format(errors):
+    """_is_ap_format must distinguish AP step rubrics from old 'deduct' style
+    (needed for the Upgrade-to-AP flow, 2026-10-07)."""
+    import grader
+
+    print("Testing _is_ap_format...")
+    ap = ("1 pt: Step 1: identifies the quotient rule; "
+          "1 pt: Step 2: differentiates numerator and denominator; "
+          "2 pt: Step 3: simplifies to final answer")
+    if not grader._is_ap_format(ap):
+        errors.append("_is_ap_format: rejected valid AP criteria")
+    old_style = "deduct 2 points for missing or incorrect units"
+    if grader._is_ap_format(old_style):
+        errors.append("_is_ap_format: accepted old 'deduct' style as AP")
+    if grader._is_ap_format(""):
+        errors.append("_is_ap_format: accepted empty criteria as AP")
+    if grader._is_ap_format(None):
+        errors.append("_is_ap_format: accepted None as AP")
+    print("  _is_ap_format checks done")
+
+
 def test_duplicate_assignment_rejected(errors):
     """Duplicate assignment names in the same class must be rejected
     (reported 2026-10-07: double-tap created two 'T5's)."""
@@ -339,6 +360,7 @@ def main():
     test_validation_guardrails(errors)
     test_unicode_sanitization(errors)
     test_duplicate_assignment_rejected(errors)
+    test_is_ap_format(errors)
     # Frontend JS logic tests (no API).
     test_frontend_logic(errors)
 
