@@ -130,6 +130,38 @@ def api_rubric_job(job_id):
     return jsonify(out)
 
 
+@app.route("/api/solve_rubric", methods=["POST"])
+def api_solve_rubric():
+    """Start the unified rubric job; returns immediately.
+
+    One button does both: the AI digitizes the photos (printed questions +
+    point values; teacher's worked solutions/answer key IF shown). Per
+    question: if a teacher reference solution was found it is validated and
+    used (AP-style rubric auto-generated when the markings yield no usable
+    rules); otherwise the AI solves it itself with the reasoning model
+    (up to 3 attempts) and builds an AP-style rubric. Max scores always come
+    from the printed point values. The client polls /api/rubric_job/<job_id>.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    assignment_id = data.get("assignment_id")
+    include = data.get("include") or []
+    if not assignment_id:
+        return jsonify({"ok": False, "error": "Missing assignment."}), 400
+    saved = db.get_rubric_example_images(assignment_id)
+    saved_names = {os.path.basename(p): p for p in saved if os.path.exists(p)}
+    paths = [saved_names[n] for n in include if n in saved_names]
+    if not paths:
+        return jsonify({"ok": False, "error": "No question photos selected. Please add them first."}), 400
+    job_id = uuid.uuid4().hex[:12]
+    with _rubric_jobs_lock:
+        now = time.time()
+        for jid in [j for j, j in _rubric_jobs.items() if now - j.get("created", now) > 1800]:
+            del _rubric_jobs[jid]
+        _rubric_jobs[job_id] = {"status": "running", "created": now}
+    threading.Thread(target=_run_solve_job, args=(job_id, paths), daemon=True).start()
+    return jsonify({"ok": True, "job_id": job_id})
+
+
 def _run_solve_job(job_id, paths):
     def _on_total(total):
         with _rubric_jobs_lock:
