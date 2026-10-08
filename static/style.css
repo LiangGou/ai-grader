@@ -153,25 +153,6 @@ code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 13p
 .graph-cap { font-size: 13px; color: #666; margin: 0 0 4px; }
 .graph-canvas { width: 100%; max-width: 420px; height: auto; border: 1px solid #e0e0e0; border-radius: 8px; background: #fff; }
 .graph-img { max-width: 100%; border: 1px solid #e0e0e0; border-radius: 8px; }
-/* AP standard comparison */
-.ap-q { border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; margin-bottom: 12px; background: #fafcff; }
-.ap-q h4 { margin: 0 0 8px; }
-.ap-cols { display: flex; gap: 12px; }
-.ap-col { flex: 1; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 8px 10px; }
-.ap-col ul { margin: 6px 0; padding-left: 18px; font-size: 14px; }
-.ap-rec { background: #fff8e1; border-left: 3px solid #ffc107; padding: 8px 10px; border-radius: 0 6px 6px 0; }
-@media (max-width: 600px) { .ap-cols { flex-direction: column; } }
-/* Inline AP suggestion below each rubric card */
-.ap-suggest {
-  border: 1px dashed #90caf9; border-radius: 8px;
-  padding: 10px 12px; margin: -4px 0 12px;
-  background: #f5faff; font-size: 14px;
-}
-.ap-suggest-head { font-size: 14px; margin-bottom: 6px; }
-.ap-pts { margin: 6px 0; padding-left: 18px; }
-.ap-pts li { margin-bottom: 4px; }
-.ap-suggest .btn { margin-top: 6px; }
-.ap-accept { background: #e8f5e9; border-color: #a5d6a7; }
 /* Per-question AI retry */
 .retry-box { margin: 8px 0 4px; padding: 8px 10px; background: #fff8e1; border: 1px dashed #ffcc02; border-radius: 8px; }
 .retry-panel { margin-top: 8px; font-size: 14px; }

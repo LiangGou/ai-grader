@@ -353,43 +353,6 @@ def assignment_save_rubric(assignment_id):
     return jsonify({"ok": True, "rubric_text": rubric_text, "items": items})
 
 
-@app.route("/assignment/<int:assignment_id>/ap_compare", methods=["POST"])
-def assignment_ap_compare(assignment_id):
-    """Generate AP-aligned rubrics and compare with the teacher's rubric.
-
-    Returns per-question AP point breakdowns, comparisons, and recommendations.
-    Uses the reasoning model; may take ~30-60s.
-    """
-    a = db.get_assignment(assignment_id)
-    if not a:
-        return jsonify({"ok": False, "error": "Assignment not found."}), 404
-    items = json.loads(a["rubric_json"] or "[]")
-    if not items:
-        return jsonify({"ok": False, "error": "No rubric yet. Generate it from a reference example first."}), 400
-    # Run in a background thread so the request doesn't block; poll via job API.
-    # For simplicity, run synchronously with a generous client timeout.
-    result = grader.generate_ap_comparison(items)
-    db.save_ap_comparison(assignment_id, result)
-    return jsonify({"ok": True, "comparison": result})
-
-
-@app.route("/assignment/<int:assignment_id>/ap_compare", methods=["GET"])
-def assignment_ap_compare_get(assignment_id):
-    """Return the saved AP comparison (survives page refresh)."""
-    comp = db.get_ap_comparison(assignment_id)
-    return jsonify({"ok": True, "comparison": comp})
-
-
-@app.route("/assignment/<int:assignment_id>/ap_dismiss", methods=["POST"])
-def assignment_ap_dismiss(assignment_id):
-    """Remove one question's AP suggestion (after accept or dismiss)."""
-    data = request.get_json(silent=True) or {}
-    q_label = data.get("q", "")
-    if q_label:
-        db.remove_ap_question(assignment_id, q_label)
-    return jsonify({"ok": True})
-
-
 @app.route("/assignment/<int:assignment_id>/upload_reference", methods=["POST"])
 def assignment_upload_reference(assignment_id):
     files = request.files.getlist("images")
