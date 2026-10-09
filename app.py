@@ -533,19 +533,43 @@ def api_grade():
     student_name = (request.form.get("student_name") or "").strip()
     if not assignment_id:
         return jsonify({"ok": False, "error": "Missing assignment ID."}), 400
-    if not student_name:
-        return jsonify({"ok": False, "error": "Please enter the student name first."}), 400
     a = db.get_assignment(int(assignment_id))
     if not a:
         return jsonify({"ok": False, "error": "Assignment not found."}), 404
 
     files = request.files.getlist("images")
     paths = []
+    first_path = None
     for f in files:
         if f and f.filename:
-            paths.append(_save_upload(f, "paper"))
+            p = _save_upload(f, "paper")
+            paths.append(p)
+            if first_path is None:
+                first_path = p
     if not paths:
         return jsonify({"ok": False, "error": "No paper photos received. Please take/upload photos first."}), 400
+    # Auto-extract student name from first photo if not provided
+    if not student_name and first_path:
+        try:
+            # Resolve db: path to a real file for the extractor
+            extract_path = first_path
+            if first_path.startswith("db:"):
+                import tempfile
+                data, _ = db.get_image(first_path[3:])
+                if data:
+                    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                        tmp.write(data)
+                        extract_path = tmp.name
+            student_name = grader.extract_student_name(extract_path) or ""
+            if first_path.startswith("db:") and extract_path != first_path:
+                try:
+                    os.unlink(extract_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    if not student_name:
+        student_name = "Student"
 
     items = json.loads(a["rubric_json"] or "[]")
     ref_paths = [p for p in json.loads(a["reference_images"] or "[]") if _upload_exists(p)]

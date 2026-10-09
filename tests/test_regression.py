@@ -1950,6 +1950,32 @@ def test_extract_student_name_exists(errors):
     print("  done")
 
 
+def test_grade_name_optional(errors):
+    """Student name is optional for grading (auto-extracted from photo).
+
+    User request 2026-10-08: photo upload block moved above name block,
+    name no longer required (auto-read from paper photo).
+    """
+    print("Testing grade name optional...")
+    with open("/home/hatch/workspace/ai-grader/app.py") as f:
+        app_src = f.read()
+    # Backend must not reject empty name
+    if 'Please enter the student name first' in app_src:
+        # Check it's not in api_grade (it's ok in extract endpoint)
+        import re
+        matches = [m.start() for m in re.finditer('Please enter the student name first', app_src)]
+        grade_section = app_src.find('def api_grade')
+        for m in matches:
+            if m > grade_section:
+                errors.append("api_grade still requires student name")
+    # Frontend must not block on empty name
+    with open("/home/hatch/workspace/ai-grader/static/app.js") as f:
+        js_src = f.read()
+    if 'if (!name) { alert("Please enter the student name first."); return; }' in js_src:
+        errors.append("frontend still blocks on empty name")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1973,6 +1999,7 @@ def main():
     test_diagram_stored_in_db_postgres_mode(errors)
     test_regenerate_rubric_includes_graph(errors)
     test_extract_student_name_exists(errors)
+    test_grade_name_optional(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)

@@ -698,7 +698,7 @@
 
     $("gradeBtn").addEventListener("click", function () {
       var name = $("studentName").value.trim();
-      if (!name) { alert("Please enter the student name first."); return; }
+      // Name is optional: backend auto-extracts from the first photo if empty.
       if (!selectedFiles.length) { alert("Please take/upload paper photos first."); return; }
       var fd = new FormData();
       fd.append("assignment_id", window.ASSIGNMENT_ID);

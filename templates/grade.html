@@ -4,13 +4,6 @@
 <h2>📷 {{ a.name }}</h2>
 
 <div class="card">
-  <h3>Student</h3>
-  <div class="inline-form">
-    <input type="text" id="studentName" placeholder="Student name" maxlength="30" style="flex:1">
-  </div>
-</div>
-
-<div class="card">
   <h3>Paper photos</h3>
   <div class="btn-row">
     <label class="file-label">
@@ -24,6 +17,14 @@
   </div>
   <p class="muted">You can snap multiple pages in a row (clear, full-page shots grade best).</p>
   <div id="preview" class="thumbs"></div>
+</div>
+
+<div class="card">
+  <h3>Student</h3>
+  <div class="inline-form">
+    <input type="text" id="studentName" placeholder="Student name (auto-filled from photo)" maxlength="30" style="flex:1">
+  </div>
+  <p class="muted">Optional — the name is auto-read from the first photo if visible.</p>
 </div>
 
 <div class="sticky-bar">
