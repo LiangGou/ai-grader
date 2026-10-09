@@ -1906,6 +1906,24 @@ def test_diagram_stored_in_db_postgres_mode(errors):
     print("  done")
 
 
+def test_regenerate_rubric_includes_graph(errors):
+    """Single-question Regenerate must also generate diagrams.
+
+    Bug 2026-10-08: /api/regenerate_rubric only returned criteria text,
+    no graph. User clicked Regenerate on Q8 (sketch question) and got no diagram.
+    """
+    print("Testing regenerate includes graph...")
+    with open("/home/hatch/workspace/ai-grader/app.py") as f:
+        app_src = f.read()
+    # The endpoint must call _process_graph
+    if "_process_graph" not in app_src:
+        errors.append("/api/regenerate_rubric does not call _process_graph")
+    # Must return graph in response
+    if '"graph": graph' not in app_src and "'graph': graph" not in app_src:
+        errors.append("/api/regenerate_rubric does not return graph")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1927,6 +1945,7 @@ def main():
     test_graph_keywords_trigger_diagram(errors)
     test_upload_db_path_helpers(errors)
     test_diagram_stored_in_db_postgres_mode(errors)
+    test_regenerate_rubric_includes_graph(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)

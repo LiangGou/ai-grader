@@ -387,7 +387,17 @@ def api_regenerate_rubric():
         # generate_ap_rubric_only raises on validation failure; fall back
         # to structural AP format so the teacher always gets usable output.
         criteria = grader._minimal_ap_rubric(reference_solution, max_score, q_label)
-    return jsonify({"ok": True, "criteria": criteria})
+    # Generate diagram if the question needs one (user requirement 2026-10-08:
+    # "有图的你要画图" - questions mentioning graph/sketch must have diagrams).
+    graph = None
+    try:
+        q_for_graph = {"question_text": question_text,
+                       "reference_solution": reference_solution,
+                       "has_diagram": False, "diagram_hint": ""}
+        graph = grader._process_graph(q_for_graph, [], UPLOAD_DIR)
+    except Exception:
+        pass
+    return jsonify({"ok": True, "criteria": criteria, "graph": graph})
 
 
 @app.route("/assignment/<int:assignment_id>/upload_rubric_example", methods=["POST"])

@@ -227,6 +227,21 @@
             return;
           }
           row.querySelector(".cr").value = data.criteria || "";
+          // Update graph if the backend generated one
+          if (data.graph && data.graph.kind === "image" && data.graph.url) {
+            row._graph = data.graph;
+            var slot = row.querySelector(".graph-slot");
+            slot.innerHTML = "";
+            var cap = document.createElement("p");
+            cap.className = "graph-cap";
+            cap.textContent = "🤖 AI-generated diagram";
+            var im = document.createElement("img");
+            im.className = "graph-img";
+            im.src = data.graph.url;
+            im.alt = "AI-generated diagram";
+            slot.appendChild(cap);
+            slot.appendChild(im);
+          }
           status.textContent = " ✅ Done";
           scheduleAutoSave();
           setTimeout(function () { status.textContent = ""; }, 3000);
