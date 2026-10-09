@@ -96,7 +96,27 @@ def _parse_json_loose(text):
     raise ValueError("The model output is not valid JSON")
 
 
+
+def _open_image(image_path):
+    """Open an image from filesystem path or db: prefix (Postgres mode)."""
+    if image_path.startswith("db:"):
+        import db as _db
+        import io
+        data, _ = _db.get_image(image_path[3:])
+        if data is None:
+            raise FileNotFoundError(f"Image not found in DB: {image_path}")
+        return Image.open(io.BytesIO(data)).convert("RGB")
+    return Image.open(image_path).convert("RGB")
+
 def _data_url(path):
+    # Handle db: prefix (Postgres mode: images stored in DB)
+    if path.startswith("db:"):
+        import db as _db
+        data_bytes, mime = _db.get_image(path[3:])
+        if data_bytes is None:
+            raise FileNotFoundError(f"Image not found in DB: {path}")
+        data = base64.standard_b64encode(data_bytes).decode("utf-8")
+        return f"data:{mime or 'image/jpeg'};base64,{data}"
     ext = os.path.splitext(path)[1].lower()
     media_type = {
         ".jpg": "image/jpeg",
@@ -444,7 +464,7 @@ def _localize_diagram(image_path, question_text):
     from PIL import Image, ImageDraw
 
     try:
-        im = Image.open(image_path).convert("RGB")
+        im = _open_image(image_path)
     except Exception:
         return None
     w, h = im.size
@@ -709,7 +729,7 @@ def _crop_graph(image_paths, spec, upload_dir, question_text=""):
     x0, y0 = max(0.0, x0 - pad_x), max(0.0, y0 - pad_y)
     x1, y1 = min(1000.0, x1 + pad_x), min(1000.0, y1 + pad_y)
     try:
-        im = Image.open(src).convert("RGB")
+        im = _open_image(src)
         w, h = im.size
         px = (int(w * x0 / 1000), int(h * y0 / 1000), int(w * x1 / 1000), int(h * y1 / 1000))
         if px[2] - px[0] < 20 or px[3] - px[1] < 20:

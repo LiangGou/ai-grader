@@ -163,6 +163,9 @@ def _upload_exists(p):
     if p.startswith("db:"):
         data, _ = db.get_image(p[3:])
         return data is not None
+    if p.startswith("db:"):
+        data, _ = db.get_image(p[3:])
+        return data is not None
     return os.path.exists(p)
 
 
@@ -171,6 +174,13 @@ def _upload_to_url(p):
     if p.startswith("db:"):
         return f"/uploads/{p[3:]}"
     return f"/uploads/{os.path.basename(p)}"
+
+
+def _upload_basename(p):
+    """Get the filename for a stored upload path (handles db: prefix)."""
+    if p.startswith("db:"):
+        return p[3:]
+    return os.path.basename(p)
 
 
 def _env_status():
@@ -228,7 +238,7 @@ def assignment_page(assignment_id):
             if it.get(k):
                 it[k] = grader.normalize_latex(it[k])
     refs = json.loads(a["reference_images"] or "[]")
-    refs = [os.path.basename(p) for p in refs if os.path.exists(p)]
+    refs = [_upload_to_url(p).split("/uploads/")[-1] for p in refs if _upload_exists(p)]
     rubric_examples = db.get_rubric_example_images(assignment_id)
     rubric_examples = [_upload_to_url(p).split("/uploads/")[-1] for p in rubric_examples if _upload_exists(p)]
     return render_template(
@@ -280,7 +290,7 @@ def api_solve_rubric():
     if not assignment_id:
         return jsonify({"ok": False, "error": "Missing assignment."}), 400
     saved = db.get_rubric_example_images(assignment_id)
-    saved_names = {os.path.basename(p): p for p in saved if os.path.exists(p)}
+    saved_names = {_upload_basename(p): p for p in saved if _upload_exists(p)}
     paths = [saved_names[n] for n in include if n in saved_names]
     if not paths:
         return jsonify({"ok": False, "error": "No question photos selected. Please add them first."}), 400
@@ -390,18 +400,18 @@ def assignment_upload_rubric_example(assignment_id):
         if f and f.filename:
             existing.append(_save_upload(f, "rubric_example"))
     db.save_rubric_example_images(assignment_id, existing)
-    names = [os.path.basename(p) for p in existing if os.path.exists(p)]
+    names = [_upload_basename(p) for p in existing if _upload_exists(p)]
     return jsonify({"ok": True, "examples": names})
 
 
 @app.route("/assignment/<int:assignment_id>/delete_rubric_example", methods=["POST"])
 def assignment_delete_rubric_example(assignment_id):
     data = request.get_json(force=True, silent=True) or {}
-    name = os.path.basename(data.get("filename") or "")
+    name = _upload_basename(data.get("filename") or "")
     existing = db.get_rubric_example_images(assignment_id)
     kept = []
     for p in existing:
-        if os.path.basename(p) == name:
+        if _upload_basename(p) == name or p == name or p == f"db:{name}":
             try:
                 os.remove(p)
             except OSError:
@@ -409,7 +419,7 @@ def assignment_delete_rubric_example(assignment_id):
         else:
             kept.append(p)
     db.save_rubric_example_images(assignment_id, kept)
-    names = [os.path.basename(p) for p in kept if os.path.exists(p)]
+    names = [_upload_basename(p) for p in kept if _upload_exists(p)]
     return jsonify({"ok": True, "examples": names})
 
 
@@ -505,7 +515,7 @@ def api_grade():
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:  # noqa: BLE001
         return jsonify({"ok": False, "error": f"Grading failed: {e}"}), 500
-    return jsonify({"ok": True, "result": result, "photos": [os.path.basename(p) for p in paths]})
+    return jsonify({"ok": True, "result": result, "photos": [_upload_basename(p) for p in paths]})
 
 
 @app.route("/api/save_grade", methods=["POST"])
