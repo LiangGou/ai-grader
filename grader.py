@@ -572,19 +572,46 @@ def extract_student_name(image_path):
     """Extract the student's handwritten name from a paper photo.
 
     Returns the name string (or empty if not found).
+    Crops the top 20% of the image (where names are usually written) for
+    better recognition of faint handwriting.
     """
     try:
-        data_url = _data_url(image_path)
-        # _data_url returns "data:mime;base64,..." - extract for vision API
+        # Crop top 20% for better name recognition
+        from PIL import Image
+        import io, base64, tempfile, os
+        crop_path = image_path
+        tmp_crop = None
+        try:
+            from PIL import ImageEnhance
+            img = Image.open(_open_image(image_path) if image_path.startswith("db:") else image_path)
+            w, h = img.size
+            # Crop top 20% where name is usually written
+            crop = img.crop((0, 0, w, int(h * 0.2)))
+            # Enhance contrast to make faint handwriting more visible
+            crop = ImageEnhance.Contrast(crop).enhance(2.0)
+            crop = ImageEnhance.Brightness(crop).enhance(1.1)
+            tmp_crop = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            tmp_crop.close()
+            crop.save(tmp_crop.name, "JPEG", quality=95)
+            crop_path = tmp_crop.name
+        except Exception:
+            pass
+
+        data_url = _data_url(crop_path)
         data = _chat_json(
             NAME_EXTRACT_SYSTEM,
             [
-                {"type": "text", "text": "What is the student's name written on this paper?"},
+                {"type": "text", "text": "What is the student's name written at the top of this paper? Look carefully, the handwriting may be faint."},
                 {"type": "image_url", "image_url": {"url": data_url}},
             ],
             max_tokens=100,
             model="gpt-5.6-sol",
         )
+        if tmp_crop:
+            try:
+                os.unlink(tmp_crop.name)
+            except Exception:
+                pass
         if isinstance(data, dict):
             return str(data.get("name", "")).strip()
         return ""
