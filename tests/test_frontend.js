@@ -202,5 +202,28 @@ if (canRetryMatch) {
   check("app.js icon() helper exists", appJs.includes("function icon(name"), true);
 })();
 
+// Bug 2026-10-09 (E2E v4): saveRubric must return a Promise so finishGenerate
+// can wait for the save before claiming "auto-saved". The old fire-and-forget
+// hid save failures and the rubric was silently lost on reload.
+(function () {
+  console.log("saveRubric promise:");
+  // Extract the saveRubric function source and check it returns the fetch chain.
+  const m = appJs.match(/function saveRubric\(\) \{[\s\S]*?\n  \}/);
+  check("saveRubric defined", !!m, true);
+  if (m) {
+    check("saveRubric returns fetch promise", /return fetch\(/.test(m[0]) || /return Promise\.resolve\(\)\.then/.test(m[0]), true);
+    check("saveRubric resolves false on failure", /\.catch\(function \(e\)/.test(m[0]) && /return false/.test(m[0]), true);
+    check("saveRubric wraps sync throws (H1)", /Promise\.resolve\(\)\.then/.test(m[0]), true);
+    check("saveRubric checks HTTP status (H3)", /!r\.ok/.test(m[0]), true);
+  }
+  // finishGenerate must wait for saveRubric before alerting.
+  check("finishGenerate waits for save", appJs.includes("saveRubric().then(function (ok)"), true);
+  // finishGenerate must check items BEFORE saving (C1: don't wipe with empty).
+  const fgIdx = appJs.indexOf("function finishGenerate");
+  const fgSection = appJs.slice(fgIdx, fgIdx + 2000);
+  const checkBeforeSave = fgSection.indexOf("if (!items || !items.length)") < fgSection.indexOf("saveRubric().then");
+  check("finishGenerate checks empty before save (C1)", checkBeforeSave, true);
+})();
+
 console.log(failures === 0 ? "\nAll frontend tests passed!" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

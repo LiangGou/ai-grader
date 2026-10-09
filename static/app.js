@@ -165,20 +165,37 @@
     el.classList.toggle("error", !!isError);
   }
   // Every rubric change auto-saves (debounced) — there is no save button.
+  // Returns a Promise that resolves true on success, false on failure.
+  // Bug 2026-10-09 (E2E v4): finishGenerate showed "auto-saved" before the
+  // async save completed; if the save failed, the user never knew and the
+  // rubric was lost on page reload.
   function saveRubric() {
-    var items = collectItems(); // may be [] if the teacher deleted all rows
-    setSaveStatus("Saving…", false);
-    fetch("/assignment/" + window.ASSIGNMENT_ID + "/save_rubric", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: items })
-    })
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (!data.ok) { setSaveStatus("Save failed", true); return; }
-        setSaveStatus("check", "Auto-saved", false);
+    // Wrap in Promise.resolve().then() so sync throws (collectItems,
+    // JSON.stringify) also return a rejected-then-caught Promise (H1).
+    return Promise.resolve().then(function () {
+      var items = collectItems(); // may be [] if the teacher deleted all rows
+      setSaveStatus("refresh", "Saving…", false);
+      return fetch("/assignment/" + window.ASSIGNMENT_ID + "/save_rubric", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: items })
       })
-      .catch(function () { setSaveStatus("Save failed", true); });
+        .then(function (r) {
+          // Check HTTP status before parsing (H3: HTML error pages).
+          return r.json().catch(function () { return null; }).then(function (data) {
+            if (!r.ok || !data || !data.ok) {
+              var err = (data && data.error) || ("HTTP " + r.status);
+              setSaveStatus("x", "Save failed: " + err, true);
+              return false;
+            }
+            setSaveStatus("check", "Auto-saved", false);
+            return true;
+          });
+        });
+    }).catch(function (e) {
+      setSaveStatus("x", "Save failed: " + (e && e.message ? e.message : "network error"), true);
+      return false;
+    });
   }
   function scheduleAutoSave() {
     clearTimeout(saveTimer);
@@ -560,16 +577,25 @@
       (items || []).forEach(function (it) {
         if (!renderedGenIdx[it.idx]) { insertGenRow(it); renderedGenIdx[it.idx] = true; }
       });
-      saveRubric(); // final auto-save of the complete rubric
+      // Check BEFORE saving (C1): if generation found nothing, don't POST
+      // empty items and wipe an existing rubric.
       if (!items || !items.length) {
         alert("Could not read any questions from the example. Try clearer photos, or add rows manually.");
-      } else {
-        var okCount = items.filter(function (it) { return it.verified === "yes"; }).length;
-        var needCount = items.length - okCount;
-        alert("Digitized " + items.length + " question(s): " + okCount + " verified" +
-          (needCount ? ", " + needCount + " need your review" : "") +
-          " — auto-saved. Every edit auto-saves too.");
+        return;
       }
+      // Wait for the save to complete before telling the user it's saved.
+      // Bug 2026-10-09 (E2E v4): the old code showed "auto-saved" immediately
+      // while the async save was still in flight; if it failed, the rubric
+      // was silently lost on page reload.
+      saveRubric().then(function (ok) {
+          var okCount = items.filter(function (it) { return it.verified === "yes"; }).length;
+          var needCount = items.length - okCount;
+          var msg = "Digitized " + items.length + " question(s): " + okCount + " verified" +
+            (needCount ? ", " + needCount + " need your review" : "") +
+            (ok ? " — auto-saved. Every edit auto-saves too."
+                : " — WARNING: auto-save FAILED. Please do not leave this page; check your connection and try again.");
+          alert(msg);
+      });
     }
 
     function failGenerate(btn, msg) {
