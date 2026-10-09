@@ -925,6 +925,7 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
     image_paths: original photos for OCR error checking — when verification
     fails, the model can re-examine the handwriting (user req 2026-10-07).
     """
+    generated_solution = None
     if not (question_text or "").strip():
         return {"verdict": "unsure", "note": "No question text to validate."}
     # If no reference solution (blank questions), generate one first, then verify.
@@ -940,6 +941,7 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
             reference_solution = gen.get("solution", "") if isinstance(gen, dict) else str(gen)
             if not reference_solution.strip():
                 return {"verdict": "unsure", "note": "Could not generate a solution for verification."}
+            generated_solution = reference_solution
         except Exception as e:
             return {"verdict": "unsure", "note": f"Solution generation failed: {e}"}
     user_msg = (
@@ -1026,7 +1028,7 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
     # No executable checks: fall back to LLM judgment, but require high
     # confidence to overrule the teacher.
     if agrees is True:
-        return {"verdict": "confirmed", "note": note}
+        return {"verdict": "confirmed", "note": note, "generated_solution": generated_solution}
     if agrees is False and confidence == "high":
         return {"verdict": "mismatch",
                 "note": note or "Independent check disagrees with the reference solution."}
@@ -1826,6 +1828,9 @@ def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
                                             q.get("reference_solution", ""),
                                             retry_hint=last_note,
                                             image_paths=image_paths)
+                # If a solution was generated during validation, save it back
+                if verdict.get("generated_solution"):
+                    q["reference_solution"] = verdict["generated_solution"]
             except Exception as e:  # noqa: BLE001
                 last_note = str(e)
                 continue
