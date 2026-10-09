@@ -674,6 +674,21 @@
       Promise.all(files.map(shrinkImage)).then(function (shrunk) {
         shrunk.forEach(function (f) { selectedFiles.push(f); });
         renderPreviews();
+        // Auto-extract student name from the first photo (user can override).
+        // Only if the name field is empty.
+        var nameInput = $("studentName");
+        if (nameInput && !nameInput.value.trim() && shrunk.length) {
+          var fd = new FormData();
+          fd.append("image", shrunk[0]);
+          fetch("/api/extract_name", { method: "POST", body: fd })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (data.ok && data.name && !nameInput.value.trim()) {
+                nameInput.value = data.name;
+              }
+            })
+            .catch(function () { /* silent: manual entry still works */ });
+        }
       });
     }
     $("photoInput").addEventListener("change", function () { handlePicked(this); });

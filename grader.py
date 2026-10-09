@@ -562,6 +562,36 @@ Output ONLY a JSON object: {"valid": true/false, "reason": "<one sentence>"}
 Set valid=true only if the diagram is mathematically correct for the problem."""
 
 
+NAME_EXTRACT_SYSTEM = """You are looking at a photo of a student's paper/homework/exam.
+Find the student's name, which is usually handwritten at the top of the page (e.g. "Name: John Smith" or just "John Smith").
+Output ONLY a JSON object: {"name": "<student name or empty string>"}
+If no name is visible, return {"name": ""}. Do not guess."""
+
+
+def extract_student_name(image_path):
+    """Extract the student's handwritten name from a paper photo.
+
+    Returns the name string (or empty if not found).
+    """
+    try:
+        data_url = _data_url(image_path)
+        # _data_url returns "data:mime;base64,..." - extract for vision API
+        data = _chat_json(
+            NAME_EXTRACT_SYSTEM,
+            [
+                {"type": "text", "text": "What is the student's name written on this paper?"},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+            max_tokens=100,
+            model="gpt-5.6-sol",
+        )
+        if isinstance(data, dict):
+            return str(data.get("name", "")).strip()
+        return ""
+    except Exception:
+        return ""
+
+
 def _validate_diagram(image_path, question_text, reference_solution):
     """Validate a generated diagram using the vision model.
 

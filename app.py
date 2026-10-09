@@ -501,6 +501,31 @@ def grade_page(assignment_id):
     return render_template("grade.html", a=a, env=_env_status())
 
 
+@app.route("/api/extract_name", methods=["POST"])
+def api_extract_name():
+    """Extract student name from an uploaded paper photo.
+
+    Body: multipart with 'image' file. Returns {ok, name}.
+    """
+    f = request.files.get("image")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "No image."}), 400
+    # Save temporarily, extract, then clean up
+    import tempfile
+    ext = ".jpg"
+    try:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            f.save(tmp.name)
+            tmp_path = tmp.name
+        name = grader.extract_student_name(tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+    return jsonify({"ok": True, "name": name})
+
+
 @app.route("/api/grade", methods=["POST"])
 def api_grade():
     grader.current_operation = "grade"

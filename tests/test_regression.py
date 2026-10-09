@@ -1924,6 +1924,32 @@ def test_regenerate_rubric_includes_graph(errors):
     print("  done")
 
 
+def test_extract_student_name_exists(errors):
+    """Auto-extract student name from paper photo (user request 2026-10-08).
+
+    When uploading paper photos for grading, if the photo has the student's
+    name, auto-fill it so the teacher doesn't have to type it.
+    """
+    print("Testing extract_student_name...")
+    import grader
+    if not hasattr(grader, "extract_student_name"):
+        errors.append("grader.extract_student_name not found")
+        return
+    if not hasattr(grader, "NAME_EXTRACT_SYSTEM"):
+        errors.append("NAME_EXTRACT_SYSTEM prompt not found")
+    # Check the API endpoint exists
+    with open("/home/hatch/workspace/ai-grader/app.py") as f:
+        app_src = f.read()
+    if "/api/extract_name" not in app_src:
+        errors.append("/api/extract_name endpoint not found")
+    # Check frontend calls it
+    with open("/home/hatch/workspace/ai-grader/static/app.js") as f:
+        js_src = f.read()
+    if "extract_name" not in js_src:
+        errors.append("frontend does not call /api/extract_name")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1946,6 +1972,7 @@ def main():
     test_upload_db_path_helpers(errors)
     test_diagram_stored_in_db_postgres_mode(errors)
     test_regenerate_rubric_includes_graph(errors)
+    test_extract_student_name_exists(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)
