@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Grade Detail - {{ g.student_name }}{% endblock %}
 {% block content %}
-<h2>📝 {{ g.student_name }}</h2>
+<h2><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg> {{ g.student_name }}</h2>
 <p class="muted">{{ a.name if a else '' }} · Graded {{ g.created_at }}</p>
 
 <div class="card">
@@ -10,7 +10,7 @@
 
 {% if photos %}
 <div class="card">
-  <p><strong>📷 Student paper</strong></p>
+  <p><strong><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 8h3l2-2.5h6L17 8h3a1.5 1.5 0 0 1 1.5 1.5V19a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 19V9.5A1.5 1.5 0 0 1 4 8z"/><circle cx="12" cy="14" r="3.2"/></svg> Student paper</strong></p>
   <div class="thumb-row">
     {% for p in photos %}
     <img class="thumb enlargeable" src="{{ url_for('uploaded_file', filename=p) }}" alt="Student paper page">
@@ -58,6 +58,6 @@
 
 <div class="sticky-bar">
   <a class="btn btn-big" href="{{ url_for('results_page', assignment_id=g.assignment_id) }}">← Back to Results</a>
-  <a class="btn" href="{{ url_for('grade_page', assignment_id=g.assignment_id) }}">📷 Grade Next</a>
+  <a class="btn" href="{{ url_for('grade_page', assignment_id=g.assignment_id) }}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 8h3l2-2.5h6L17 8h3a1.5 1.5 0 0 1 1.5 1.5V19a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 19V9.5A1.5 1.5 0 0 1 4 8z"/><circle cx="12" cy="14" r="3.2"/></svg> Grade Next</a>
 </div>
 {% endblock %}

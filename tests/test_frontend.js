@@ -147,16 +147,16 @@ if (canRetryMatch) {
 // must have a delete button that removes it from the selection.
 (function testGradePhotoDelete() {
   // renderPreviews builds .example-item > img.thumb + button.example-del
-  // with textContent "✕" for each file in selectedFiles.
+  // with a thin-line SVG x icon (icon('x')) for each file in selectedFiles.
   const hasDeleteInRender =
     appJs.includes('function renderPreviews()') &&
-    appJs.includes('del.textContent = "✕"') &&
+    appJs.includes("del.innerHTML = icon('x'") &&
     appJs.includes('selectedFiles.splice(idx, 1)');
   check("grade preview has delete button", hasDeleteInRender, true);
   // The delete button must be inside the grading-page block (not just the
   // rubric-example block which already had one).
   const gradeBlock = appJs.slice(appJs.indexOf("Grading page"));
-  check("grade block has its own delete", gradeBlock.includes('del.textContent = "✕"'), true);
+  check("grade block has its own delete", gradeBlock.includes("del.innerHTML = icon('x'"), true);
 })();
 
 
@@ -166,6 +166,40 @@ if (canRetryMatch) {
   const hasBtn = appJs.includes('class="btn btn-small regen-rubric"') &&
     appJs.includes('/api/regenerate_rubric');
   check("regen rubric button exists", hasBtn, true);
+})();
+
+// Icon style consistency (user request 2026-10-09): all UI icons must be
+// thin-line SVGs matching the Take Photo / Photo Library button style
+// (stroke-width 1.7, round caps) — no emoji icons.
+(function testIconConsistency() {
+  const fs = require("fs");
+  const path = require("path");
+  const files = fs.readdirSync("templates").filter(f => f.endsWith(".html"))
+    .map(f => path.join("templates", f));
+  files.push("static/app.js");
+  // Emoji / symbol chars used as icons (excludes CJK text).
+  const iconRe = /[\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{1F300}-\u{1FAFF}]/u;
+  let hasEmoji = false;
+  for (const f of files) {
+    const content = fs.readFileSync(f, "utf8");
+    // Skip the "→" arrow in flow text (typographic, not an icon).
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].replace(/→/g, "");
+      if (iconRe.test(line)) {
+        console.log(`  emoji icon found in ${f}:${i + 1}: ${line.trim().slice(0, 80)}`);
+        hasEmoji = true;
+      }
+    }
+  }
+  check("no emoji icons in templates/app.js", !hasEmoji, true);
+  // All inline SVGs must use the reference stroke width.
+  const allContent = files.map(f => fs.readFileSync(f, "utf8")).join("\n");
+  const widths = [...allContent.matchAll(/stroke-width="([0-9.]+)"/g)].map(m => m[1]);
+  const badWidths = widths.filter(w => w !== "1.7");
+  check("all SVGs use stroke-width 1.7", badWidths.length === 0 && widths.length > 0, true);
+  // The app.js icon() helper must exist for dynamic icons.
+  check("app.js icon() helper exists", appJs.includes("function icon(name"), true);
 })();
 
 console.log(failures === 0 ? "\nAll frontend tests passed!" : `\n${failures} FAILURE(S)`);

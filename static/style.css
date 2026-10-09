@@ -238,6 +238,13 @@ label {
   align-items: center;
   justify-content: center;
   gap: 7px;
+}
+/* Thin-line SVG icons: keep them from shrinking in flex layouts and align
+   with adjacent text (icon style unified 2026-10-09). */
+.icon {
+  flex-shrink: 0;
+  vertical-align: -0.125em;
+}
   padding: 10px 16px;
   color: var(--text);
   background: var(--surface);

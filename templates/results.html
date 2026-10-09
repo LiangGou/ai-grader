@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Results - {{ a.name }}{% endblock %}
 {% block content %}
-<h2>📊 {{ a.name }}</h2>
+<h2><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> {{ a.name }}</h2>
 
 {% if stats %}
 <div class="stats-grid">
@@ -19,7 +19,7 @@
 <div class="card">
   <div class="row-between">
     <h3>Full class results</h3>
-    <a class="btn btn-small" href="{{ url_for('results_csv', assignment_id=a.id) }}">⬇️ Export CSV</a>
+    <a class="btn btn-small" href="{{ url_for('results_csv', assignment_id=a.id) }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export CSV</a>
   </div>
   <p class="muted">Tap a student's name to revisit their per-question scores and rationale.</p>
   <table class="score-table">
@@ -40,11 +40,11 @@ window.GRADE_TOTALS = {{ grades | map(attribute='total') | list | tojson }};
 window.GRADE_MAX = {{ (grades | map(attribute='max_total') | list | first) or 100 }};
 </script>
 {% else %}
-<div class="card"><p class="muted">No grades yet. Go to <a href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Grading</a> to grade students first.</p></div>
+<div class="card"><p class="muted">No grades yet. Go to <a href="{{ url_for('grade_page', assignment_id=a.id) }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 8h3l2-2.5h6L17 8h3a1.5 1.5 0 0 1 1.5 1.5V19a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 19V9.5A1.5 1.5 0 0 1 4 8z"/><circle cx="12" cy="14" r="3.2"/></svg> Grading</a> to grade students first.</p></div>
 {% endif %}
 
 <div class="sticky-bar">
-  <a class="btn btn-big" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Continue Grading</a>
+  <a class="btn btn-big" href="{{ url_for('grade_page', assignment_id=a.id) }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 8h3l2-2.5h6L17 8h3a1.5 1.5 0 0 1 1.5 1.5V19a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 19V9.5A1.5 1.5 0 0 1 4 8z"/><circle cx="12" cy="14" r="3.2"/></svg> Continue Grading</a>
   <a class="btn" href="{{ url_for('index') }}">← Home</a>
 </div>
 {% endblock %}

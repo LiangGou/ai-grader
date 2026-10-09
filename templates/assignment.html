@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Assignment Setup - {{ a.name }}{% endblock %}
 {% block content %}
-<h2>⚙️ {{ a.name }}</h2>
-<p class="muted">Set up the grading rubric. Recommended flow: 📝 provide a reference example → ✨ generate the rubric with AI → review &amp; edit → save.</p>
+<h2><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> {{ a.name }}</h2>
+<p class="muted">Set up the grading rubric. Recommended flow: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg> provide a reference example → <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3l1.9 5.7 5.7 1.9-5.7 1.9L12 18.2l-1.9-5.7L4.4 10.6l5.7-1.9z"/></svg> generate the rubric with AI → review &amp; edit → save.</p>
 
 <div class="card">
   <h3>Step 1: Reference example</h3>
@@ -10,28 +10,28 @@
   <div class="btn-row">
     <label class="file-label">
       <input type="file" id="examplePhotoInput" accept="image/*" capture="environment" multiple class="file-input-accessible">
-      <span class="btn btn-big"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-2.5h6L17 8h3a1.5 1.5 0 0 1 1.5 1.5V19a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 19V9.5A1.5 1.5 0 0 1 4 8z"/><circle cx="12" cy="14" r="3.2"/></svg> Take Photo</span>
+      <span class="btn btn-big"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 8h3l2-2.5h6L17 8h3a1.5 1.5 0 0 1 1.5 1.5V19a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 19V9.5A1.5 1.5 0 0 1 4 8z"/><circle cx="12" cy="14" r="3.2"/></svg> Take Photo</span>
     </label>
     <label class="file-label">
       <input type="file" id="exampleLibraryInput" accept="image/*" multiple class="file-input-accessible">
-      <span class="btn btn-big"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M4.5 18.5l4.5-4.5 3 3 3.5-3.5 4 4"/></svg> Photo Library</span>
+      <span class="btn btn-big"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M4.5 18.5l4.5-4.5 3 3 3.5-3.5 4 4"/></svg> Photo Library</span>
     </label>
   </div>
   <div id="exampleUploading" class="muted" style="display:none">⏳ Uploading…</div>
   <h4 style="margin:12px 0 6px">Saved examples <span class="muted" id="exampleCount"></span></h4>
   <div id="exampleList" class="example-list"></div>
   <p class="muted" id="noExamplesMsg" style="display:none">No saved examples yet — take or upload one above.</p>
-  <button type="button" id="solveRubricBtn" class="btn btn-primary" style="margin-top:10px">🔑 Generate Rubric</button>
+  <button type="button" id="solveRubricBtn" class="btn btn-primary" style="margin-top:10px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg> Generate Rubric</button>
   <p class="muted">One step: the AI reads the checked photos — if they include your worked solutions or answer key, it uses them; otherwise it solves each question itself. Either way it builds an AP-style rubric using the point values printed on the paper.</p>
 </div>
 
 <div class="card">
   <h3>Step 2: Digitized Rubric (editable) <span id="rubricSaveStatus" class="save-status"></span></h3>
-  <p class="muted">Each question shows what the AI read from your example, its reference solution, and whether the solution was <strong>independently verified</strong> (re-solved + Python-checked). Everything auto-saves — generating, typing, adding or deleting rows — so a refresh never loses it. Fix any ⚠️ rows — editing one marks it verified by you.</p>
+  <p class="muted">Each question shows what the AI read from your example, its reference solution, and whether the solution was <strong>independently verified</strong> (re-solved + Python-checked). Everything auto-saves — generating, typing, adding or deleting rows — so a refresh never loses it. Fix any <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> rows — editing one marks it verified by you.</p>
   <div id="itemsBox">
     <div id="itemsRows"></div>
   </div>
-  <button type="button" id="addRowBtn" class="btn btn-small">＋ Add a question</button>
+  <button type="button" id="addRowBtn" class="btn btn-small"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add a question</button>
 </div>
 
 <div class="card">
@@ -49,7 +49,7 @@
 </div>
 
 <div class="sticky-bar">
-  <a class="btn btn-big btn-primary" href="{{ url_for('grade_page', assignment_id=a.id) }}">📷 Go to Grading</a>
+  <a class="btn btn-big btn-primary" href="{{ url_for('grade_page', assignment_id=a.id) }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 8h3l2-2.5h6L17 8h3a1.5 1.5 0 0 1 1.5 1.5V19a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 19V9.5A1.5 1.5 0 0 1 4 8z"/><circle cx="12" cy="14" r="3.2"/></svg> Go to Grading</a>
 </div>
 
 <script>

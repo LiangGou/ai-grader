@@ -4,6 +4,42 @@
 
   function $(id) { return document.getElementById(id); }
 
+  /* Thin-line SVG icon set — matches the Take Photo / Photo Library button
+     style: 24x24 viewBox, fill none, stroke currentColor, 1.7 width, round
+     caps. All UI icons must use these (no emoji icons).
+     SECURITY: icon() only emits static path data from the ICONS dict.
+     NEVER concatenate untrusted text into innerHTML — use setIconText()
+     which inserts text via textContent. */
+  var ICONS = Object.freeze({
+    check: '<polyline points="20 6 9 17 4 12"/>',
+    checkCircle: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+    x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    alert: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+    refresh: '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+    key: '<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>',
+    trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    cpu: '<rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>',
+    trendingUp: '<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>'
+  });
+  function icon(name, size) {
+    var body = ICONS[name];
+    if (!body) throw new Error("icon(): unknown icon '" + name + "'");
+    var s = Math.max(1, Math.min(256, parseInt(size, 10) || 16));
+    return '<svg class="icon" width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + body + '</svg>';
+  }
+  /* Set an element to [icon][text] safely: the icon is static markup, the
+     text is inserted via textContent (XSS-safe for untrusted strings like
+     server errors or OCR output). */
+  function setIconText(el, name, text, size) {
+    el.textContent = "";
+    var t = document.createElement("template");
+    t.innerHTML = icon(name, size);
+    el.appendChild(t.content.firstElementChild);
+    el.appendChild(document.createTextNode(" " + (text == null ? "" : String(text))));
+  }
+
   /* Whether the "Retry with AI" button shows for a rubric card.
      Shows for ANY question in warn (needs-review) state, regardless of
      origin (ai_solved, teacher_example, or legacy items without origin).
@@ -122,10 +158,10 @@
   // scheduleAutoSave (they were previously block-scoped inside the `if`,
   // which made rubricRow throw "scheduleAutoSave is not defined").
   var saveTimer = null;
-  function setSaveStatus(text, isError) {
+  function setSaveStatus(name, text, isError) {
     var el = $("rubricSaveStatus");
     if (!el) return;
-    el.textContent = text;
+    setIconText(el, name, text, 14);
     el.classList.toggle("error", !!isError);
   }
   // Every rubric change auto-saves (debounced) — there is no save button.
@@ -140,7 +176,7 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data.ok) { setSaveStatus("Save failed", true); return; }
-        setSaveStatus("Auto-saved ✓", false);
+        setSaveStatus("check", "Auto-saved", false);
       })
       .catch(function () { setSaveStatus("Save failed", true); });
   }
@@ -154,10 +190,10 @@
     var row = document.createElement("div");
     row.className = "rubric-card" + (state === "warn" ? " needs-review" : "");
     var badge = state === "ok"
-      ? '<span class="verify-badge ok">✅ Verified</span>'
+      ? '<span class="verify-badge ok">' + icon('checkCircle', 14) + ' Verified</span>'
       : state === "warn"
-        ? '<span class="verify-badge warn">⚠️ Needs your review</span>'
-        : '<span class="verify-badge manual">✏️ Manual</span>';
+        ? '<span class="verify-badge warn">' + icon('alert', 14) + ' Needs your review</span>'
+        : '<span class="verify-badge manual">' + icon('pencil', 14) + ' Manual</span>';
     var note = (state === "warn" && item.verify_note)
       ? '<p class="verify-note">' + escapeHtml(item.verify_note) + '</p>' : "";
     // Retry panel: shown for ANY question needing review, regardless of origin.
@@ -167,7 +203,7 @@
     if (canRetry) {
       retryHtml =
         '<div class="retry-box">' +
-          '<button type="button" class="btn btn-small retry-toggle">🔄 Retry with AI</button>' +
+          '<button type="button" class="btn btn-small retry-toggle">' + icon('refresh', 14) + ' Retry with AI</button>' +
           '<div class="retry-panel" style="display:none">' +
             '<label>Model: <select class="retry-model">' +
               '<option value="o3">o3 (default)</option>' +
@@ -185,7 +221,7 @@
         '<input class="q" type="text" placeholder="Question" value="' + escapeHtml(item.q) + '">' +
         '<input class="ms" type="number" step="0.5" min="0" placeholder="Max pts" value="' + escapeHtml(item.max_score) + '">' +
         badge +
-        '<button type="button" class="btn btn-small row-del">✕</button>' +
+        '<button type="button" class="btn btn-small row-del">' + icon('x', 14) + '</button>' +
       '</div>' +
       '<label class="rubric-field"><span>Question (digitized)</span>' +
         '<textarea class="qt" rows="2" placeholder="Question text as read from the example">' + escapeHtml(item.question_text) + '</textarea>' +
@@ -194,7 +230,7 @@
         '<textarea class="rs" rows="3" placeholder="Reference solution as read from the example">' + escapeHtml(item.reference_solution) + '</textarea>' +
         '<div class="math-preview"></div></label>' +
       '<label class="rubric-field"><span>Scoring / deduction rules ' +
-        '<button type="button" class="btn btn-small regen-rubric" title="Regenerate rubric from the current solution using AP standards">🔄 Regenerate</button>' +
+        '<button type="button" class="btn btn-small regen-rubric" title="Regenerate rubric from the current solution using AP standards">' + icon('refresh', 14) + ' Regenerate</button>' +
         '<span class="regen-status muted"></span></span>' +
         '<textarea class="cr" rows="3" placeholder="Scoring/deduction rules">' + escapeHtml(item.criteria) + '</textarea></label>' +
       '<div class="graph-slot"></div>' +
@@ -223,7 +259,7 @@
         .then(function (data) {
           btn.disabled = false;
           if (!data.ok) {
-            status.textContent = " ❌ " + (data.error || "failed");
+            setIconText(status, 'x', data.error || "failed", 14);
             return;
           }
           row.querySelector(".cr").value = data.criteria || "";
@@ -234,7 +270,7 @@
             slot.innerHTML = "";
             var cap = document.createElement("p");
             cap.className = "graph-cap";
-            cap.textContent = "🤖 AI-generated diagram";
+            setIconText(cap, 'cpu', "AI-generated diagram", 14);
             var im = document.createElement("img");
             im.className = "graph-img";
             im.src = data.graph.url;
@@ -242,13 +278,13 @@
             slot.appendChild(cap);
             slot.appendChild(im);
           }
-          status.textContent = " ✅ Done";
+          setIconText(status, 'check', "Done", 14);
           scheduleAutoSave();
           setTimeout(function () { status.textContent = ""; }, 3000);
         })
         .catch(function (e) {
           btn.disabled = false;
-          status.textContent = " ❌ " + e.message;
+          setIconText(status, 'x', e.message, 14);
         });
     });
     // Retry wiring.
@@ -287,7 +323,7 @@
           .then(function (data) {
             goBtn.disabled = false;
             if (!data.ok) {
-              status.textContent = "❌ " + (data.error || "retry failed");
+              setIconText(status, 'x', data.error || "retry failed", 14);
               return;
             }
             var res = data.result;
@@ -297,9 +333,9 @@
             }).join("\n\n");
             row.querySelector(".retry-debug").open = true;
             if (res.verified === "yes") {
-              status.textContent = "✅ Verified on retry — solution and rubric updated.";
+              setIconText(status, 'check', "Verified on retry — solution and rubric updated.", 14);
             } else {
-              status.textContent = "⚠️ Still needs review: " + (res.verify_note || "");
+              setIconText(status, 'alert', "Still needs review: " + (res.verify_note || ""), 14);
             }
             // Update the card with the new solution.
             row.querySelector(".rs").value = res.solution || "";
@@ -308,7 +344,7 @@
             var b = row.querySelector(".verify-badge");
             if (b) {
               b.className = "verify-badge " + (res.verified === "yes" ? "ok" : "warn");
-              b.textContent = res.verified === "yes" ? "✅ Verified" : "⚠️ Needs your review";
+              setIconText(b, res.verified === "yes" ? 'check' : 'alert', res.verified === "yes" ? "Verified" : "Needs your review", 14);
             }
             var vn = row.querySelector(".verify-note");
             if (vn) vn.textContent = res.verify_note || "";
@@ -316,7 +352,7 @@
           })
           .catch(function (e) {
             goBtn.disabled = false;
-            status.textContent = "❌ Request failed: " + e.message;
+            setIconText(status, 'x', "Request failed: " + e.message, 14);
           });
       });
     }
@@ -341,7 +377,7 @@
       if (g.kind === "function" && g.points && g.points.length) {
         var cap = document.createElement("p");
         cap.className = "graph-cap";
-        cap.textContent = "📈 Regenerated graph" + (g.expression ? ": y = " + g.expression : "");
+        setIconText(cap, 'trendingUp', "Regenerated graph" + (g.expression ? ": y = " + g.expression : ""), 14);
         var cv = document.createElement("canvas");
         cv.className = "graph-canvas";
         cv.width = 600; cv.height = 360;
@@ -351,7 +387,7 @@
       } else if (g.kind === "image" && g.url) {
         var cap2 = document.createElement("p");
         cap2.className = "graph-cap";
-        cap2.textContent = "🤖 AI-generated diagram";
+        setIconText(cap2, 'cpu', "AI-generated diagram", 14);
         var im = document.createElement("img");
         im.className = "graph-img";
         im.src = g.url;
@@ -367,7 +403,7 @@
           var b = row.querySelector(".verify-badge");
           if (b && b.classList.contains("warn")) {
             b.className = "verify-badge ok";
-            b.textContent = "✅ Verified by you";
+            setIconText(b, 'check', "Verified by you", 14);
             row.classList.remove("needs-review");
             var n = row.querySelector(".verify-note");
             if (n) n.remove();
@@ -433,8 +469,9 @@
         var del = document.createElement("button");
         del.type = "button";
         del.className = "btn btn-small example-del";
-        del.textContent = "✕";
+        del.innerHTML = icon('x', 14);
         del.title = "Delete this example";
+        del.setAttribute("aria-label", "Delete this example");
         del.addEventListener("click", function () { deleteExample(ex.name); });
         item.appendChild(cb);
         item.appendChild(img);
@@ -518,7 +555,7 @@
 
     function finishGenerate(btn, items) {
       btn.disabled = false;
-      btn.textContent = "🔑 Generate Rubric";
+      setIconText(btn, 'key', "Generate Rubric", 20);
       // Make sure every item is on screen (in case some arrived with the final poll).
       (items || []).forEach(function (it) {
         if (!renderedGenIdx[it.idx]) { insertGenRow(it); renderedGenIdx[it.idx] = true; }
@@ -529,15 +566,15 @@
       } else {
         var okCount = items.filter(function (it) { return it.verified === "yes"; }).length;
         var needCount = items.length - okCount;
-        alert("Digitized " + items.length + " question(s): " + okCount + " verified ✅" +
-          (needCount ? ", " + needCount + " need your review ⚠️" : "") +
+        alert("Digitized " + items.length + " question(s): " + okCount + " verified" +
+          (needCount ? ", " + needCount + " need your review" : "") +
           " — auto-saved. Every edit auto-saves too.");
       }
     }
 
     function failGenerate(btn, msg) {
       btn.disabled = false;
-      btn.textContent = "🔑 Generate Rubric";
+      setIconText(btn, 'key', "Generate Rubric", 20);
       alert(msg);
     }
 
@@ -571,7 +608,7 @@
             var total = data.total || 0;
             if (data.status === "running") {
               var elapsed = attempts * 3;
-              btn.textContent = total > 0 ? "⏳ Validated " + nDone + "/" + total + " questions…" : "⏳ Reading questions… (" + elapsed + "s)";
+              setIconText(btn, 'refresh', total > 0 ? "Validated " + nDone + "/" + total + " questions…" : "Reading questions… (" + elapsed + "s)", 20);
               if (attempts >= maxAttempts) {
                 clearInterval(timer); activeRubricPoll = null;
                 failGenerate(btn, "Generation is taking longer than expected. Please try again.");
@@ -613,7 +650,7 @@
       if (!include.length) { alert("Please take or upload the question photos first, and make sure at least one saved example is checked."); return; }
       var btn = $("solveRubricBtn");
       btn.disabled = true;
-      btn.textContent = "⏳ Generating rubric…";
+      setIconText(btn, 'refresh', "Generating rubric…", 20);
       rowsBox.innerHTML = ""; // fresh list; questions stream in one by one
       renderedGenIdx = {};
       fetch("/api/solve_rubric", {
@@ -656,8 +693,9 @@
         var del = document.createElement("button");
         del.type = "button";
         del.className = "btn btn-small example-del";
-        del.textContent = "✕";
+        del.innerHTML = icon('x', 14);
         del.title = "Remove this photo";
+        del.setAttribute("aria-label", "Remove this photo");
         del.addEventListener("click", function () {
           selectedFiles.splice(idx, 1);
           renderPreviews();
@@ -793,12 +831,12 @@
         .then(function (r) { return r.json(); })
         .then(function (data) {
           btn.disabled = false;
-          $("saveMsg").textContent = data.ok ? "✅ Saved — you can grade the next student." : "Save failed: " + data.error;
+          setIconText($("saveMsg"), data.ok ? 'check' : 'x', data.ok ? "Saved — you can grade the next student." : "Save failed: " + data.error, 14);
           if (data.ok) { $("studentName").value = ""; selectedFiles = []; renderPreviews(); $("gradeResult").style.display = "none"; currentResult = null; }
         })
         .catch(function (e) {
           btn.disabled = false;
-          $("saveMsg").textContent = "Request failed: " + e.message;
+          setIconText($("saveMsg"), 'x', "Request failed: " + e.message, 14);
         });
     });
   }
@@ -873,7 +911,7 @@
     document.addEventListener("touchstart", function (e) {
       if (!e.target.closest(".swipe-row")) closeOpenRow(null);
     }, { passive: true });
-    // Both the revealed Delete button and the 🗑️ button delete.
+    // Both the revealed Delete button and the trash button delete.
     document.querySelectorAll(".swipe-delete, .btn-del").forEach(function (b) {
       b.addEventListener("click", function (e) {
         e.stopPropagation();
