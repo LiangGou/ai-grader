@@ -172,8 +172,52 @@ def init_db():
         )
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created)")
+    # Uploaded images: stored in DB when USE_POSTGRES (Render disk is ephemeral).
+    # Local dev keeps using the filesystem.
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS images (
+            name TEXT PRIMARY KEY,
+            data {"BYTEA" if USE_POSTGRES else "BLOB"} NOT NULL,
+            mime_type TEXT NOT NULL DEFAULT 'image/jpeg',
+            created REAL NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
+
+
+def save_image(name, data, mime_type="image/jpeg"):
+    """Store an uploaded image in the DB (Postgres mode)."""
+    conn = _connect()
+    cur = conn.cursor()
+    if USE_POSTGRES:
+        cur.execute(_q(
+            "INSERT INTO images (name, data, mime_type, created) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (name) DO UPDATE SET data=EXCLUDED.data,"
+            " mime_type=EXCLUDED.mime_type, created=EXCLUDED.created"),
+            (name, data, mime_type, time.time()))
+    else:
+        cur.execute(
+            "INSERT OR REPLACE INTO images (name, data, mime_type, created)"
+            " VALUES (?, ?, ?, ?)",
+            (name, data, mime_type, time.time()))
+    conn.commit()
+    conn.close()
+
+
+def get_image(name):
+    """Return (data_bytes, mime_type) or (None, None)."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT data, mime_type FROM images WHERE name = ?"), (name,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None, None
+    if USE_POSTGRES:
+        data = bytes(row[0]) if row[0] is not None else None
+        return data, row[1]
+    return row[0], row[1]
 
 
 def now():

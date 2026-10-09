@@ -147,9 +147,30 @@ def _save_upload(file_storage, prefix):
     if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
         ext = ".jpg"
     name = f"{prefix}_{int(time.time())}_{random.randint(1000, 9999)}{ext}"
+    if db.USE_POSTGRES:
+        # Render disk is ephemeral: store image bytes in Postgres.
+        data = file_storage.read()
+        mime = file_storage.mimetype or "image/jpeg"
+        db.save_image(name, data, mime)
+        return f"db:{name}"
     path = os.path.join(UPLOAD_DIR, name)
     file_storage.save(path)
     return path
+
+
+def _upload_exists(p):
+    """Check if an upload path exists (handles db: prefix for Postgres mode)."""
+    if p.startswith("db:"):
+        data, _ = db.get_image(p[3:])
+        return data is not None
+    return os.path.exists(p)
+
+
+def _upload_to_url(p):
+    """Convert a stored upload path to a /uploads/ URL."""
+    if p.startswith("db:"):
+        return f"/uploads/{p[3:]}"
+    return f"/uploads/{os.path.basename(p)}"
 
 
 def _env_status():
@@ -209,7 +230,7 @@ def assignment_page(assignment_id):
     refs = json.loads(a["reference_images"] or "[]")
     refs = [os.path.basename(p) for p in refs if os.path.exists(p)]
     rubric_examples = db.get_rubric_example_images(assignment_id)
-    rubric_examples = [os.path.basename(p) for p in rubric_examples if os.path.exists(p)]
+    rubric_examples = [_upload_to_url(p).split("/uploads/")[-1] for p in rubric_examples if _upload_exists(p)]
     return render_template(
         "assignment.html", a=a, items=items, refs=refs,
         rubric_examples=rubric_examples, env=_env_status()
@@ -316,7 +337,7 @@ def api_retry_question():
     if model not in ("o3", "gpt-4o"):
         return jsonify({"ok": False, "error": "Model must be 'o3' or 'gpt-4o'."}), 400
     # Give the solver the assignment's question photos for a second read.
-    image_paths = [p for p in db.get_rubric_example_images(assignment_id) if os.path.exists(p)]
+    image_paths = [p for p in db.get_rubric_example_images(assignment_id) if _upload_exists(p)]
     try:
         result = grader.retry_solve_question(
             question_text, max_score, q_label,
@@ -477,7 +498,7 @@ def api_grade():
         return jsonify({"ok": False, "error": "No paper photos received. Please take/upload photos first."}), 400
 
     items = json.loads(a["rubric_json"] or "[]")
-    ref_paths = [p for p in json.loads(a["reference_images"] or "[]") if os.path.exists(p)]
+    ref_paths = [p for p in json.loads(a["reference_images"] or "[]") if _upload_exists(p)]
     try:
         result = grader.grade_paper(a["rubric_text"], items, paths, ref_paths)
     except RuntimeError as e:
@@ -556,7 +577,7 @@ def grade_detail_page(grade_id):
     except (json.JSONDecodeError, TypeError):
         photos = []
     # Only keep photos that still exist on disk.
-    photos = [p for p in photos if os.path.exists(os.path.join(UPLOAD_DIR, p))]
+    photos = [p for p in photos if _upload_exists(p if p.startswith("db:") else os.path.join(UPLOAD_DIR, p))]
     return render_template("grade_detail.html", a=a, g=g, questions=questions, photos=photos, env=_env_status())
 
 
@@ -607,11 +628,16 @@ def _write_env(api_key, model):
 
 @app.route("/uploads/<path:filename>")
 def uploaded_file(filename):
-    # Block path traversal (e.g. ../../ai_grader.db): only serve files
-    # physically inside UPLOAD_DIR. Also reject backslashes (Windows-style
-    # traversal) for defense in depth.
-    if "\\" in filename:
+    # Block path traversal (e.g. ../../ai_grader.db). Also reject backslashes
+    # (Windows-style traversal) for defense in depth.
+    if "\\" in filename or "/" in filename or filename.startswith("."):
         return jsonify({"ok": False, "error": "Not found."}), 404
+    # Postgres mode: images live in the DB (Render disk is ephemeral).
+    if db.USE_POSTGRES:
+        data, mime = db.get_image(filename)
+        if data is None:
+            return jsonify({"ok": False, "error": "Not found."}), 404
+        return send_file(io.BytesIO(data), mimetype=mime or "image/jpeg")
     safe = os.path.realpath(os.path.join(UPLOAD_DIR, filename))
     if not safe.startswith(os.path.realpath(UPLOAD_DIR) + os.sep):
         return jsonify({"ok": False, "error": "Not found."}), 404
