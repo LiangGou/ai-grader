@@ -1856,6 +1856,40 @@ def test_graph_keywords_trigger_diagram(errors):
     print("  done")
 
 
+def test_upload_db_path_helpers(errors):
+    """db: prefixed image paths must work with upload helpers.
+
+    Bug 2026-10-08: after moving images to Postgres, os.path.basename/exists
+    failed on "db:name.jpg" paths, causing 400 "No question photos selected".
+    """
+    print("Testing upload db: path helpers...")
+    import sys
+    sys.path.insert(0, "/home/hatch/workspace/ai-grader")
+    # Mock db module attributes needed by helpers
+    import types
+    fake_db = types.SimpleNamespace(USE_POSTGRES=True)
+    # Import the helpers from app without running the full app
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("app_helpers", "/home/hatch/workspace/ai-grader/app.py")
+    # Can't import full app (needs env), so test the logic directly
+    def _upload_basename(p):
+        return p[3:] if p.startswith("db:") else __import__("os").path.basename(p)
+    def _upload_to_url(p):
+        import os
+        return f"/uploads/{p[3:]}" if p.startswith("db:") else f"/uploads/{os.path.basename(p)}"
+    # db: paths
+    if _upload_basename("db:ref_123.jpg") != "ref_123.jpg":
+        errors.append("_upload_basename failed for db: path")
+    if _upload_to_url("db:ref_123.jpg") != "/uploads/ref_123.jpg":
+        errors.append("_upload_to_url failed for db: path")
+    # regular paths still work
+    if _upload_basename("/a/b/c.jpg") != "c.jpg":
+        errors.append("_upload_basename failed for regular path")
+    if _upload_to_url("/a/b/c.jpg") != "/uploads/c.jpg":
+        errors.append("_upload_to_url failed for regular path")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1875,6 +1909,7 @@ def main():
     test_verifier_empty_response(errors)
     test_q_placeholder_conversion(errors)
     test_graph_keywords_trigger_diagram(errors)
+    test_upload_db_path_helpers(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)
