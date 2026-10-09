@@ -533,6 +533,23 @@ label {
   flex: 1;
 }
 
+/* The fixed bottom action bar must never cover buttons or page content.
+   Reserve space at the bottom of the page whenever the bar is present, so a
+   button scrolled to the viewport bottom stays clickable above the bar.
+   (Bug 2026-10-09: the sticky "Go to Grading" bar covered the
+   "Generate Rubric" button and blocked clicks.) */
+body:has(.sticky-bar) {
+  padding-bottom: calc(92px + env(safe-area-inset-bottom));
+}
+
+/* Fallback for browsers without :has() (iOS Safari < 15.4): the extra space
+   is harmless on pages without a sticky bar. */
+@supports not selector(body:has(.sticky-bar)) {
+  body {
+    padding-bottom: calc(92px + env(safe-area-inset-bottom));
+  }
+}
+
 .q-block {
   margin-bottom: 10px;
   padding: 12px;

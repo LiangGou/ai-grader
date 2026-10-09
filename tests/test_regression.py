@@ -1788,6 +1788,9 @@ def test_digitize_retry_on_bad_json(errors):
 
     gpt-5.6-sol occasionally emits bad escapes; one bad response must not
     kill the whole rubric build.
+    (Fixed 2026-10-09: the old version never reached _chat_json because
+    _data_url raised FileNotFoundError on the fake path first, so the retry
+    logic was never exercised and the test always failed.)
     """
     print("Testing digitize retry...")
     import grader
@@ -1798,13 +1801,15 @@ def test_digitize_retry_on_bad_json(errors):
         if calls["n"] < 3:
             raise ValueError("Invalid \\escape")
         return {"questions": []}
-    with patch.object(grader, "_chat_json", side_effect=fake_chat):
-        try:
-            grader.digitize_example(["/tmp/fake.jpg"])
-        except Exception:
-            pass  # _data_url will fail on fake path; retry logic is what matters
-    if calls["n"] < 2:
-        errors.append("digitize_example should retry on bad JSON")
+    with patch.object(grader, "_chat_json", side_effect=fake_chat), \
+         patch.object(grader, "_data_url", return_value="data:image/jpeg;base64,x"):
+        result = grader.digitize_example(["/tmp/fake.jpg"])
+    if calls["n"] != 3:
+        errors.append(
+            f"digitize_example should call _chat_json 3 times (2 retries), "
+            f"got {calls['n']}")
+    if result != []:
+        errors.append(f"digitize_example should return [] questions, got {result}")
     print("  done")
 
 
@@ -2005,29 +2010,251 @@ def test_file_inputs_accessible(errors):
 
 
 def test_verify_generates_solution_when_missing(errors):
-    """Verify generates a solution when reference_solution is empty.
+    """validate_question generates a solution when reference_solution is empty.
 
     Bug 2026-10-08: workflow returned "unsure" for blank questions instead
     of generating an answer first, then verifying.
+    (Fixed 2026-10-09: the old version of this test called verify_solution
+    with a non-existent signature and always raised TypeError.)
     """
     print("Testing verify generates solution when missing...")
     import grader
-    # Mock _chat_json to return a fake solution
-    orig = grader._chat_json
-    def mock_chat_json(system, user_content, max_tokens=None, model=None, **kw):
-        return {"solution": "Step 1: Do this. Step 2: Do that. Answer: 42."}
-    grader._chat_json = mock_chat_json
-    try:
-        result = grader.verify_solution(
-            question_text="What is 6*7?",
-            reference_solution="",  # Empty - should trigger generation
-            criteria="",
-        )
-        # Should NOT return "unsure" with "No question text or reference solution"
-        if result.get("verdict") == "unsure" and "reference solution" in result.get("note", "").lower():
-            errors.append("verify_solution still returns unsure for empty solution instead of generating")
-    finally:
-        grader._chat_json = orig
+    from unittest.mock import patch
+    gen = {"solution": "Step 1: Do this. Step 2: Do that. Answer: 42."}
+    verify = {"agrees": True, "confidence": "high", "note": ""}
+    with patch.object(grader, "_chat_json", side_effect=[gen, verify]):
+        result = grader.validate_question("What is 6*7?", "")
+    if result.get("verdict") != "confirmed":
+        errors.append(
+            f"blank question should generate-then-confirm, got {result.get('verdict')}: "
+            f"{result.get('note', '')[:120]}")
+    if not result.get("generated_solution"):
+        errors.append("confirmed blank question must return generated_solution")
+    print("  done")
+
+
+def test_check_ap_output_per_part_steps(errors):
+    """_check_ap_output must validate step numbering per part, not globally.
+
+    Bug 2026-10-09 (E2E Q1): multi-part FRQs restart numbering per part
+    (Part (a) Step 1, Part (b) Step 1...), so the old global 1..N sequential
+    check could never pass and every multi-part plan was rejected.
+    """
+    print("Testing per-part step validation...")
+    import grader
+    multi = [
+        {"points": 2, "for": "Part (a) Step 1: setup"},
+        {"points": 2, "for": "Part (a) Step 2: compute"},
+        {"points": 2, "for": "Part (b) Step 1: setup"},
+        {"points": 3, "for": "Part (b) Step 2: answer"},
+    ]
+    _, issues = grader._check_ap_output(None, multi, 9, strict_steps=False)
+    if issues:
+        errors.append(f"multi-part sequential steps wrongly rejected: {issues}")
+    gap = [
+        {"points": 1, "for": "Part (a) Step 1: x"},
+        {"points": 1, "for": "Part (a) Step 3: y"},
+    ]
+    _, issues = grader._check_ap_output(None, gap, 2, strict_steps=False)
+    if not any("not sequential" in i for i in issues):
+        errors.append(f"gap within a part not flagged: {issues}")
+    ooo = [
+        {"points": 1, "for": "Part (a) Step 2: x"},
+        {"points": 1, "for": "Part (a) Step 1: y"},
+    ]
+    _, issues = grader._check_ap_output(None, ooo, 2, strict_steps=False)
+    if not any("not sequential" in i for i in issues):
+        errors.append(f"out-of-order steps within a part not flagged: {issues}")
+    mixed = [
+        {"points": 1, "for": "Step 1: global setup"},
+        {"points": 1, "for": "Part (a) Step 1: x"},
+        {"points": 1, "for": "Part (a) Step 2: y"},
+    ]
+    _, issues = grader._check_ap_output(None, mixed, 3, strict_steps=False)
+    if issues:
+        errors.append(f"global + part steps wrongly rejected: {issues}")
+    print("  done")
+
+
+def test_parse_json_loose_latex_escapes(errors):
+    """_parse_json_loose must recover LaTeX backslashes, never corrupt math.
+
+    Bug 2026-10-09 (E2E Q4): raw LaTeX broke json.loads ("Invalid \\escape"),
+    and worse, \\frac-style escapes are VALID JSON decoding to control chars
+    (form feed etc.) — silent math corruption. The parser must recover the
+    literal backslash form and never accept corrupted output.
+    """
+    print("Testing LaTeX escape handling in JSON parse...")
+    import grader
+    cases = [
+        # (name, raw model output, expected decoded value)
+        ("frac", '{"s":"\\frac{1}{2}"}', "\\frac{1}{2}"),
+        ("theta_to", '{"s":"\\theta \\to 0"}', "\\theta \\to 0"),
+        ("beta", '{"s":"\\beta"}', "\\beta"),
+        ("neq", '{"s":"x \\neq 0"}', "x \\neq 0"),
+        ("underline", '{"s":"\\underline{x}"}', "\\underline{x}"),
+        ("invalid_escape", '{"s":"\\sqrt{x}"}', "\\sqrt{x}"),
+        ("mixed_escaping", '{"s":"\\\\frac \\int"}', "\\frac \\int"),
+        ("newline_kept", '{"s":"line1\\nline2"}', "line1\nline2"),
+        ("newline_before_word_kept", '{"s":"First line\\nThen continue"}',
+         "First line\nThen continue"),
+        ("unicode_kept", '{"s":"\\u00e9"}', "\u00e9"),
+        ("unicode_4hex", '{"s":"\\u1234"}', "\u1234"),
+        ("unicode_5hex", '{"s":"\\u12345"}', "\u12345"),
+        ("unicode_surrogate", '{"s":"\\uD83D\\uDE00"}', "\U0001F600"),
+        ("unicode_bad", '{"s":"\\u12G4"}', "\\u12G4"),
+        ("escaped_bs_before_quote", '{"s":"a\\\\"}', "a\\"),
+        # Round-3 review: detector/scanner must agree on \ni.
+        ("ni_command", '{"s":"x \\ni y"}', "x \\ni y"),
+        # Round-3 review: LaTeX matching is case-sensitive; \tHeta is a
+        # genuine tab, not \theta, and must survive repair of a sibling key.
+        ("case_sensitive", '{"a":"\\theta","b":"\\tHeta"}', None),
+    ]
+    for name, raw, expected in cases:
+        try:
+            v = grader._parse_json_loose(raw)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"latex case {name}: raised {e}")
+            continue
+        if expected is None:
+            # case_sensitive: bespoke assertions below.
+            if v.get("a") != "\\theta":
+                errors.append(f"latex case {name}: 'a' got {v.get('a')!r}")
+            if v.get("b") != "\tHeta":
+                errors.append(
+                    f"latex case {name}: 'b' must keep genuine tab, "
+                    f"got {v.get('b')!r}")
+            continue
+        if v.get("s") != expected:
+            errors.append(
+                f"latex case {name}: got {v.get('s')!r}, want {expected!r}")
+    # Corruption detector unit checks.
+    if not grader._has_latex_corruption({"s": "Use \x0crac{1}{2}"}):
+        errors.append("_has_latex_corruption missed form-feed corruption")
+    if grader._has_latex_corruption({"s": "line1\nline2"}):
+        errors.append("_has_latex_corruption false-positive on plain newline")
+    print("  done")
+
+
+def test_solve_retries_fallback_on_empty(errors):
+    """_solve_with_retries falls back to DEFAULT_MODEL after 2 empty responses.
+
+    Bug 2026-10-09 (E2E Q2): the reasoning model returned 3 straight empty
+    responses; retrying the same model was futile. The JSON-mode chat model
+    is more reliable at producing parseable output.
+    """
+    print("Testing empty-response model fallback...")
+    import grader
+    from unittest.mock import patch
+    models_used = []
+
+    def fake_solve(question_text, max_score, q_label="", image_paths=None,
+                   model=None, **kw):
+        models_used.append(model)
+        if len(models_used) <= 2:
+            raise grader.EmptyModelResponseError(
+                "The model returned an empty response.")
+        return {"solution": "Step 1: x.", "ap_points": [], "notes": ""}
+
+    def fake_verify(question_text, solution, model=None, **kw):
+        return {"verdict": "confirmed", "note": "ok"}
+
+    with patch.object(grader, "solve_and_rubric", side_effect=fake_solve), \
+         patch.object(grader, "verify_solution", side_effect=fake_verify):
+        solved, verdict = grader._solve_with_retries("Q?", 5, "Q1")
+    if verdict.get("verdict") != "confirmed":
+        errors.append(f"fallback run not confirmed: {verdict}")
+    if models_used[:2] != [grader.REASONING_MODEL, grader.REASONING_MODEL]:
+        errors.append(f"first attempts should use REASONING_MODEL, got {models_used[:2]}")
+    if len(models_used) < 3 or models_used[2] != grader.DEFAULT_MODEL:
+        errors.append(f"third attempt should fall back to DEFAULT_MODEL, got {models_used}")
+    # EmptyModelResponseError must stay a ValueError for backward compat.
+    if not issubclass(grader.EmptyModelResponseError, ValueError):
+        errors.append("EmptyModelResponseError must subclass ValueError")
+    print("  done")
+
+
+def test_solve_retries_empty_through_real_helpers(errors):
+    """EmptyModelResponseError must propagate typed through the real helpers.
+
+    Round-2 review: mocks the higher-level helpers would not catch an
+    intermediate wrapper swallowing the typed exception. Only _chat_json is
+    mocked here; the real solve_and_rubric / verify_solution run.
+    """
+    print("Testing empty fallback through real helpers...")
+    import grader
+    from unittest.mock import patch
+    models = []
+    state = {"n": 0}
+
+    def fake_chat_json(system, user_content, max_tokens=None, model=None, **kw):
+        state["n"] += 1
+        models.append(model)
+        if state["n"] <= 2:
+            raise grader.EmptyModelResponseError("empty")
+        text = str(system)
+        # NOTE: the solve-phase prompt also mentions "scoring plan", so check
+        # the more specific marker first.
+        if "complete worked solution" in text:
+            return {"solution":
+                    "Step 1: set up the multiplication of 6 and 7. "
+                    "Step 2: compute the product carefully showing every step. "
+                    "Answer: 42."}
+        if "scoring plan" in text:
+            return {"ap_points": [{"points": 2, "for": "Step 1: setup"},
+                                  {"points": 3, "for": "Step 2: compute"}]}
+        return {"agrees": True, "confidence": "high", "note": ""}
+
+    with patch.object(grader, "_chat_json", side_effect=fake_chat_json):
+        solved, verdict = grader._solve_with_retries("What is 6*7?", 5, "Q1")
+    if verdict.get("verdict") != "confirmed":
+        errors.append(f"expected confirmed after fallback, got {verdict}")
+    if len(models) < 3 or models[2] != grader.DEFAULT_MODEL:
+        errors.append(
+            f"plan retry after 2 empties should use DEFAULT_MODEL, got {models}")
+    if not solved.get("solution"):
+        errors.append("expected a solution after fallback")
+    print("  done")
+
+
+def test_validate_question_generated_solution_all_paths(errors):
+    """validate_question must return generated_solution on every confirmed path.
+
+    Bug 2026-10-09: the generate-then-verify patch only attached
+    generated_solution on the LLM-agrees path; the Python-verified confirmed
+    paths dropped it, so the caller could not persist the generated solution.
+    """
+    print("Testing generated_solution on all confirmed paths...")
+    import grader
+    from unittest.mock import patch
+    gen = {"solution": "Step 1: multiply 6*7. Answer: 42."}
+    verify_py = {"agrees": True, "confidence": "high", "note": "",
+                 "python_checks": ["6*7-42"]}
+    with patch.object(grader, "_chat_json", side_effect=[gen, verify_py]):
+        result = grader.validate_question("What is 6*7?", "")
+    if result.get("verdict") != "confirmed":
+        errors.append(f"expected confirmed, got {result.get('verdict')}")
+    if not result.get("generated_solution"):
+        errors.append("confirmed via Python checks dropped generated_solution")
+    elif "42" not in result["generated_solution"]:
+        errors.append("generated_solution content wrong")
+    print("  done")
+
+
+def test_sticky_bar_css_padding(errors):
+    """Fixed bottom bar must not cover page buttons (structural CSS check).
+
+    Bug 2026-10-09 (E2E): the sticky "Go to Grading" bar covered the
+    "Generate Rubric" button, blocking clicks; fixed by reserving bottom
+    padding on pages that have the bar.
+    """
+    print("Testing sticky-bar CSS guard...")
+    with open("/home/hatch/workspace/ai-grader/static/style.css") as f:
+        css = f.read()
+    if "body:has(.sticky-bar)" not in css:
+        errors.append("style.css missing body:has(.sticky-bar) guard")
+    if "padding-bottom" not in css:
+        errors.append("style.css missing bottom padding for sticky bar")
     print("  done")
 
 
@@ -2057,6 +2284,12 @@ def main():
     test_grade_name_optional(errors)
     test_file_inputs_accessible(errors)
     test_verify_generates_solution_when_missing(errors)
+    test_check_ap_output_per_part_steps(errors)
+    test_parse_json_loose_latex_escapes(errors)
+    test_solve_retries_fallback_on_empty(errors)
+    test_solve_retries_empty_through_real_helpers(errors)
+    test_validate_question_generated_solution_all_paths(errors)
+    test_sticky_bar_css_padding(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)

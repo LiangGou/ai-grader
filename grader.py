@@ -73,27 +73,212 @@ def _get_client():
     return OpenAI(api_key=api_key, timeout=120.0)
 
 
+class EmptyModelResponseError(ValueError):
+    """The model returned a successful response with no content."""
+    pass
+
+
+def _scan_repair_json_escapes(s):
+    r"""Repair invalid backslash escapes inside JSON string literals.
+
+    Scanner-based (backslash-parity aware): walks the text tracking whether
+    it is inside a JSON string; consumes valid escapes atomically —
+    \\, \", \/, \b, \f, \n, \r, \t, and \uXXXX (exactly 4 hex digits).
+    A lone backslash inside a string that does not start a valid escape
+    (raw LaTeX like \sqrt or \alpha) is doubled so it survives as a literal
+    backslash. Backslashes outside strings are left untouched.
+    Bug 2026-10-09: Q4 of the 2023 AP FRQ failed solution parsing because
+    raw LaTeX backslashes made json.loads raise "Invalid \escape".
+    """
+    out = []
+    i, n = 0, len(s)
+    in_str = False
+    while i < n:
+        ch = s[i]
+        if not in_str:
+            out.append(ch)
+            if ch == '"':
+                in_str = True
+            i += 1
+            continue
+        # Inside a JSON string.
+        if ch == "\\" and i + 1 < n:
+            nxt = s[i + 1]
+            if nxt == "\\" or nxt in "\"/":
+                # Valid escape pair — consume atomically so the second
+                # backslash of "\\" is never reinterpreted as an escape start.
+                out.append(ch + nxt)
+                i += 2
+                continue
+            if nxt in "bfnrt" and not _latex_command_len(s, i + 1):
+                # Genuine JSON escape (not a LaTeX command like \frac).
+                out.append(ch + nxt)
+                i += 2
+                continue
+            if nxt == "u":
+                hex4 = s[i + 2:i + 6]
+                if len(hex4) == 4 and all(
+                        c in "0123456789abcdefABCDEF" for c in hex4):
+                    out.append(s[i:i + 6])
+                    i += 6
+                    continue
+            # Invalid escape (e.g. \s from \sqrt, malformed \u) or a LaTeX
+            # command (\frac, \theta, \neq...): keep the backslash as a
+            # literal so the math survives.
+            out.append("\\\\")
+            i += 1
+            continue
+        if ch == '"':
+            in_str = False
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+# C0 control characters that must never appear in decoded model JSON strings.
+# \b (from LaTeX \beta) decodes to \x08, \f (from \frac) to \x0c — both are
+# silent math-data corruption, never legitimate solution text. Other C0
+# controls are likewise never legitimate. \n \r \t are handled separately
+# by _has_latex_corruption below (they may be mis-decoded \nu / \text).
+_FORBIDDEN_CONTROLS = tuple(
+    c for c in "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f"
+               "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f"
+)
+
+
+def _has_forbidden_controls(value):
+    """True if any decoded string contains control chars from mis-decoded
+    LaTeX escapes (e.g. "\\frac" parsed as form feed + "rac")."""
+    if isinstance(value, str):
+        return any(c in value for c in _FORBIDDEN_CONTROLS)
+    if isinstance(value, dict):
+        return any(_has_forbidden_controls(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_has_forbidden_controls(v) for v in value)
+    return False
+
+
+# LaTeX commands that collide with JSON escapes (\b \f \n \r \t).
+# Only these (as a full letter-run) count as LaTeX; anything else keeps its
+# JSON meaning. This conservative allowlist avoids misclassifying a genuine
+# JSON newline/tab (e.g. "...\nThen continue") as a LaTeX command.
+# (Round-2 review 2026-10-09: an any-letter heuristic corrupted legitimate
+# newlines followed by words like "Then".)
+_LATEX_COMMANDS = frozenset(
+    "frac dfrac tfrac cfrac forall fbox "
+    "beta bar binom boxed big bigg brace begin "
+    "theta tan tanh times to text top triangle therefore "
+    "neq nabla not ni natural nearrow nwarrow "
+    "right rho rangle real".split()
+)
+
+
+def _latex_command_len(s, i):
+    """Length of the LaTeX command name starting at s[i] (0 if none).
+
+    s[i] is a JSON escape letter in bfnrt; the backslash is at s[i-1].
+    The maximal letter-run must exactly equal an allowlist entry —
+    "toxic" is not \\to, and "\\nThen" is a newline, not \\n + "Then".
+    Matching is case-sensitive: LaTeX control words are case-sensitive,
+    so \\tHeta is not \\theta (round-3 review 2026-10-09).
+    """
+    m = re.match(r"[A-Za-z]+", s[i:])
+    if not m:
+        return 0
+    word = m.group(0)
+    return len(word) if word in _LATEX_COMMANDS else 0
+
+
+# Detects decoded strings corrupted by mis-decoded LaTeX escapes.
+# \x08 (\beta) and \x0c (\frac) are unconditionally rejected: backspace and
+# form feed are never legitimate in model-generated math text, so any
+# occurrence is corruption by policy (a lone \b/\f that the scanner cannot
+# repair still fails closed with ValueError, never silently accepted).
+# For \t \n \r, JSON consumes the escape letter, so \theta decodes to
+# TAB+"heta" and \neq to LF+"eq": match each control char followed by the
+# suffixes of commands starting with its letter, at a word boundary.
+# Known limitation: detection runs on decoded values, so a (pathological)
+# raw \u0009heta is indistinguishable from \theta — both are rejected, which
+# fails safe (retry) rather than corrupting.
+# Policy: in math solutions, an ambiguous \t+\<command> is treated as LaTeX;
+# a genuine tab/newline before such a word may be repaired to literal text.
+# This trade-off is documented because the two are byte-identical in JSON.
+def _suffix_alts(letter, min_len):
+    return "|".join(sorted(
+        {cmd[1:] for cmd in _LATEX_COMMANDS
+         if cmd[0] == letter and len(cmd[1:]) >= min_len},
+        key=len, reverse=True,
+    ))
+
+
+_LATEX_CORRUPTION = re.compile(
+    r"[\x08\x0c]"
+    r"|[\t](?=(?:" + _suffix_alts("t", 1) + r")(?![a-zA-Z]))"
+    r"|[\r](?=(?:" + _suffix_alts("r", 1) + r")(?![a-zA-Z]))"
+    r"|[\n](?=(?:" + _suffix_alts("n", 1) + r")(?![a-zA-Z]))"
+)
+
+
+def _has_latex_corruption(value):
+    """True if any decoded string looks like mis-decoded LaTeX escapes."""
+    if isinstance(value, str):
+        return bool(_LATEX_CORRUPTION.search(value))
+    if isinstance(value, dict):
+        return any(_has_latex_corruption(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_has_latex_corruption(v) for v in value)
+    return False
+
+
 def _parse_json_loose(text):
     """Parse model JSON output: try a direct parse, then fall back to stripping
-    markdown fences / extracting the outermost braces."""
+    markdown fences / extracting the outermost braces / repairing bad escapes.
+
+    A candidate that parses but contains control characters from mis-decoded
+    LaTeX escapes (\\frac -> form feed) is rejected, not silently accepted —
+    the caller retries with the failure fed back to the model.
+    """
     text = (text or "").strip()
-    try:
-        return json.loads(text)
-    except (json.JSONDecodeError, TypeError):
-        pass
+
+    def _try(s):
+        try:
+            v = json.loads(s)
+        except (json.JSONDecodeError, TypeError):
+            return None, False
+        # Reject mis-decoded LaTeX escapes (e.g. "\\frac" -> form feed):
+        # never silently accept corrupted math.
+        if _has_forbidden_controls(v) or _has_latex_corruption(v):
+            return None, False
+        return v, True
+
+    def _try_repaired(s):
+        # Repair LaTeX backslashes as a last resort before giving up on
+        # this candidate.
+        result, ok = _try(s)
+        if ok:
+            return result, True
+        return _try(_scan_repair_json_escapes(s))
+
+    result, ok = _try_repaired(text)
+    if ok:
+        return result
     # Try EVERY code fence (not just the first) — the model might put a
     # ```python block before the ```json block. Found by claude-opus-5-5
     # review 2026-10-07.
     for m in re.finditer(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL):
-        try:
-            return json.loads(m.group(1).strip())
-        except (json.JSONDecodeError, TypeError):
-            continue
+        result, ok = _try_repaired(m.group(1).strip())
+        if ok:
+            return result
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
-        return json.loads(text[start : end + 1])
-    raise ValueError("The model output is not valid JSON")
+        result, ok = _try_repaired(text[start : end + 1])
+        if ok:
+            return result
+    raise ValueError(
+        "The model output is not valid JSON "
+        "(or contains mis-decoded LaTeX escapes like \\frac -> control chars; "
+        "escape backslashes properly)")
 
 
 
@@ -176,7 +361,8 @@ def _chat_json(system, user_content, max_tokens, model=None, reasoning_effort=No
     if _raw is not None:
         _raw.append({"model": model, "effort": reasoning_effort, "raw": text})
     if not text:
-        raise ValueError("The model returned an empty response. Please try again.")
+        raise EmptyModelResponseError(
+            "The model returned an empty response. Please try again.")
     return _parse_json_loose(text)
 
 
@@ -1003,7 +1189,8 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
         failed = [r for r in check_results if not r[1]]
         if not failed:
             return {"verdict": "confirmed",
-                    "note": f"Python verified {len(check_results)} claim(s). " + note}
+                    "note": f"Python verified {len(check_results)} claim(s). " + note,
+                    "generated_solution": generated_solution}
         # Fallback: a pure expression like "6*120-2" (=718) isn't a difference
         # check — compare its value against numbers in the reference solution.
         # (Fix 2026-10-07: LLM often generates values, not zero-checks.)
@@ -1018,7 +1205,8 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
                 still_failed.append((expr, passed, val))
         if rescued and not still_failed:
             return {"verdict": "confirmed",
-                    "note": f"Python values match reference {rescued[0][1]:g}. " + note}
+                    "note": f"Python values match reference {rescued[0][1]:g}. " + note,
+                    "generated_solution": generated_solution}
         if still_failed:
             # At least one check failed: report which claim is wrong.
             detail = "; ".join(f"{expr} = {val:g}" for expr, _, val in still_failed[:3])
@@ -1711,13 +1899,26 @@ def _check_ap_output(solution, ap_points, max_score, strict_steps=True):
                 issues.append(
                     f"Rubric point {i + 1} references {label}, which does "
                     "not exist in the solution steps.")
-        # Non-strict mode: step numbers must be sequential from 1.
+        # Non-strict mode: within each part, step numbers must be sequential
+        # from 1, in encounter order. (Multi-part FRQs restart numbering per
+        # part — e.g. Part (a) Step 1, Part (b) Step 1 — so a global 1..N
+        # check can never pass. Bug 2026-10-09: Q1 of the 2023 AP FRQ failed
+        # plan validation for exactly this reason.)
+        # Unqualified steps (part None) are validated as their own global
+        # sequence — a plan may legitimately mix global setup/conclusion steps
+        # with part-grouped steps.
         if not strict_steps and ref_steps:
-            nums = sorted(n for _, n in ref_steps)
-            if nums != list(range(1, len(nums) + 1)):
-                issues.append(
-                    f"Rubric step numbers are not sequential from 1: {nums}. "
-                    "Number the steps 1, 2, 3, ... in order.")
+            by_part = {}
+            for part, num in ref_steps:
+                by_part.setdefault(part, []).append(num)
+            for part in sorted(by_part, key=lambda p: (p is None, p or "")):
+                nums = by_part[part]
+                if nums != list(range(1, len(nums) + 1)):
+                    label = f"Part ({part}) " if part else ""
+                    issues.append(
+                        f"Rubric {label}step numbers are not sequential from 1: {nums}. "
+                        "Number the steps 1, 2, 3, ... in order.")
+                    break
 
     # 4. Point sum: auto-fix ±1, larger diffs are issues.
     total = sum(int(p.get("points", 0) or 0) for p in pts)
@@ -1742,19 +1943,51 @@ def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
     success; raises the last exception if all attempts fail with an error.
     If verification keeps failing (not an exception), returns the last
     (solved, verdict) pair so the caller can flag it for manual review.
+
+    If the reasoning model returns empty responses twice in a row, the
+    remaining attempts fall back to the JSON-mode chat model (DEFAULT_MODEL),
+    which is far more reliable at producing parseable output.
+    (Bug 2026-10-09: Q2 of the 2023 AP FRQ got 3 straight empty responses.)
+    If DEFAULT_MODEL == REASONING_MODEL (env override), there is no distinct
+    fallback model; the loop then retries with a stronger explicit instruction
+    instead of switching.
     """
     last_exc = None
     solved, verdict = None, None
     retry_hint = ""
     prev_solution = None
+    # Resolve the model explicitly so generation and verification always use
+    # the same model, and the empty-response fallback below is testable.
+    use_model = REASONING_MODEL
+    empty_streak = 0
     for attempt in range(1, max_attempts + 1):
         try:
             solved = solve_and_rubric(question_text, max_score, q_label,
                                       image_paths=image_paths,
+                                      model=use_model,
                                       retry_hint=retry_hint)
-            verdict = verify_solution(question_text, solved["solution"])
+            verdict = verify_solution(question_text, solved["solution"],
+                                      model=use_model)
+            empty_streak = 0
+        except EmptyModelResponseError as e:
+            last_exc = e
+            empty_streak += 1
+            if empty_streak >= 2 and use_model != DEFAULT_MODEL:
+                use_model = DEFAULT_MODEL
+                retry_hint = (
+                    f"Attempt {attempt} raised an error: {e}. "
+                    "Switching to a more reliable model — output ONLY "
+                    "the requested JSON object, no extra text."
+                )
+            else:
+                retry_hint = (
+                    f"Attempt {attempt} returned an empty response. "
+                    "You MUST output the requested JSON object — no empty replies."
+                )
+            continue
         except Exception as e:  # noqa: BLE001
             last_exc = e
+            empty_streak = 0
             retry_hint = (
                 f"Attempt {attempt} raised an error: {e}. "
                 "This may have been transient — try again carefully."
