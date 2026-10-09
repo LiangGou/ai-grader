@@ -1823,8 +1823,21 @@ def retry_solve_question(question_text, max_score, q_label="", model="o3",
             f"{verdict.get('note', '')} Attempted solution: {solved['solution'][:500]}"
         )
 
-    if solved is None:
-        raise last_exc or RuntimeError("All retry attempts failed.")
+    if solved is None or verdict is None:
+        # Bug 2026-10-09 (E2E v3 Q2/Q4): if solve succeeded but verify raised
+        # on every attempt, solved is not None while verdict is None — the old
+        # `solved is None` check missed it and verdict["verdict"] below raised
+        # TypeError, surfacing as Server 500 on manual retry.
+        # Raise RetryExhaustedError (not the raw last_exc) so the API route
+        # returns a clean ok:false instead of HTTP 500 for this expected
+        # failure mode.
+        raise RetryExhaustedError(
+            f"AI could not solve this question after {max_attempts} attempts."
+            + (f" Last error: {last_exc}" if last_exc else "")) from last_exc
+    if not isinstance(verdict, dict) or "verdict" not in verdict:
+        # Malformed verdict would raise KeyError below → 500. Fail cleanly.
+        raise RetryExhaustedError(
+            f"Verification returned malformed result: {verdict!r}")
     verified = "yes" if verdict["verdict"] == "confirmed" else "review"
     criteria = "; ".join(
         f"{p.get('points', 1)} pt: {p.get('for', '')}"
@@ -1947,6 +1960,11 @@ def _check_ap_output(solution, ap_points, max_score, strict_steps=True):
 
 class SolveFailedError(RuntimeError):
     """AI solving failed after all retry attempts."""
+    pass
+
+
+class RetryExhaustedError(RuntimeError):
+    """Manual question retry exhausted all attempts without a usable result."""
     pass
 
 

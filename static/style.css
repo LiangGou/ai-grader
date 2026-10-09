@@ -280,23 +280,25 @@ label {
 }
 
 .btn-primary {
-  color: #fff;
-  background: var(--primary);
+  color: var(--primary);
+  background: var(--surface);
   border-color: var(--primary);
-  box-shadow: 0 1px 2px rgba(47, 43, 127, 0.22), 0 4px 12px rgba(99, 91, 255, 0.18);
+  border-width: 1.5px;
+  box-shadow: var(--shadow-xs);
 }
 
 .btn-primary:hover {
-  color: #fff;
-  background: var(--primary-hover);
+  color: var(--primary-hover);
+  background: var(--primary-soft);
   border-color: var(--primary-hover);
-  box-shadow: 0 2px 4px rgba(47, 43, 127, 0.2), 0 6px 16px rgba(99, 91, 255, 0.22);
+  box-shadow: var(--shadow-sm);
 }
 
 .btn-primary:active {
-  background: var(--primary-active);
+  color: var(--primary-active);
+  background: var(--primary-soft);
   border-color: var(--primary-active);
-  box-shadow: 0 1px 2px rgba(47, 43, 127, 0.2);
+  box-shadow: none;
 }
 
 .btn-small {

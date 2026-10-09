@@ -2444,6 +2444,84 @@ def test_solve_retries_returns_last_pair_when_all_incorrect(errors):
     print("  done")
 
 
+def test_retry_solve_question_raises_when_verify_always_raises(errors):
+    """retry_solve_question must raise RetryExhaustedError (not TypeError on
+    None verdict, not raw ValueError) when solve succeeds but verify raises
+    on every attempt.
+
+    Bug 2026-10-09 (E2E v3 Q2/Q4): manual retry returned Server 500 because
+    verdict was None and verdict["verdict"] raised TypeError. Same root cause
+    as the _solve_with_retries bug, in the retry endpoint's helper.
+    The API route maps RetryExhaustedError to HTTP 200 + ok:false (not 500).
+    """
+    print("Testing retry_solve_question raises when verify always raises...")
+    import grader
+    from unittest.mock import patch
+
+    def fake_solve(question_text, max_score, q_label="", image_paths=None,
+                   model=None, **kw):
+        return {"solution": "Step 1: work. Answer: 42.",
+                "ap_points": [], "notes": ""}
+
+    def fake_verify(question_text, solution, model=None, **kw):
+        raise ValueError("verify boom")
+
+    with patch.object(grader, "solve_and_rubric", side_effect=fake_solve), \
+         patch.object(grader, "verify_solution", side_effect=fake_verify):
+        try:
+            grader.retry_solve_question("Q?", 5, "Q1", max_attempts=2)
+        except grader.RetryExhaustedError as e:
+            # The original cause must be chained for debugging.
+            if not isinstance(e.__cause__, ValueError):
+                errors.append(
+                    f"RetryExhaustedError should chain the verify error, got {e.__cause__!r}")
+            print("  done")
+            return
+        except TypeError as e:
+            errors.append(f"must not raise TypeError (None verdict): {e}")
+            print("  done")
+            return
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"unexpected {type(e).__name__}: {e}")
+            print("  done")
+            return
+    errors.append("should have raised RetryExhaustedError when verify always fails")
+    print("  done")
+
+
+def test_retry_question_route_returns_200_not_500(errors):
+    """POST /api/retry_question must return HTTP 200 (not 500) with ok:false
+    when the AI exhausts retries. The frontend shows data.error gracefully;
+    a 500 shows the confusing 'Server returned 500' message."""
+    print("Testing retry_question route returns 200 on exhaustion...")
+    import os
+    os.environ.setdefault("FLASK_SECRET_KEY", "test-secret-" + "x" * 32)
+    os.environ.setdefault("GRADER_PASSWORD", "test-grader-pass-123")
+    os.environ.setdefault("ADMIN_PASSWORD", "test-admin-pass-123")
+    import app as app_module
+    import grader
+    from unittest.mock import patch
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "teacher", "password": "test-admin-pass-123"})
+
+    def fake_retry(*args, **kwargs):
+        raise grader.RetryExhaustedError("AI could not solve this question after 3 attempts.")
+
+    with patch.object(grader, "retry_solve_question", side_effect=fake_retry):
+        resp = client.post("/api/retry_question", json={
+            "assignment_id": 1, "q": "Q1",
+            "question_text": "What is 2+2?", "max_score": 5,
+        })
+    if resp.status_code != 200:
+        errors.append(f"expected HTTP 200, got {resp.status_code}")
+    data = resp.get_json() or {}
+    if data.get("ok") is not False:
+        errors.append(f"expected ok:false, got {data!r}")
+    if "could not solve" not in data.get("error", ""):
+        errors.append(f"expected helpful error message, got {data.get('error')!r}")
+    print("  done")
+
+
 def test_digitize_uses_large_token_budget(errors):
     """digitize_example must allow enough tokens for many full FRQ pages.
 
@@ -2520,6 +2598,8 @@ def main():
     test_solve_retries_no_stale_pair(errors)
     test_solve_retries_malformed_verdict_raises(errors)
     test_solve_retries_returns_last_pair_when_all_incorrect(errors)
+    test_retry_solve_question_raises_when_verify_always_raises(errors)
+    test_retry_question_route_returns_200_not_500(errors)
     test_digitize_uses_large_token_budget(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)

@@ -354,6 +354,11 @@ def api_retry_question():
             model=model, high_effort=high_effort,
             image_paths=image_paths or None,
         )
+    except grader.RetryExhaustedError as e:
+        # Expected failure mode (AI could not solve after retries) — return
+        # ok:false with HTTP 200 so the frontend shows the message instead of
+        # "Server returned 500". (Bug 2026-10-09, E2E v3 Q2/Q4.)
+        return jsonify({"ok": False, "error": str(e)}), 200
     except Exception as e:  # noqa: BLE001
         return jsonify({"ok": False, "error": f"Retry failed: {e}"}), 500
     return jsonify({"ok": True, "result": result})
