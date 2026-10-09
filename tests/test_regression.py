@@ -2258,6 +2258,230 @@ def test_sticky_bar_css_padding(errors):
     print("  done")
 
 
+def test_solve_retries_raises_when_verify_always_raises(errors):
+    """_solve_with_retries must raise SolveFailedError (not return None verdict)
+    when verify raises on every attempt after successful solves.
+
+    Bug 2026-10-09 (E2E v2 Q1): solve succeeded but verify raised 3 times;
+    the function returned (solved, None), crashing the caller on
+    verdict["verdict"] with 'NoneType' object is not subscriptable.
+    """
+    print("Testing solve_retries raises when verify always raises...")
+    import grader
+    from unittest.mock import patch
+
+    def fake_solve(question_text, max_score, q_label="", image_paths=None,
+                   model=None, **kw):
+        return {"solution": "Step 1: work. Step 2: more work. Answer: 42.",
+                "ap_points": [{"points": 2, "for": "Step 1: setup"},
+                              {"points": 3, "for": "Step 2: compute"}],
+                "notes": ""}
+
+    def fake_verify(question_text, solution, model=None, **kw):
+        raise ValueError("verify boom")
+
+    with patch.object(grader, "solve_and_rubric", side_effect=fake_solve), \
+         patch.object(grader, "verify_solution", side_effect=fake_verify):
+        try:
+            result = grader._solve_with_retries("Q?", 5, "Q1", max_attempts=2)
+        except grader.SolveFailedError as e:
+            # The original cause must be chained for debugging.
+            if not isinstance(e.__cause__, ValueError):
+                errors.append(
+                    f"SolveFailedError should chain the verify error, got {e.__cause__!r}")
+            print("  done")
+            return
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"unexpected exception type: {type(e).__name__}: {e}")
+            print("  done")
+            return
+    errors.append(
+        f"should have raised SolveFailedError when verify always fails, got {result!r}")
+    print("  done")
+
+
+def test_solve_retries_note_none_duplicate(errors):
+    """Duplicate solution with note=None must not crash (dual-review 2026-10-09).
+
+    JSON null note + duplicate-solution branch used to raise TypeError outside
+    the try block, escaping _solve_with_retries entirely.
+    """
+    print("Testing solve_retries note=None duplicate...")
+    import grader
+    from unittest.mock import patch
+
+    def fake_solve(question_text, max_score, q_label="", image_paths=None,
+                   model=None, **kw):
+        return {"solution": "Step 1: work. Step 2: work. Answer: 42.",
+                "ap_points": [], "notes": ""}
+
+    def fake_verify(question_text, solution, model=None, **kw):
+        return {"verdict": "mismatch", "note": None}
+
+    with patch.object(grader, "solve_and_rubric", side_effect=fake_solve), \
+         patch.object(grader, "verify_solution", side_effect=fake_verify):
+        solved, verdict = grader._solve_with_retries("Q?", 5, "Q1", max_attempts=3)
+    if verdict.get("verdict") != "review":
+        errors.append(f"duplicate should yield review verdict, got {verdict!r}")
+    if "same answer twice" not in verdict.get("note", ""):
+        errors.append("review note should mention duplicate solution")
+    print("  done")
+
+
+def test_solve_retries_invalid_verdict_value_raises(errors):
+    """Verdict values outside the known vocabulary must raise SolveFailedError."""
+    print("Testing solve_retries invalid verdict value...")
+    import grader
+    from unittest.mock import patch
+
+    def fake_solve(question_text, max_score, q_label="", image_paths=None,
+                   model=None, **kw):
+        return {"solution": "Step 1: work. Answer: 42.", "ap_points": [], "notes": ""}
+
+    for bad in (None, "", "CONFIRMED", "correct", 42):
+        def fake_verify(question_text, solution, model=None, **kw):
+            return {"verdict": bad, "note": ""}
+
+        with patch.object(grader, "solve_and_rubric", side_effect=fake_solve), \
+             patch.object(grader, "verify_solution", side_effect=fake_verify):
+            try:
+                grader._solve_with_retries("Q?", 5, "Q1", max_attempts=2)
+            except grader.SolveFailedError:
+                continue
+            except Exception as e:  # noqa: BLE001
+                errors.append(
+                    f"verdict={bad!r}: unexpected {type(e).__name__}: {e}")
+                continue
+            errors.append(f"verdict={bad!r} should raise SolveFailedError")
+    print("  done")
+
+
+def test_solve_retries_no_stale_pair(errors):
+    """A solution must never be paired with another attempt's verdict.
+
+    Dual-review finding (2026-10-09): attempt 1 solve→S1 verify→V1(incorrect),
+    attempts 2-3 solve→S2/S3 but verify raises. Must return (S1, V1) — never
+    (S2, V1) or (S3, V1).
+    """
+    print("Testing solve_retries no stale verdict pairing...")
+    import grader
+    from unittest.mock import patch
+    calls = {"n": 0}
+
+    def fake_solve(question_text, max_score, q_label="", image_paths=None,
+                   model=None, **kw):
+        calls["n"] += 1
+        return {"solution": f"Solution attempt {calls['n']}. Step 1: work. Answer: 42.",
+                "ap_points": [], "notes": ""}
+
+    def fake_verify(question_text, solution, model=None, **kw):
+        if "attempt 1" in solution:
+            return {"verdict": "mismatch", "note": "wrong"}
+        raise ValueError("verify boom")
+
+    with patch.object(grader, "solve_and_rubric", side_effect=fake_solve), \
+         patch.object(grader, "verify_solution", side_effect=fake_verify):
+        solved, verdict = grader._solve_with_retries("Q?", 5, "Q1", max_attempts=3)
+    if "attempt 1" not in solved["solution"]:
+        errors.append(f"returned solution not from attempt 1: {solved['solution'][:40]}")
+    if verdict.get("verdict") != "mismatch":
+        errors.append(f"returned verdict not from attempt 1: {verdict!r}")
+    print("  done")
+
+
+def test_solve_retries_malformed_verdict_raises(errors):
+    """A malformed verdict dict (missing 'verdict') must raise, not crash caller."""
+    print("Testing solve_retries malformed verdict...")
+    import grader
+    from unittest.mock import patch
+
+    def fake_solve(question_text, max_score, q_label="", image_paths=None,
+                   model=None, **kw):
+        return {"solution": "Step 1: work. Answer: 42.", "ap_points": [], "notes": ""}
+
+    def fake_verify(question_text, solution, model=None, **kw):
+        return {"error": "oops"}  # no "verdict" key
+
+    with patch.object(grader, "solve_and_rubric", side_effect=fake_solve), \
+         patch.object(grader, "verify_solution", side_effect=fake_verify):
+        try:
+            grader._solve_with_retries("Q?", 5, "Q1", max_attempts=2)
+        except grader.SolveFailedError:
+            print("  done")
+            return
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"unexpected exception type: {type(e).__name__}: {e}")
+            print("  done")
+            return
+    errors.append("malformed verdict should raise SolveFailedError")
+    print("  done")
+
+
+def test_solve_retries_returns_last_pair_when_all_incorrect(errors):
+    """All attempts verified-but-not-confirmed (no exceptions) must RETURN the
+    last pair for manual review — not raise."""
+    print("Testing solve_retries returns last pair when all incorrect...")
+    import grader
+    from unittest.mock import patch
+    calls = {"n": 0}
+
+    def fake_solve(question_text, max_score, q_label="", image_paths=None,
+                   model=None, **kw):
+        calls["n"] += 1
+        return {"solution": f"Attempt {calls['n']} solution. Step 1: work. Answer: {calls['n']}.",
+                "ap_points": [], "notes": ""}
+
+    def fake_verify(question_text, solution, model=None, **kw):
+        return {"verdict": "mismatch", "note": "nope"}
+
+    with patch.object(grader, "solve_and_rubric", side_effect=fake_solve), \
+         patch.object(grader, "verify_solution", side_effect=fake_verify):
+        solved, verdict = grader._solve_with_retries("Q?", 5, "Q1", max_attempts=3)
+    if "Attempt 3" not in solved["solution"]:
+        errors.append("should return the LAST attempt's solution")
+    if verdict.get("verdict") != "mismatch":
+        errors.append("should return the last verdict for review")
+    print("  done")
+
+
+def test_digitize_uses_large_token_budget(errors):
+    """digitize_example must allow enough tokens for many full FRQ pages.
+
+    Bug 2026-10-09 (E2E v2): 6 FRQ pages with max_tokens=4096 detected only
+    3/6 questions. Bumped to 12000 and prompt now states the image count.
+    """
+    print("Testing digitize token budget...")
+    import grader
+    from unittest.mock import patch
+    seen = {}
+
+    def fake_chat(system, user_content, max_tokens=None, model=None, **kw):
+        seen["max_tokens"] = max_tokens
+        seen["model"] = model
+        seen["content"] = user_content
+        # user_content[0] is the text prompt; check image count is stated.
+        seen["prompt"] = user_content[0]["text"] if isinstance(
+            user_content[0], dict) else user_content[0]
+        return {"questions": []}
+
+    with patch.object(grader, "_chat_json", side_effect=fake_chat), \
+         patch.object(grader, "_data_url", return_value="data:image/png;base64,x"):
+        grader.digitize_example(["a.png", "b.png", "c.png"])
+    if seen.get("max_tokens", 0) < 8192:
+        errors.append(
+            f"digitize max_tokens too small for multi-page exams: "
+            f"{seen.get('max_tokens')}")
+    if "3 photo(s)" not in seen.get("prompt", ""):
+        errors.append("digitize prompt should state the image count")
+    if "Do not invent" not in seen.get("prompt", ""):
+        errors.append("digitize prompt should forbid inventing questions")
+    labels = [c.get("text", "") for c in seen.get("content", [])
+              if isinstance(c, dict) and c.get("type") == "text"]
+    if not any("Photo 1 of 3" in t for t in labels):
+        errors.append("digitize should label each photo (Photo i of n)")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -2290,6 +2514,13 @@ def main():
     test_solve_retries_empty_through_real_helpers(errors)
     test_validate_question_generated_solution_all_paths(errors)
     test_sticky_bar_css_padding(errors)
+    test_solve_retries_raises_when_verify_always_raises(errors)
+    test_solve_retries_note_none_duplicate(errors)
+    test_solve_retries_invalid_verdict_value_raises(errors)
+    test_solve_retries_no_stale_pair(errors)
+    test_solve_retries_malformed_verdict_raises(errors)
+    test_solve_retries_returns_last_pair_when_all_incorrect(errors)
+    test_digitize_uses_large_token_budget(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)

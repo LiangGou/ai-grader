@@ -1060,19 +1060,30 @@ def digitize_example(image_paths, hint=None):
     """
     if not image_paths:
         raise RuntimeError("No example photos received. Please take or upload a reference example first.")
-    text = "These photos show the teacher's reference example (a hand-graded paper, answer key, or scoring guide). Digitize every question, its reference solution, and the grading rubric."
+    n = len(image_paths)
+    text = (
+        "These photos show the teacher's reference example (a hand-graded paper, answer key, or scoring guide). "
+        f"There are {n} photo(s). Digitize every question, its reference solution, and the grading rubric. "
+        "IMPORTANT: examine EVERY photo carefully — a question may appear on any photo. "
+        "Do not stop early; transcribe ALL questions from ALL photos. "
+        "Do not invent or reconstruct questions that are not visibly present. "
+        "A photo may be a divider, cover, or blank page — skip it rather than fabricating content."
+    )
     if hint:
         text += f"\n\nIMPORTANT CORRECTION HINT for this retry: {hint} Look at the photos again very carefully and fix the transcription."
     user_content = [{"type": "text", "text": text}]
-    for p in image_paths:
+    for i, p in enumerate(image_paths):
+        user_content.append({"type": "text", "text": f"Photo {i + 1} of {n}:"})
         user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
     data = None
     last_err = None
     # Retry on malformed JSON (gpt-5.6-sol occasionally emits bad escapes,
     # 2026-10-08). Don't let one bad response kill the whole rubric build.
+    # max_tokens raised 4096 -> 12000 on 2026-10-09: 6 full AP FRQ pages did
+    # not fit in 4096 tokens (E2E v2 detected only 3/6 questions).
     for attempt in range(3):
         try:
-            data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=4096,
+            data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=12000,
                               model="gpt-5.6-sol")
             break
         except Exception as e:  # noqa: BLE001
@@ -1934,15 +1945,23 @@ def _check_ap_output(solution, ap_points, max_score, strict_steps=True):
     return pts, issues
 
 
+class SolveFailedError(RuntimeError):
+    """AI solving failed after all retry attempts."""
+    pass
+
+
 def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
                        max_attempts=3):
     """Solve + verify with up to `max_attempts` tries.
 
     Each retry includes the previous attempt's error/verification note in the
     prompt so the model can correct itself. Returns (solved, verdict) on
-    success; raises the last exception if all attempts fail with an error.
+    success; raises SolveFailedError if no verified pair was produced.
     If verification keeps failing (not an exception), returns the last
     (solved, verdict) pair so the caller can flag it for manual review.
+
+    Solved/verdict pairs are committed atomically per attempt — a solution is
+    never paired with another attempt's verdict (bug 2026-10-09, E2E v2 Q1).
 
     If the reasoning model returns empty responses twice in a row, the
     remaining attempts fall back to the JSON-mode chat model (DEFAULT_MODEL),
@@ -1953,21 +1972,46 @@ def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
     instead of switching.
     """
     last_exc = None
-    solved, verdict = None, None
+    last_pair = None  # last atomically-committed (solved, verdict)
     retry_hint = ""
     prev_solution = None
+    if max_attempts < 1:
+        raise SolveFailedError(
+            f"max_attempts must be >= 1, got {max_attempts}.")
     # Resolve the model explicitly so generation and verification always use
     # the same model, and the empty-response fallback below is testable.
     use_model = REASONING_MODEL
     empty_streak = 0
     for attempt in range(1, max_attempts + 1):
         try:
-            solved = solve_and_rubric(question_text, max_score, q_label,
-                                      image_paths=image_paths,
-                                      model=use_model,
-                                      retry_hint=retry_hint)
-            verdict = verify_solution(question_text, solved["solution"],
-                                      model=use_model)
+            candidate = solve_and_rubric(question_text, max_score, q_label,
+                                         image_paths=image_paths,
+                                         model=use_model,
+                                         retry_hint=retry_hint)
+            solution_text = candidate.get("solution") \
+                if isinstance(candidate, dict) else None
+            if not isinstance(solution_text, str) or not solution_text.strip():
+                raise SolveFailedError(
+                    "Solution generation produced no usable string solution.")
+            candidate_verdict = verify_solution(question_text, solution_text,
+                                                model=use_model)
+            if not isinstance(candidate_verdict, dict):
+                raise SolveFailedError(
+                    "Solution verification returned a non-object result: "
+                    f"{candidate_verdict!r}")
+            verdict_value = candidate_verdict.get("verdict")
+            if verdict_value not in ("confirmed", "incorrect", "review",
+                                     "mismatch", "unsure"):
+                raise SolveFailedError(
+                    "Solution verification returned invalid verdict: "
+                    f"{verdict_value!r}")
+            # Normalize note: JSON null / non-string must not crash the
+            # duplicate-solution branch below (dual-review 2026-10-09).
+            note_text = candidate_verdict.get("note")
+            if note_text is None:
+                note_text = ""
+            elif not isinstance(note_text, str):
+                note_text = str(note_text)
             empty_streak = 0
         except EmptyModelResponseError as e:
             last_exc = e
@@ -1975,7 +2019,7 @@ def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
             if empty_streak >= 2 and use_model != DEFAULT_MODEL:
                 use_model = DEFAULT_MODEL
                 retry_hint = (
-                    f"Attempt {attempt} raised an error: {e}. "
+                    f"Attempt {attempt} raised an error: {str(e)[:300]}. "
                     "Switching to a more reliable model — output ONLY "
                     "the requested JSON object, no extra text."
                 )
@@ -1989,31 +2033,38 @@ def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
             last_exc = e
             empty_streak = 0
             retry_hint = (
-                f"Attempt {attempt} raised an error: {e}. "
+                f"Attempt {attempt} raised an error: {str(e)[:300]}. "
                 "This may have been transient — try again carefully."
             )
             continue
-        if verdict["verdict"] == "confirmed":
-            return solved, verdict
+        # Atomic commit: candidate and candidate_verdict are from the SAME
+        # attempt. Never pair a solution with another attempt's verdict.
+        last_pair = (candidate, candidate_verdict)
+        if verdict_value == "confirmed":
+            return candidate, candidate_verdict
         # If the model produced the exact same solution twice, retrying is
         # pointless — stop early and let the teacher review.
-        cur = (solved["solution"] or "").strip()
+        cur = solution_text.strip()
         if prev_solution is not None and cur == prev_solution:
-            verdict = {"verdict": "review",
-                       "note": (verdict.get("note", "") +
-                                " (Model produced the same answer twice; further retries unlikely to help.)").strip()}
+            review_verdict = {
+                "verdict": "review",
+                "note": (note_text +
+                         " (Model produced the same answer twice; further "
+                         "retries unlikely to help.)").strip()}
+            last_pair = (candidate, review_verdict)
             break
         prev_solution = cur
         # Verification failed: feed the discrepancy back for the next attempt.
         retry_hint = (
             f"Attempt {attempt} produced a solution, but independent verification "
-            f"did NOT confirm it ({verdict['verdict']}): {verdict.get('note', '')} "
-            f"The attempted solution was: {solved['solution'][:500]}"
+            f"did NOT confirm it ({verdict_value}): {note_text} "
+            f"The attempted solution was: {solution_text[:500]}"
         )
     # All attempts exhausted.
-    if last_exc is not None and solved is None:
-        raise last_exc
-    return solved, verdict
+    if last_pair is not None:
+        return last_pair
+    raise SolveFailedError(
+        f"AI solving failed after {max_attempts} attempts.") from last_exc
 
 
 
