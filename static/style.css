@@ -1094,3 +1094,24 @@ code {
     animation-iteration-count: 1 !important;
   }
 }
+.btn-row {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.btn-row .file-label {
+  flex: 1;
+  min-width: 140px;
+  max-width: 220px;
+}
+.btn-row .btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  font-size: 16px;
+  font-weight: 600;
+}
