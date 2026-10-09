@@ -690,6 +690,14 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
         except Exception:
             pass
         return None
+    # Postgres mode: store diagram in DB (Render disk is ephemeral).
+    try:
+        import db as _db
+        if _db.USE_POSTGRES:
+            with open(out_path, "rb") as f:
+                _db.save_image(name, f.read(), "image/png")
+    except Exception:
+        pass
     return {"kind": "image", "url": f"/uploads/{name}", "validated": True, "validation_note": reason}
 
 

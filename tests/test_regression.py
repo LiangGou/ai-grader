@@ -1890,6 +1890,22 @@ def test_upload_db_path_helpers(errors):
     print("  done")
 
 
+def test_diagram_stored_in_db_postgres_mode(errors):
+    """Generated diagrams must be stored in DB when USE_POSTGRES.
+
+    Bug 2026-10-08: _generate_diagram saved to local disk only.
+    On Render (ephemeral disk), the file vanished and the graph never displayed.
+    """
+    print("Testing diagram DB storage...")
+    import grader
+    import inspect
+    src = inspect.getsource(grader._generate_diagram)
+    # Must contain DB storage logic for Postgres mode
+    if "USE_POSTGRES" not in src or "save_image" not in src:
+        errors.append("_generate_diagram does not store to DB in Postgres mode")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -1910,6 +1926,7 @@ def main():
     test_q_placeholder_conversion(errors)
     test_graph_keywords_trigger_diagram(errors)
     test_upload_db_path_helpers(errors)
+    test_diagram_stored_in_db_postgres_mode(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)
