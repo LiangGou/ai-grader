@@ -1976,6 +1976,34 @@ def test_grade_name_optional(errors):
     print("  done")
 
 
+def test_file_inputs_accessible(errors):
+    """File inputs must not use `hidden` attr (blocks browser automation).
+
+    Bug 2026-10-08: browser E2E test could not target hidden file inputs.
+    They now use .file-input-accessible CSS (visually hidden, still in a11y tree).
+    """
+    print("Testing file inputs accessible...")
+    import re
+    for tmpl in ["templates/assignment.html", "templates/grade.html"]:
+        with open(f"/home/hatch/workspace/ai-grader/{tmpl}") as f:
+            html = f.read()
+        # No file input should have the `hidden` attribute
+        hidden_inputs = re.findall(r'<input type="file"[^>]* hidden[^>]*>', html)
+        if hidden_inputs:
+            errors.append(f"{tmpl}: {len(hidden_inputs)} file input(s) still use `hidden` attr")
+        # All file inputs should have the accessible class
+        file_inputs = re.findall(r'<input type="file"[^>]*>', html)
+        for inp in file_inputs:
+            if "file-input-accessible" not in inp:
+                errors.append(f"{tmpl}: file input missing .file-input-accessible: {inp[:60]}")
+    # CSS class must exist
+    with open("/home/hatch/workspace/ai-grader/static/style.css") as f:
+        css = f.read()
+    if ".file-input-accessible" not in css:
+        errors.append("style.css missing .file-input-accessible")
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -2000,6 +2028,7 @@ def main():
     test_regenerate_rubric_includes_graph(errors)
     test_extract_student_name_exists(errors)
     test_grade_name_optional(errors)
+    test_file_inputs_accessible(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)
