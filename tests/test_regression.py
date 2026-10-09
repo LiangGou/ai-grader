@@ -2004,6 +2004,33 @@ def test_file_inputs_accessible(errors):
     print("  done")
 
 
+def test_verify_generates_solution_when_missing(errors):
+    """Verify generates a solution when reference_solution is empty.
+
+    Bug 2026-10-08: workflow returned "unsure" for blank questions instead
+    of generating an answer first, then verifying.
+    """
+    print("Testing verify generates solution when missing...")
+    import grader
+    # Mock _chat_json to return a fake solution
+    orig = grader._chat_json
+    def mock_chat_json(system, user_content, max_tokens=None, model=None, **kw):
+        return {"solution": "Step 1: Do this. Step 2: Do that. Answer: 42."}
+    grader._chat_json = mock_chat_json
+    try:
+        result = grader.verify_solution(
+            question_text="What is 6*7?",
+            reference_solution="",  # Empty - should trigger generation
+            criteria="",
+        )
+        # Should NOT return "unsure" with "No question text or reference solution"
+        if result.get("verdict") == "unsure" and "reference solution" in result.get("note", "").lower():
+            errors.append("verify_solution still returns unsure for empty solution instead of generating")
+    finally:
+        grader._chat_json = orig
+    print("  done")
+
+
 def main():
     quick = "--quick" in sys.argv
     errors = []
@@ -2029,6 +2056,7 @@ def main():
     test_extract_student_name_exists(errors)
     test_grade_name_optional(errors)
     test_file_inputs_accessible(errors)
+    test_verify_generates_solution_when_missing(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)

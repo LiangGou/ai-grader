@@ -925,8 +925,23 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
     image_paths: original photos for OCR error checking — when verification
     fails, the model can re-examine the handwriting (user req 2026-10-07).
     """
-    if not (question_text or "").strip() or not (reference_solution or "").strip():
-        return {"verdict": "unsure", "note": "No question text or reference solution to validate."}
+    if not (question_text or "").strip():
+        return {"verdict": "unsure", "note": "No question text to validate."}
+    # If no reference solution (blank questions), generate one first, then verify.
+    # (User req 2026-10-08: workflow must generate answers when missing.)
+    if not (reference_solution or "").strip():
+        try:
+            gen = _chat_json(
+                "You are an expert calculus teacher. Solve the problem completely, showing every step.",
+                [{"type": "text", "text": f"Solve this problem step by step:\n\n{question_text}"}],
+                max_tokens=2000,
+                model="gpt-5.6-sol",
+            )
+            reference_solution = gen.get("solution", "") if isinstance(gen, dict) else str(gen)
+            if not reference_solution.strip():
+                return {"verdict": "unsure", "note": "Could not generate a solution for verification."}
+        except Exception as e:
+            return {"verdict": "unsure", "note": f"Solution generation failed: {e}"}
     user_msg = (
         f"Question:\n{question_text}\n\n"
         f"Teacher's reference solution (transcribed from photo):\n{reference_solution}"
