@@ -2489,20 +2489,66 @@ def test_retry_solve_question_raises_when_verify_always_raises(errors):
     print("  done")
 
 
+def test_retry_solve_question_no_stale_pair(errors):
+    """If attempt 1 produces a valid pair but attempt 2's verify raises, the
+    result must be attempt 1's complete pair — not attempt 2's solved paired
+    with attempt 1's stale verdict.
+    (GPT review 2026-10-09 High: atomic solved/verdict pairing.)"""
+    print("Testing retry_solve_question has no stale solved/verdict pair...")
+    import grader
+    from unittest.mock import patch
+    calls = {"n": 0}
+
+    def fake_solve(question_text, max_score, q_label="", image_paths=None,
+                   model=None, **kw):
+        calls["n"] += 1
+        return {"solution": f"Attempt {calls['n']} solution.",
+                "ap_points": [], "notes": ""}
+
+    def fake_verify(question_text, solution, model=None, **kw):
+        # Attempt 1: returns a valid (non-confirmed) verdict.
+        # Attempt 2: raises.
+        if "Attempt 1" in solution:
+            return {"verdict": "mismatch", "note": "wrong"}
+        raise ValueError("verify boom on attempt 2")
+
+    with patch.object(grader, "solve_and_rubric", side_effect=fake_solve), \
+         patch.object(grader, "verify_solution", side_effect=fake_verify):
+        try:
+            result = grader.retry_solve_question("Q?", 5, "Q1", max_attempts=2)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"should return attempt 1 pair, not raise: {e}")
+            print("  done")
+            return
+    # Must be attempt 1's solution (not a stale mismatch).
+    if "Attempt 1" not in result.get("solution", ""):
+        errors.append(
+            f"expected attempt 1 solution, got {result.get('solution')!r}")
+    print("  done")
+
+
 def test_retry_question_route_returns_200_not_500(errors):
     """POST /api/retry_question must return HTTP 200 (not 500) with ok:false
     when the AI exhausts retries. The frontend shows data.error gracefully;
     a 500 shows the confusing 'Server returned 500' message."""
     print("Testing retry_question route returns 200 on exhaustion...")
     import os
-    os.environ.setdefault("FLASK_SECRET_KEY", "test-secret-" + "x" * 32)
-    os.environ.setdefault("GRADER_PASSWORD", "test-grader-pass-123")
-    os.environ.setdefault("ADMIN_PASSWORD", "test-admin-pass-123")
+    import importlib
+    # Use direct assignment (not setdefault): the test must control the
+    # passwords, and app.py reads them at import time. Reload to pick them up.
+    os.environ["FLASK_SECRET_KEY"] = "test-secret-" + "x" * 32
+    os.environ["GRADER_PASSWORD"] = "test-grader-pass-123"
+    os.environ["ADMIN_PASSWORD"] = "test-admin-pass-123"
     import app as app_module
+    importlib.reload(app_module)
     import grader
     from unittest.mock import patch
     client = app_module.app.test_client()
-    client.post("/login", data={"username": "teacher", "password": "test-admin-pass-123"})
+    login_resp = client.post("/login", data={"username": "teacher", "password": "test-admin-pass-123"})
+    if login_resp.status_code != 302:
+        errors.append(f"test login failed, got {login_resp.status_code}")
+        print("  done")
+        return
 
     def fake_retry(*args, **kwargs):
         raise grader.RetryExhaustedError("AI could not solve this question after 3 attempts.")
@@ -2517,7 +2563,7 @@ def test_retry_question_route_returns_200_not_500(errors):
     data = resp.get_json() or {}
     if data.get("ok") is not False:
         errors.append(f"expected ok:false, got {data!r}")
-    if "could not solve" not in data.get("error", ""):
+    if "could not solve this question" not in data.get("error", ""):
         errors.append(f"expected helpful error message, got {data.get('error')!r}")
     print("  done")
 
@@ -2599,6 +2645,7 @@ def main():
     test_solve_retries_malformed_verdict_raises(errors)
     test_solve_retries_returns_last_pair_when_all_incorrect(errors)
     test_retry_solve_question_raises_when_verify_always_raises(errors)
+    test_retry_solve_question_no_stale_pair(errors)
     test_retry_question_route_returns_200_not_500(errors)
     test_digitize_uses_large_token_budget(errors)
     # gpt-5.6-sol generated tests (no API calls)

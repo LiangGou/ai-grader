@@ -1786,8 +1786,11 @@ def retry_solve_question(question_text, max_score, q_label="", model="o3",
     prev_solution = None
     for attempt in range(1, max_attempts + 1):
         solve_debug, verify_debug = [], []
+        # Reset per-attempt: a failed attempt must not leave a stale solved/
+        # verdict pair from a previous attempt (GPT review 2026-10-09 High).
+        attempt_solved, attempt_verdict = None, None
         try:
-            solved = solve_and_rubric(
+            attempt_solved = solve_and_rubric(
                 question_text, max_score, q_label,
                 image_paths=image_paths, model=use_model,
                 reasoning_effort=effort, _debug=solve_debug,
@@ -1796,12 +1799,19 @@ def retry_solve_question(question_text, max_score, q_label="", model="o3",
                 phase = d.get("phase", "solve")
                 debug.append({"step": f"{phase} (try {attempt})", "model": d["model"],
                               "effort": d["effort"], "raw": d["raw"]})
-            verdict = verify_solution(question_text, solved["solution"],
+            attempt_verdict = verify_solution(question_text, attempt_solved["solution"],
                                       model=use_model, reasoning_effort=effort,
                                       _debug=verify_debug)
             for d in verify_debug:
                 debug.append({"step": f"verify (try {attempt})", "model": d["model"],
                               "effort": d["effort"], "raw": d["raw"]})
+            # Validate verdict shape immediately (not post-loop) so malformed
+            # results are retried, not treated as success (GPT review Medium).
+            if not isinstance(attempt_verdict, dict) or "verdict" not in attempt_verdict:
+                raise ValueError(
+                    f"Verification returned malformed result: {attempt_verdict!r}")
+            # Publish as an atomic pair only on full success.
+            solved, verdict = attempt_solved, attempt_verdict
         except Exception as e:  # noqa: BLE001
             last_exc = e
             debug.append({"step": f"solve (try {attempt})", "model": use_model,
@@ -1825,19 +1835,17 @@ def retry_solve_question(question_text, max_score, q_label="", model="o3",
 
     if solved is None or verdict is None:
         # Bug 2026-10-09 (E2E v3 Q2/Q4): if solve succeeded but verify raised
-        # on every attempt, solved is not None while verdict is None — the old
-        # `solved is None` check missed it and verdict["verdict"] below raised
+        # on every attempt, the old code missed the None verdict and raised
         # TypeError, surfacing as Server 500 on manual retry.
         # Raise RetryExhaustedError (not the raw last_exc) so the API route
         # returns a clean ok:false instead of HTTP 500 for this expected
-        # failure mode.
+        # failure mode. Verdict shape is validated inside the loop, so a
+        # non-None verdict here is guaranteed to have the "verdict" key.
+        # The original error is chained (not in the message) to avoid leaking
+        # internal details to the client (Claude review M2).
         raise RetryExhaustedError(
-            f"AI could not solve this question after {max_attempts} attempts."
-            + (f" Last error: {last_exc}" if last_exc else "")) from last_exc
-    if not isinstance(verdict, dict) or "verdict" not in verdict:
-        # Malformed verdict would raise KeyError below → 500. Fail cleanly.
-        raise RetryExhaustedError(
-            f"Verification returned malformed result: {verdict!r}")
+            f"AI could not solve this question after {max_attempts} attempts. "
+            "Please try again or review manually.") from last_exc
     verified = "yes" if verdict["verdict"] == "confirmed" else "review"
     criteria = "; ".join(
         f"{p.get('points', 1)} pt: {p.get('for', '')}"
