@@ -4,3 +4,4 @@ python-dotenv>=1.0
 Pillow>=10.0
 gunicorn>=21.0
 psycopg2-binary
+matplotlib>=3.8

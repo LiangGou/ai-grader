@@ -390,14 +390,19 @@ def api_regenerate_rubric():
     # Generate diagram if the question needs one (user requirement 2026-10-08:
     # "有图的你要画图" - questions mentioning graph/sketch must have diagrams).
     graph = None
+    graph_error = ""
     try:
         q_for_graph = {"question_text": question_text,
                        "reference_solution": reference_solution,
                        "has_diagram": False, "diagram_hint": ""}
         graph = grader._process_graph(q_for_graph, [], UPLOAD_DIR)
-    except Exception:
-        pass
-    return jsonify({"ok": True, "criteria": criteria, "graph": graph})
+        if graph is None:
+            graph_error = "process_graph returned None (no diagram needed or generation failed)"
+    except Exception as e:
+        graph_error = f"{type(e).__name__}: {e}"
+        import traceback
+        traceback.print_exc()
+    return jsonify({"ok": True, "criteria": criteria, "graph": graph, "graph_error": graph_error})
 
 
 @app.route("/assignment/<int:assignment_id>/upload_rubric_example", methods=["POST"])
