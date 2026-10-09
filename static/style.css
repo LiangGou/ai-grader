@@ -9,15 +9,22 @@
   --text-muted: #71717a;
   --border: #e4e4e7;
   --border-strong: #d4d4d8;
-  --primary: #635bff;
-  --primary-hover: #554df1;
-  --primary-active: #4840db;
-  --primary-soft: #f0efff;
+  --primary: #554dde;
+  --primary-hover: #4438ca;
+  --primary-active: #3a30b8;
+  --primary-soft: #f5f3ff;
+  --secondary-text: #344054;
+  --secondary-text-hover: #1d2939;
+  --secondary-border: #667085;
+  --secondary-border-hover: #475467;
+  --secondary-soft: #f9fafb;
   --success: #16875d;
   --success-soft: #ecfdf5;
   --warning: #9a6700;
   --warning-soft: #fff8e6;
-  --danger: #dc3e42;
+  --danger: #b42318;
+  --danger-hover: #912018;
+  --danger-soft: #fef3f2;
   --danger-soft: #fff1f2;
   --shadow-xs: 0 1px 2px rgba(24, 24, 27, 0.04);
   --shadow-sm: 0 1px 3px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.04);
@@ -246,9 +253,9 @@ label {
   vertical-align: -0.125em;
 }
   padding: 10px 16px;
-  color: var(--text);
+  color: var(--secondary-text);
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1.5px solid var(--secondary-border);
   border-radius: 10px;
   box-shadow: var(--shadow-xs);
   font-size: 15px;
@@ -263,8 +270,9 @@ label {
 }
 
 .btn:hover {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
+  color: var(--secondary-text-hover);
+  background: var(--secondary-soft);
+  border-color: var(--secondary-border-hover);
   box-shadow: var(--shadow-sm);
 }
 
@@ -301,8 +309,32 @@ label {
   box-shadow: none;
 }
 
+/* Destructive actions: red outline (GPT 5.6 design 2026-10-09). */
+.btn-danger {
+  color: var(--danger);
+  background: var(--surface);
+  border-color: var(--danger);
+  border-width: 1.5px;
+  box-shadow: var(--shadow-xs);
+}
+
+.btn-danger:hover {
+  color: var(--danger-hover);
+  background: var(--danger-soft);
+  border-color: var(--danger-hover);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-danger:active {
+  color: var(--danger-hover);
+  background: var(--danger-soft);
+  border-color: var(--danger-hover);
+  box-shadow: none;
+}
+
 .btn-small {
-  min-height: 36px;
+  min-height: 44px;
+  min-width: 44px;
   padding: 7px 11px;
   border-radius: 8px;
   font-size: 13px;

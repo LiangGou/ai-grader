@@ -225,5 +225,27 @@ if (canRetryMatch) {
   check("finishGenerate checks empty before save (C1)", checkBeforeSave, true);
 })();
 
+// GPT 5.6 design 2026-10-09: unified color theme.
+// Primary actions (Create, Generate Rubric) use btn-primary (purple).
+// Destructive actions use btn-danger (red). Secondary uses btn (neutral).
+(function () {
+  console.log("color theme consistency:");
+  const css = fs.readFileSync(path.join(__dirname, "..", "static", "style.css"), "utf8");
+  // Primary color meets WCAG AA (darker than old #635bff).
+  check("primary is #554dde", css.includes("--primary: #554dde"), true);
+  // btn-danger class exists with red tokens.
+  check("btn-danger defined", css.includes(".btn-danger"), true);
+  check("danger is #b42318", css.includes("--danger: #b42318"), true);
+  // btn-small keeps 44px touch target.
+  const smallMatch = css.match(/\.btn-small\s*\{[^}]*min-height:\s*44px/);
+  check("btn-small min-height 44px", !!smallMatch, true);
+  // Templates: Create buttons use btn-primary.
+  const indexHtml = fs.readFileSync(path.join(__dirname, "..", "templates", "index.html"), "utf8");
+  check("Create uses btn-primary", indexHtml.includes('class="btn btn-primary">Create<'), true);
+  check("Create & Set Up Rubric uses btn-primary", indexHtml.includes('class="btn btn-primary">Create &amp; Set Up Rubric<'), true);
+  // Delete uses btn-danger.
+  check("delete uses btn-danger", indexHtml.includes("btn-danger"), true);
+})();
+
 console.log(failures === 0 ? "\nAll frontend tests passed!" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
