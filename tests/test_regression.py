@@ -1791,6 +1791,8 @@ def test_digitize_retry_on_bad_json(errors):
     (Fixed 2026-10-09: the old version never reached _chat_json because
     _data_url raised FileNotFoundError on the fake path first, so the retry
     logic was never exercised and the test always failed.)
+    (Updated 2026-10-09: if all 3 attempts return 0 questions, raises
+    RuntimeError instead of silently returning [].)
     """
     print("Testing digitize retry...")
     import grader
@@ -1803,13 +1805,16 @@ def test_digitize_retry_on_bad_json(errors):
         return {"questions": []}
     with patch.object(grader, "_chat_json", side_effect=fake_chat), \
          patch.object(grader, "_data_url", return_value="data:image/jpeg;base64,x"):
-        result = grader.digitize_example(["/tmp/fake.jpg"])
+        try:
+            result = grader.digitize_example(["/tmp/fake.jpg"])
+            errors.append(f"should raise RuntimeError on 0 questions, got {result}")
+        except RuntimeError as e:
+            if "0 questions" not in str(e):
+                errors.append(f"wrong error message: {e}")
     if calls["n"] != 3:
         errors.append(
             f"digitize_example should call _chat_json 3 times (2 retries), "
             f"got {calls['n']}")
-    if result != []:
-        errors.append(f"digitize_example should return [] questions, got {result}")
     print("  done")
 
 
@@ -2568,6 +2573,34 @@ def test_retry_question_route_returns_200_not_500(errors):
     print("  done")
 
 
+def test_digitize_retries_on_zero_questions(errors):
+    """digitize_example must retry when the model returns 0 questions.
+
+    Bug 2026-10-09 (E2E v5): 3 consecutive runs returned 0 questions for
+    valid FRQ pages. The model may skip blank pages; retry with stronger hint.
+    """
+    print("Testing digitize retries on zero questions...")
+    import grader
+    from unittest.mock import patch
+    calls = {"n": 0}
+
+    def fake_chat(system, user_content, max_tokens=None, model=None, **kw):
+        calls["n"] += 1
+        # First 2 calls return 0 questions, 3rd returns 1.
+        if calls["n"] < 3:
+            return {"questions": []}
+        return {"questions": [{"q": "Q1", "question_text": "Test?", "max_score": 5}]}
+
+    with patch.object(grader, "_chat_json", side_effect=fake_chat), \
+         patch.object(grader, "_data_url", return_value="data:image/png;base64,x"):
+        result = grader.digitize_example(["a.png"])
+    if len(result) != 1:
+        errors.append(f"expected 1 question after retry, got {len(result)}")
+    if calls["n"] != 3:
+        errors.append(f"expected 3 attempts, got {calls['n']}")
+    print("  done")
+
+
 def test_digitize_uses_large_token_budget(errors):
     """digitize_example must allow enough tokens for many full FRQ pages.
 
@@ -2590,7 +2623,10 @@ def test_digitize_uses_large_token_budget(errors):
 
     with patch.object(grader, "_chat_json", side_effect=fake_chat), \
          patch.object(grader, "_data_url", return_value="data:image/png;base64,x"):
-        grader.digitize_example(["a.png", "b.png", "c.png"])
+        try:
+            grader.digitize_example(["a.png", "b.png", "c.png"])
+        except RuntimeError:
+            pass  # Expected: 0 questions after 3 retries raises
     if seen.get("max_tokens", 0) < 8192:
         errors.append(
             f"digitize max_tokens too small for multi-page exams: "
@@ -2648,6 +2684,7 @@ def main():
     test_retry_solve_question_no_stale_pair(errors)
     test_retry_question_route_returns_200_not_500(errors)
     test_digitize_uses_large_token_budget(errors)
+    test_digitize_retries_on_zero_questions(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)

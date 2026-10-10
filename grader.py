@@ -1061,36 +1061,68 @@ def digitize_example(image_paths, hint=None):
     if not image_paths:
         raise RuntimeError("No example photos received. Please take or upload a reference example first.")
     n = len(image_paths)
-    text = (
-        "These photos show the teacher's reference example (a hand-graded paper, answer key, or scoring guide). "
-        f"There are {n} photo(s). Digitize every question, its reference solution, and the grading rubric. "
+    # Base prompt (immutable — retry hints are appended per-attempt, not cumulatively).
+    base_text = (
+        "These photos show the teacher's reference example. "
+        f"There are {n} photo(s). "
+        "Digitize every question, its reference solution (if shown), and the grading rubric. "
         "IMPORTANT: examine EVERY photo carefully — a question may appear on any photo. "
         "Do not stop early; transcribe ALL questions from ALL photos. "
-        "Do not invent or reconstruct questions that are not visibly present. "
-        "A photo may be a divider, cover, or blank page — skip it rather than fabricating content."
+        "Page types: (1) PRINTED QUESTION PAGE (has question text, may or may not have handwriting) — "
+        "ALWAYS digitize these, even with no markings (leave reference_solution empty). "
+        "(2) TRULY BLANK PAGE (no printed content at all, e.g. back of sheet) — skip. "
+        "(3) Divider/cover/instructions page — skip. "
+        "Do not invent questions that are not visibly printed. "
+        "Do not infer text that is not visible."
     )
     if hint:
-        text += f"\n\nIMPORTANT CORRECTION HINT for this retry: {hint} Look at the photos again very carefully and fix the transcription."
-    user_content = [{"type": "text", "text": text}]
+        base_text += f"\n\nIMPORTANT CORRECTION HINT for this retry: {hint} Look at the photos again very carefully and fix the transcription."
+    # Build image parts once (immutable).
+    image_parts = []
     for i, p in enumerate(image_paths):
-        user_content.append({"type": "text", "text": f"Photo {i + 1} of {n}:"})
-        user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
+        image_parts.append({"type": "text", "text": f"Photo {i + 1} of {n}:"})
+        image_parts.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
     data = None
     last_err = None
     # Retry on malformed JSON (gpt-5.6-sol occasionally emits bad escapes,
     # 2026-10-08). Don't let one bad response kill the whole rubric build.
     # max_tokens raised 4096 -> 12000 on 2026-10-09: 6 full AP FRQ pages did
     # not fit in 4096 tokens (E2E v2 detected only 3/6 questions).
+    # Bug 2026-10-09 (E2E v5): 3 runs returned 0 questions. Retry with a
+    # non-absolute hint (gives model an escape hatch, avoids hallucination).
+    ZERO_Q_HINT = (
+        "\n\nYour previous answer contained 0 questions. Re-examine every image carefully. "
+        "If ANY printed question text is visible (even with no handwriting), include it. "
+        "If the images truly contain no questions, return {\"questions\": []}."
+    )
     for attempt in range(3):
+        # Build prompt from base each time (not cumulative).
+        attempt_text = base_text if attempt == 0 else base_text + ZERO_Q_HINT
+        user_content = [{"type": "text", "text": attempt_text}] + image_parts
         try:
             data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=12000,
                               model="gpt-5.6-sol")
-            break
+            questions = data.get("questions") if isinstance(data, dict) else None
+            # Validate: must be a list (not just truthy).
+            if not isinstance(questions, list):
+                last_err = RuntimeError(
+                    f"Vision model returned invalid 'questions': {type(questions).__name__}")
+                continue
+            if questions:
+                break
+            # Empty list: retry (unless this was the last attempt).
+            last_err = RuntimeError("Model returned 0 questions")
+            continue
         except Exception as e:  # noqa: BLE001
             last_err = e
             continue
     if data is None:
         raise RuntimeError(f"Digitization failed after 3 attempts: {last_err}")
+    # If all attempts returned 0 questions, raise (don't silently return empty).
+    final_q = data.get("questions") if isinstance(data, dict) else None
+    if not final_q:
+        raise RuntimeError(
+            f"Digitization found 0 questions after 3 attempts: {last_err}")
     questions = []
     for it in data.get("questions", []):
         try:
