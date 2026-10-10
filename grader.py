@@ -1052,79 +1052,86 @@ def _process_graph(question, image_paths, upload_dir):
     return None
 
 
-def digitize_example(image_paths, hint=None):
-    """Vision pass: transcribe the example into per-question data.
+def _digitize_single_photo(image_path, photo_idx, total_photos, hint=None):
+    """Digitize questions from a single photo.
 
-    Returns a list of {q, question_text, reference_solution, max_score, criteria}.
-    `hint` (optional) is appended when retrying, e.g. to flag a misread solution.
+    Per-photo extraction (2026-10-09): passing 6 images in one vision call
+    yields nondeterministic detection (3/6, 4/6, 0/6 observed in E2E).
+    One photo per call is far more reliable; results are merged by caller.
+    Returns a list of {q, question_text, reference_solution, max_score, criteria, ...,
+    source_photo}.
     """
-    if not image_paths:
-        raise RuntimeError("No example photos received. Please take or upload a reference example first.")
-    n = len(image_paths)
-    # Base prompt (immutable — retry hints are appended per-attempt, not cumulatively).
     base_text = (
-        "These photos show the teacher's reference example. "
-        f"There are {n} photo(s). "
-        "Digitize every question, its reference solution (if shown), and the grading rubric. "
-        "IMPORTANT: examine EVERY photo carefully — a question may appear on any photo. "
-        "Do not stop early; transcribe ALL questions from ALL photos. "
+        "This photo shows the teacher's reference example (hand-graded paper, answer key, "
+        "scoring guide, OR blank printed questions — digitize the questions anyway). "
+        f"This is photo {photo_idx + 1} of {total_photos}. "
+        "Digitize every question visible in THIS photo, its reference solution (if shown), "
+        "and the grading rubric. "
         "Page types: (1) PRINTED QUESTION PAGE (has question text, may or may not have handwriting) — "
         "ALWAYS digitize these, even with no markings (leave reference_solution empty). "
-        "(2) TRULY BLANK PAGE (no printed content at all, e.g. back of sheet) — skip. "
-        "(3) Divider/cover/instructions page — skip. "
+        "(2) TRULY BLANK PAGE (no printed content at all) — return empty questions. "
+        "(3) Divider/cover/instructions page — return empty questions. "
         "Do not invent questions that are not visibly printed. "
         "Do not infer text that is not visible."
     )
     if hint:
-        base_text += f"\n\nIMPORTANT CORRECTION HINT for this retry: {hint} Look at the photos again very carefully and fix the transcription."
-    # Build image parts once (immutable).
-    image_parts = []
-    for i, p in enumerate(image_paths):
-        image_parts.append({"type": "text", "text": f"Photo {i + 1} of {n}:"})
-        image_parts.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
+        base_text += f"\n\nIMPORTANT CORRECTION HINT: {hint}"
+    user_content = [
+        {"type": "text", "text": base_text},
+        {"type": "image_url", "image_url": {"url": _data_url(image_path)}},
+    ]
+    # Empty-retry hint: if model returns [], retry once with stronger prompt.
+    # (Review 2026-10-09: silently accepting [] hides partial detection failures.)
+    EMPTY_RETRY_HINT = (
+        "\n\nYour previous answer had 0 questions. Look again very carefully — "
+        "if ANY printed question text is visible in this photo, include it. "
+        "Only return empty if the photo truly has no questions (blank/divider/cover)."
+    )
     data = None
     last_err = None
-    # Retry on malformed JSON (gpt-5.6-sol occasionally emits bad escapes,
-    # 2026-10-08). Don't let one bad response kill the whole rubric build.
-    # max_tokens raised 4096 -> 12000 on 2026-10-09: 6 full AP FRQ pages did
-    # not fit in 4096 tokens (E2E v2 detected only 3/6 questions).
-    # Bug 2026-10-09 (E2E v5): 3 runs returned 0 questions. Retry with a
-    # non-absolute hint (gives model an escape hatch, avoids hallucination).
-    ZERO_Q_HINT = (
-        "\n\nYour previous answer contained 0 questions. Re-examine every image carefully. "
-        "If ANY printed question text is visible (even with no handwriting), include it. "
-        "If the images truly contain no questions, return {\"questions\": []}."
-    )
-    for attempt in range(3):
-        # Build prompt from base each time (not cumulative).
-        attempt_text = base_text if attempt == 0 else base_text + ZERO_Q_HINT
-        user_content = [{"type": "text", "text": attempt_text}] + image_parts
+    attempt_content = user_content
+    for attempt in range(4):
         try:
-            data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, user_content, max_tokens=12000,
+            data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, attempt_content, max_tokens=12000,
                               model="gpt-5.6-sol")
             questions = data.get("questions") if isinstance(data, dict) else None
-            # Validate: must be a list (not just truthy).
             if not isinstance(questions, list):
                 last_err = RuntimeError(
                     f"Vision model returned invalid 'questions': {type(questions).__name__}")
+                attempt_content = user_content  # reset on malformed
                 continue
             if questions:
                 break
-            # Empty list: retry (unless this was the last attempt).
-            last_err = RuntimeError("Model returned 0 questions")
-            continue
+            # Empty list.
+            if attempt < 2:
+                # Attempts 0-1: treat empty as transient, retry normally.
+                last_err = RuntimeError("Model returned 0 questions for photo")
+                continue
+            elif attempt == 2:
+                # Attempt 2 empty: one more try with stronger hint.
+                attempt_content = [
+                    {"type": "text", "text": base_text + EMPTY_RETRY_HINT},
+                    user_content[1],
+                ]
+                last_err = RuntimeError("Model returned 0 questions for photo")
+                continue
+            else:
+                # Attempt 3 (with hint) also empty — accept as blank/divider.
+                break
         except Exception as e:  # noqa: BLE001
             last_err = e
+            attempt_content = user_content  # reset on exception
             continue
     if data is None:
-        raise RuntimeError(f"Digitization failed after 3 attempts: {last_err}")
-    # If all attempts returned 0 questions, raise (don't silently return empty).
-    final_q = data.get("questions") if isinstance(data, dict) else None
-    if not final_q:
         raise RuntimeError(
-            f"Digitization found 0 questions after 3 attempts: {last_err}")
+            f"Digitization failed for photo {photo_idx + 1} after 3 attempts: {last_err}")
+    return _normalize_questions(data.get("questions", []), source_photo=photo_idx)
+
+
+def _normalize_questions(raw_questions, source_photo=None):
+    """Normalize raw question dicts from the vision model."""
     questions = []
-    for it in data.get("questions", []):
+    for it in raw_questions:
         try:
             ms = float(it.get("max_score", 0))
         except (TypeError, ValueError):
@@ -1139,8 +1146,94 @@ def digitize_example(image_paths, hint=None):
                 "has_diagram": bool(it.get("has_diagram", False)),
                 "diagram_hint": str(it.get("diagram_hint", "")).strip(),
                 "graph": it.get("graph") if isinstance(it.get("graph"), dict) else None,
+                "source_photo": source_photo,
             }
         )
+    return questions
+
+
+def _merge_questions(per_photo_results):
+    """Merge per-photo question lists.
+
+    Duplicate 'q' labels from ADJACENT photos are concatenated (question spans
+    multiple photos). Duplicates from NON-adjacent photos are kept as separate
+    entries with disambiguated labels (sections may restart numbering).
+    (Review 2026-10-09: keep-longer silently drops content.)
+    """
+    merged = []  # list of question dicts in order
+    label_to_indices = {}  # label -> list of indices in merged
+    for photo_idx, photo_questions in enumerate(per_photo_results):
+        for q in photo_questions:
+            label = q.get("q", "").strip()
+            if not label:
+                label = f"__unlabeled_p{photo_idx}"
+            if label in label_to_indices:
+                # Check if any existing entry with this label came from an adjacent photo.
+                adjacent_idx = None
+                for mi in label_to_indices[label]:
+                    existing = merged[mi]
+                    esp = existing.get("source_photo")
+                    # source_photo may be int or list (after concatenation).
+                    photos = esp if isinstance(esp, list) else [esp]
+                    if any(isinstance(p, int) and abs(p - photo_idx) <= 1 for p in photos):
+                        adjacent_idx = mi
+                        break
+                if adjacent_idx is not None:
+                    # Concatenate: question spans photos.
+                    existing = merged[adjacent_idx]
+                    existing["question_text"] = (
+                        existing["question_text"].rstrip() + "\n" +
+                        q.get("question_text", "").lstrip()
+                    )
+                    # Merge reference_solution too if new has content.
+                    if q.get("reference_solution", "").strip():
+                        if existing.get("reference_solution", "").strip():
+                            existing["reference_solution"] += "\n" + q["reference_solution"]
+                        else:
+                            existing["reference_solution"] = q["reference_solution"]
+                    # Track all source photos.
+                    sp = existing.get("source_photo")
+                    if isinstance(sp, list):
+                        if photo_idx not in sp:
+                            sp.append(photo_idx)
+                    else:
+                        existing["source_photo"] = sorted(
+                            {sp, photo_idx} if sp is not None else {photo_idx})
+                else:
+                    # Non-adjacent duplicate: keep separate with disambiguated label.
+                    new_label = f"{label} (photo {photo_idx + 1})"
+                    q = dict(q)
+                    q["q"] = new_label
+                    label_to_indices.setdefault(new_label, []).append(len(merged))
+                    merged.append(q)
+            else:
+                label_to_indices.setdefault(label, []).append(len(merged))
+                merged.append(q)
+    return merged
+
+
+def digitize_example(image_paths, hint=None):
+    """Vision pass: transcribe the example into per-question data.
+
+    Returns a list of {q, question_text, reference_solution, max_score, criteria}.
+    `hint` (optional) is appended when retrying, e.g. to flag a misread solution.
+
+    Per-photo pipeline (2026-10-09): each photo is digitized with its own
+    vision call, then results are merged. One 6-image call gave nondeterministic
+    detection (3/6, 4/6, 0/6 in E2E); per-photo is far more reliable.
+    """
+    if not image_paths:
+        raise RuntimeError("No example photos received. Please take or upload a reference example first.")
+    n = len(image_paths)
+    per_photo = []
+    for i, p in enumerate(image_paths):
+        qs = _digitize_single_photo(p, i, n, hint=hint)
+        per_photo.append(qs)
+    questions = _merge_questions(per_photo)
+    if not questions:
+        raise RuntimeError(
+            f"Digitization found 0 questions across {n} photo(s). "
+            "Please check the photos show printed questions.")
     return questions
 
 

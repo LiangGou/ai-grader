@@ -1765,7 +1765,7 @@ def test_digitize_uses_gpt56(errors):
     print("Testing digitize model...")
     import grader
     import inspect
-    for fn_name in ("digitize_example", "transcribe_questions_only"):
+    for fn_name in ("_digitize_single_photo", "transcribe_questions_only"):
         src_code = inspect.getsource(getattr(grader, fn_name))
         if 'model="gpt-5.6-sol"' not in src_code:
             errors.append(f"{fn_name} should use gpt-5.6-sol")
@@ -2574,38 +2574,89 @@ def test_retry_question_route_returns_200_not_500(errors):
 
 
 def test_digitize_retries_on_zero_questions(errors):
-    """digitize_example must retry when the model returns 0 questions.
+    """digitize_example must raise when ALL photos return 0 questions.
 
     Bug 2026-10-09 (E2E v5): 3 consecutive runs returned 0 questions for
-    valid FRQ pages. The model may skip blank pages; retry with stronger hint.
+    valid FRQ pages.
+    Per-photo pipeline (2026-10-09): empty from a single photo is OK
+    (blank/divider); only raise when every photo yields nothing.
     """
-    print("Testing digitize retries on zero questions...")
+    print("Testing digitize raises on all-zero questions...")
+    import grader
+    from unittest.mock import patch
+
+    def fake_chat(system, user_content, max_tokens=None, model=None, **kw):
+        return {"questions": []}
+
+    with patch.object(grader, "_chat_json", side_effect=fake_chat), \
+         patch.object(grader, "_data_url", return_value="data:image/png;base64,x"):
+        try:
+            grader.digitize_example(["a.png", "b.png"])
+            errors.append("should raise RuntimeError when all photos return 0 questions")
+        except RuntimeError as e:
+            if "0 questions" not in str(e):
+                errors.append(f"wrong error message: {e}")
+    print("  done")
+
+
+def test_digitize_per_photo_merges(errors):
+    """Per-photo pipeline: questions from multiple photos are merged.
+
+    Each photo gets its own vision call; results merge by question label.
+    """
+    print("Testing digitize per-photo merge...")
     import grader
     from unittest.mock import patch
     calls = {"n": 0}
 
     def fake_chat(system, user_content, max_tokens=None, model=None, **kw):
         calls["n"] += 1
-        # First 2 calls return 0 questions, 3rd returns 1.
-        if calls["n"] < 3:
+        # Photo 1 → Q1, Photo 2 → Q2 (different questions per photo).
+        q_num = calls["n"]
+        return {"questions": [{"q": f"Q{q_num}", "question_text": f"Question {q_num}?",
+                               "max_score": 9}]}
+
+    with patch.object(grader, "_chat_json", side_effect=fake_chat), \
+         patch.object(grader, "_data_url", return_value="data:image/png;base64,x"):
+        result = grader.digitize_example(["a.png", "b.png"])
+    if len(result) != 2:
+        errors.append(f"expected 2 merged questions, got {len(result)}")
+    if calls["n"] != 2:
+        errors.append(f"expected 2 vision calls (one per photo), got {calls['n']}")
+    labels = [q["q"] for q in result]
+    if labels != ["Q1", "Q2"]:
+        errors.append(f"wrong merged labels: {labels}")
+    print("  done")
+
+
+def test_digitize_single_photo_empty_ok(errors):
+    """A single blank photo returning [] must not fail the whole batch."""
+    print("Testing digitize tolerates blank photo...")
+    import grader
+    from unittest.mock import patch
+    calls = {"n": 0}
+
+    def fake_chat(system, user_content, max_tokens=None, model=None, **kw):
+        calls["n"] += 1
+        # Photo 1 blank, Photo 2 has Q1.
+        if calls["n"] == 1:
             return {"questions": []}
         return {"questions": [{"q": "Q1", "question_text": "Test?", "max_score": 5}]}
 
     with patch.object(grader, "_chat_json", side_effect=fake_chat), \
          patch.object(grader, "_data_url", return_value="data:image/png;base64,x"):
-        result = grader.digitize_example(["a.png"])
-    if len(result) != 1:
-        errors.append(f"expected 1 question after retry, got {len(result)}")
-    if calls["n"] != 3:
-        errors.append(f"expected 3 attempts, got {calls['n']}")
+        result = grader.digitize_example(["blank.png", "q1.png"])
+    if len(result) != 1 or result[0]["q"] != "Q1":
+        errors.append(f"blank photo should be skipped, got {result}")
     print("  done")
 
 
 def test_digitize_uses_large_token_budget(errors):
-    """digitize_example must allow enough tokens for many full FRQ pages.
+    """digitize_example must allow enough tokens for full FRQ pages.
 
     Bug 2026-10-09 (E2E v2): 6 FRQ pages with max_tokens=4096 detected only
-    3/6 questions. Bumped to 12000 and prompt now states the image count.
+    3/6 questions. Bumped to 12000.
+    Per-photo pipeline (2026-10-09): each photo gets its own vision call.
     """
     print("Testing digitize token budget...")
     import grader
@@ -2616,29 +2667,87 @@ def test_digitize_uses_large_token_budget(errors):
         seen["max_tokens"] = max_tokens
         seen["model"] = model
         seen["content"] = user_content
-        # user_content[0] is the text prompt; check image count is stated.
         seen["prompt"] = user_content[0]["text"] if isinstance(
             user_content[0], dict) else user_content[0]
-        return {"questions": []}
+        return {"questions": [{"q": "Q1", "question_text": "Test?", "max_score": 5}]}
 
     with patch.object(grader, "_chat_json", side_effect=fake_chat), \
          patch.object(grader, "_data_url", return_value="data:image/png;base64,x"):
-        try:
-            grader.digitize_example(["a.png", "b.png", "c.png"])
-        except RuntimeError:
-            pass  # Expected: 0 questions after 3 retries raises
+        grader.digitize_example(["a.png", "b.png", "c.png"])
     if seen.get("max_tokens", 0) < 8192:
         errors.append(
             f"digitize max_tokens too small for multi-page exams: "
             f"{seen.get('max_tokens')}")
-    if "3 photo(s)" not in seen.get("prompt", ""):
-        errors.append("digitize prompt should state the image count")
+    # Per-photo prompt states "photo X of Y" (last call was photo 3 of 3).
+    if "photo 3 of 3" not in seen.get("prompt", "").lower():
+        errors.append("digitize prompt should state photo position (photo X of Y)")
     if "Do not invent" not in seen.get("prompt", ""):
         errors.append("digitize prompt should forbid inventing questions")
-    labels = [c.get("text", "") for c in seen.get("content", [])
-              if isinstance(c, dict) and c.get("type") == "text"]
-    if not any("Photo 1 of 3" in t for t in labels):
-        errors.append("digitize should label each photo (Photo i of n)")
+    if seen.get("model") != "gpt-5.6-sol":
+        errors.append(f"digitize should use gpt-5.6-sol, got {seen.get('model')}")
+    print("  done")
+
+
+def test_merge_concatenates_adjacent_duplicates(errors):
+    """Same label on adjacent photos = question spans photos → concatenate."""
+    print("Testing merge concatenates adjacent...")
+    import grader
+    per_photo = [
+        [{"q": "Q3", "question_text": "Part (a) and (b).", "max_score": 9,
+          "reference_solution": "", "criteria": "", "source_photo": 0}],
+        [{"q": "Q3", "question_text": "Part (c) and (d).", "max_score": 9,
+          "reference_solution": "", "criteria": "", "source_photo": 1}],
+    ]
+    result = grader._merge_questions(per_photo)
+    if len(result) != 1:
+        errors.append(f"adjacent dup should merge to 1, got {len(result)}")
+    elif "Part (a)" not in result[0]["question_text"] or "Part (c)" not in result[0]["question_text"]:
+        errors.append(f"merged text should contain both parts: {result[0]['question_text'][:50]}")
+    print("  done")
+
+
+def test_merge_keeps_nonadjacent_duplicates(errors):
+    """Same label on non-adjacent photos = restarted numbering → keep both."""
+    print("Testing merge keeps non-adjacent...")
+    import grader
+    per_photo = [
+        [{"q": "Q1", "question_text": "Section A Q1.", "max_score": 5,
+          "reference_solution": "", "criteria": "", "source_photo": 0}],
+        [],
+        [{"q": "Q1", "question_text": "Section B Q1.", "max_score": 5,
+          "reference_solution": "", "criteria": "", "source_photo": 2}],
+    ]
+    result = grader._merge_questions(per_photo)
+    if len(result) != 2:
+        errors.append(f"non-adjacent dup should keep 2, got {len(result)}")
+    print("  done")
+
+
+def test_single_photo_empty_retries_once(errors):
+    """Empty single-photo result retries once with stronger hint before accepting."""
+    print("Testing single-photo empty retry...")
+    import grader
+    from unittest.mock import patch
+    calls = {"n": 0}
+    prompts = []
+
+    def fake_chat(system, user_content, max_tokens=None, model=None, **kw):
+        calls["n"] += 1
+        prompts.append(user_content[0]["text"])
+        if calls["n"] <= 3:
+            return {"questions": []}
+        return {"questions": [{"q": "Q1", "question_text": "Found on retry!", "max_score": 5}]}
+
+    with patch.object(grader, "_chat_json", side_effect=fake_chat), \
+         patch.object(grader, "_data_url", return_value="data:image/png;base64,x"):
+        result = grader._digitize_single_photo("a.png", 0, 1)
+    # Attempts 0,1,2 return []; attempt 3 (with hint) returns Q1.
+    if len(result) != 1 or result[0]["q"] != "Q1":
+        errors.append(f"expected Q1 after empty-retry, got {result}")
+    if calls["n"] != 4:
+        errors.append(f"expected 4 attempts (3 + 1 hinted), got {calls['n']}")
+    if not any("0 questions" in p for p in prompts[3:]):
+        errors.append("4th attempt should contain the empty-retry hint")
     print("  done")
 
 
@@ -2685,6 +2794,11 @@ def main():
     test_retry_question_route_returns_200_not_500(errors)
     test_digitize_uses_large_token_budget(errors)
     test_digitize_retries_on_zero_questions(errors)
+    test_digitize_per_photo_merges(errors)
+    test_digitize_single_photo_empty_ok(errors)
+    test_merge_concatenates_adjacent_duplicates(errors)
+    test_merge_keeps_nonadjacent_duplicates(errors)
+    test_single_photo_empty_retries_once(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)
