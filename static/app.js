@@ -779,7 +779,7 @@
           $("gradeBtn").disabled = false;
           if (!data.ok) {
             var eb = $("gradeError");
-            eb.textContent = "Grading failed: " + data.error;
+            eb.textContent = data.error;
             eb.style.display = "";
             return;
           }
