@@ -245,6 +245,8 @@ label {
   align-items: center;
   justify-content: center;
   gap: 7px;
+  border-style: solid;
+  border-width: 1.5px;
 }
 /* Thin-line SVG icons: keep them from shrinking in flex layouts and align
    with adjacent text (icon style unified 2026-10-09). */
