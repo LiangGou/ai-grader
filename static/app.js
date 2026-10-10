@@ -238,7 +238,7 @@
         '<input class="q" type="text" placeholder="Question" value="' + escapeHtml(item.q) + '">' +
         '<input class="ms" type="number" step="0.5" min="0" placeholder="Max pts" value="' + escapeHtml(item.max_score) + '">' +
         badge +
-        '<button type="button" class="btn btn-small row-del">' + icon('x', 14) + '</button>' +
+        '<button type="button" class="btn btn-small btn-danger row-del" aria-label="Delete this question">' + icon('x', 14) + '</button>' +
       '</div>' +
       '<label class="rubric-field"><span>Question (digitized)</span>' +
         '<textarea class="qt" rows="2" placeholder="Question text as read from the example">' + escapeHtml(item.question_text) + '</textarea>' +
@@ -485,7 +485,7 @@
         img.src = "/uploads/" + encodeURIComponent(ex.name);
         var del = document.createElement("button");
         del.type = "button";
-        del.className = "btn btn-small example-del";
+        del.className = "btn btn-small btn-danger example-del";
         del.innerHTML = icon('x', 14);
         del.title = "Delete this example";
         del.setAttribute("aria-label", "Delete this example");
@@ -718,7 +718,7 @@
         img.src = URL.createObjectURL(f);
         var del = document.createElement("button");
         del.type = "button";
-        del.className = "btn btn-small example-del";
+        del.className = "btn btn-small btn-danger example-del";
         del.innerHTML = icon('x', 14);
         del.title = "Remove this photo";
         del.setAttribute("aria-label", "Remove this photo");
