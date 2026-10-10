@@ -2903,6 +2903,14 @@ def main():
     test_assignment_delete_purges_diagram_images(errors)
     test_serialized_mutation_recovers_after_connect_failure(errors)
     test_assignment_delete_ignores_planted_cross_partition_urls(errors)
+    # Registered teachers (self-service signup, 2026-10-10).
+    test_teacher_registration(errors)
+    test_teacher_login_and_data_isolation(errors)
+    test_teacher_tier_limits_enforced(errors)
+    test_teacher_uses_owner_models(errors)
+    test_admin_teacher_management(errors)
+    test_teacher_registration_hardening(errors)
+    test_teacher_partition_keyed_by_id(errors)
     test_budget_checker_enforces_public_cap(errors)
     test_assignment_delete_purges_images(errors)
     # gpt-5.6-sol generated tests (no API calls)
@@ -3291,8 +3299,8 @@ def test_public_extract_name_blocked(errors):
         errors.append(f"public extract_name should be 403, got {r.status_code}")
     if m.called:
         errors.append("extract_student_name must not run for the public role")
-    if "demo account" not in (r.get_json() or {}).get("error", "").lower():
-        errors.append(f"expected demo-account message, got {(r.get_json() or {}).get('error')!r}")
+    if "limited accounts" not in (r.get_json() or {}).get("error", "").lower():
+        errors.append(f"expected limited-account message, got {(r.get_json() or {}).get('error')!r}")
     print("  done")
 
 
@@ -4723,10 +4731,392 @@ def test_assignment_delete_purges_images(errors):
     print("  done")
 
 
+# ---------------------------------------------------------------------------
+# Registered teachers (self-service signup, 2026-10-10).
+# ---------------------------------------------------------------------------
+
+def _setup_teacher_test_app(errors):
+    """Import app with teacher signup available; return (app, db) or None."""
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return None
+    app_module, db_module = setup
+    # The shared test DB accumulates signup counters across runs; reset them.
+    db_module.reset_rate_limits("register:127.0.0.1")
+    db_module.reset_rate_limits("register")
+    # ... and test users (usernames must be unique).
+    conn = db_module._connect()
+    cur = conn.cursor()
+    for _u in ("alice_teach", "bob_teach", "carol_teach", "alice_iso",
+               "bob_iso", "carol_lim", "dave_mod", "erin_adm", "dbg_teach",
+               "dbg2_teach", "frank_long", "grace_ok", "henry_ok",
+               "ivan_part"):
+        cur.execute(db_module._q("DELETE FROM users WHERE username = ?"), (_u,))
+        _row = cur.execute(db_module._q("SELECT id FROM users WHERE username = ?"),
+                             (_u,)).fetchone()
+        if _row:
+            _uid = _row[0] if isinstance(_row, tuple) else _row["id"]
+            cur.execute(db_module._q("DELETE FROM classes WHERE owner = ?"),
+                        (f"teacher:{_uid}",))
+    conn.commit()
+    conn.close()
+    return setup
+
+
+def _register_teacher(client, username, password="test-teacher-pass-123"):
+    return client.post("/register", data={
+        "username": username, "password": password, "confirm": password})
+
+
+def test_teacher_registration(errors):
+    """Self-service signup: valid, duplicate, reserved, weak inputs."""
+    print("Testing teacher registration...")
+    setup = _setup_teacher_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    client = app_module.app.test_client()
+    # Valid registration redirects to the login page (no auto-login: a
+    # cross-site forged signup must not drop the victim into an
+    # attacker-known account).
+    r = _register_teacher(client, "alice_teach")
+    if r.status_code != 302 or "/login" not in (r.headers.get("Location") or ""):
+        errors.append(f"valid registration should redirect to login, got {r.status_code}")
+    u = db_module.get_user_by_username("alice_teach")
+    if not u:
+        errors.append("registered teacher not found in users table")
+    elif u["password_hash"] == "test-teacher-pass-123" or "test-teacher-pass" in u["password_hash"]:
+        errors.append("password stored in plaintext")
+    if u and u["tier"] != "free":
+        errors.append(f"new teacher should be on free tier, got {u['tier']}")
+    # Duplicate username rejected.
+    r2 = _register_teacher(client, "alice_teach")
+    if r2.status_code != 200 or b"taken" not in r2.data:
+        errors.append("duplicate username should be rejected")
+    # Reserved names rejected.
+    for reserved in ("teacher", "admin", "public"):
+        r3 = _register_teacher(client, reserved)
+        if r3.status_code != 200 or b"reserved" not in r3.data:
+            errors.append(f"reserved username {reserved!r} should be rejected")
+        if db_module.get_user_by_username(reserved):
+            errors.append(f"reserved username {reserved!r} was created")
+    # Bad usernames rejected.
+    for bad in ("ab", "UPPER", "has space", "semi;colon", "a" * 33):
+        r4 = _register_teacher(client, bad)
+        if r4.status_code != 200:
+            errors.append(f"bad username {bad!r} should be rejected with 200, got {r4.status_code}")
+    # Short password rejected.
+    db_module.reset_rate_limits("register:127.0.0.1")
+    r5 = client.post("/register", data={
+        "username": "bob_teach", "password": "short", "confirm": "short"})
+    if r5.status_code != 200 or b"12-256" not in r5.data:
+        errors.append("short password should be rejected")
+    # Mismatched confirm rejected.
+    r6 = client.post("/register", data={
+        "username": "carol_teach", "password": "test-teacher-pass-123",
+        "confirm": "different-pass-123"})
+    if r6.status_code != 200 or b"do not match" not in r6.data:
+        errors.append("mismatched password confirm should be rejected")
+    # Register page reachable without login.
+    r7 = client.get("/register")
+    if r7.status_code != 200 or b"Teacher sign up" not in r7.data:
+        errors.append("register page should render without login")
+    print("  done")
+
+
+def test_teacher_login_and_data_isolation(errors):
+    """Teachers log in, see only their own partition; owner sees none of it."""
+    print("Testing teacher login and data isolation...")
+    setup = _setup_teacher_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    for name in ("alice_iso", "bob_iso"):
+        _register_teacher(app_module.app.test_client(), name)
+    alice = app_module.app.test_client()
+    alice.post("/login", data={"username": "alice_iso",
+                               "password": "test-teacher-pass-123"})
+    bob = app_module.app.test_client()
+    bob.post("/login", data={"username": "bob_iso",
+                             "password": "test-teacher-pass-123"})
+    # Alice creates a class; Bob must not see it.
+    ra = alice.post("/class/new", data={"name": "Alice Class"})
+    if ra.status_code != 302:
+        errors.append(f"teacher class creation failed, got {ra.status_code}")
+    rb = bob.get("/")
+    if b"Alice Class" in rb.data:
+        errors.append("teacher B can see teacher A's class")
+    # Bob cannot open Alice's class page (403).
+    alice_uid = db_module.get_user_by_username("alice_iso")["id"]
+    alice_cid = next(c["id"] for c in db_module.list_classes(f"teacher:{alice_uid}"))
+    alice_aid = db_module.create_assignment(alice_cid, "Alice Assignment")
+    r403 = bob.get(f"/assignment/{alice_aid}")
+    if r403.status_code != 403:
+        errors.append(f"cross-teacher assignment access should be 403, got {r403.status_code}")
+    # Owner (tester) cannot see teacher data either.
+    owner = app_module.app.test_client()
+    owner.post("/login", data={"username": "teacher",
+                               "password": "test-grader-pass-123"})
+    ro = owner.get("/")
+    if b"Alice Class" in ro.data:
+        errors.append("owner can see teacher's class (partition leak)")
+    r403o = owner.get(f"/assignment/{alice_aid}")
+    if r403o.status_code != 403:
+        errors.append(f"owner access to teacher assignment should be 403, got {r403o.status_code}")
+    # Wrong password does not log in.
+    bad = app_module.app.test_client()
+    rb2 = bad.post("/login", data={"username": "alice_iso",
+                                   "password": "wrong-password-1"})
+    if rb2.status_code != 302:
+        pass  # expected: stays on login page
+    else:
+        errors.append("teacher login with wrong password should fail")
+    # Teachers cannot reach /settings.
+    rs = alice.get("/settings")
+    if rs.status_code != 403:
+        errors.append(f"teacher /settings should be 403, got {rs.status_code}")
+    print("  done")
+
+
+def test_teacher_tier_limits_enforced(errors):
+    """Per-teacher tier limits gate class creation and rate-limited ops."""
+    print("Testing teacher tier limits...")
+    setup = _setup_teacher_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    _register_teacher(app_module.app.test_client(), "carol_lim")
+    user = db_module.get_user_by_username("carol_lim")
+    # Shrink this teacher's limits to observable values.
+    db_module.set_user_limits(user["id"], {"max_classes": 1,
+                                           "max_grades_per_day": 0})
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "carol_lim",
+                                "password": "test-teacher-pass-123"})
+    r1 = client.post("/class/new", data={"name": "C1"})
+    if r1.status_code != 302:
+        errors.append(f"first class should succeed, got {r1.status_code}")
+    r2 = client.post("/class/new", data={"name": "C2"})
+    if r2.status_code != 429:
+        errors.append(f"second class should hit the tier cap (429), got {r2.status_code}")
+    # Grade op limit of 0 blocks grading immediately (helper-level: the route
+    # validates inputs before consuming quota, so exercise the limiter here).
+    with app_module.app.test_request_context("/"):
+        from flask import session as _flask_session
+        _flask_session["auth_v"] = app_module.AUTH_VERSION
+        _flask_session["role"] = "teacher"
+        _flask_session["user_id"] = user["id"]
+        _flask_session["username"] = "carol_lim"
+        err = app_module._limited_rate_limit_exceeded("grade")
+        if not err:
+            errors.append("max_grades_per_day=0 should block grading")
+    # Upgrade to pro: the caps lift (tier change clears overrides).
+    db_module.set_user_tier(user["id"], "pro")
+    r3 = client.post("/class/new", data={"name": "C2"})
+    if r3.status_code != 302:
+        errors.append(f"pro tier should allow more classes, got {r3.status_code}")
+    print("  done")
+
+
+def test_teacher_uses_owner_models(errors):
+    """Registered teachers are not forced onto the public demo model."""
+    print("Testing teacher model policy...")
+    setup = _setup_teacher_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    _register_teacher(app_module.app.test_client(), "dave_mod")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "dave_mod",
+                                "password": "test-teacher-pass-123"})
+    with client.session_transaction() as sess:
+        assert sess.get("role") == "teacher"
+    # The ContextVar role for a teacher is the owner partition, not "public":
+    # _chat_json must not force PUBLIC_MODEL, and _reasoning_model must
+    # return the configured reasoning model.
+    import grader as grader_module
+    dave_uid = db_module.get_user_by_username("dave_mod")["id"]
+    grader_module._set_current_role(f"teacher:{dave_uid}")
+    try:
+        if grader_module._reasoning_model() != grader_module.REASONING_MODEL:
+            errors.append("teacher should use the configured reasoning model")
+    finally:
+        grader_module._set_current_role("private")
+    print("  done")
+
+
+def test_admin_teacher_management(errors):
+    """Admin can list teachers, change tiers, and disable accounts."""
+    print("Testing admin teacher management...")
+    setup = _setup_teacher_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    _register_teacher(app_module.app.test_client(), "erin_adm")
+    admin = app_module.app.test_client()
+    admin.post("/login", data={"username": "teacher",
+                               "password": "test-admin-pass-123"})
+    # List page.
+    r = admin.get("/admin/teachers")
+    if r.status_code != 200 or b"erin_adm" not in r.data:
+        errors.append(f"admin teachers page should list teachers, got {r.status_code}")
+    # Non-admin cannot access.
+    teacher = app_module.app.test_client()
+    teacher.post("/login", data={"username": "erin_adm",
+                                 "password": "test-teacher-pass-123"})
+    if teacher.get("/admin/teachers").status_code != 403:
+        errors.append("teacher should get 403 on /admin/teachers")
+    # Change tier.
+    rt = admin.post("/admin/teachers/erin_adm/tier", data={"tier": "standard"})
+    if rt.status_code != 302:
+        errors.append(f"tier change should redirect, got {rt.status_code}")
+    if db_module.get_user_by_username("erin_adm")["tier"] != "standard":
+        errors.append("tier change did not persist")
+    # Invalid tier rejected.
+    rb = admin.post("/admin/teachers/erin_adm/tier", data={"tier": "nope"})
+    if rb.status_code != 400:
+        errors.append(f"invalid tier should be 400, got {rb.status_code}")
+    # Save overrides.
+    rl = admin.post("/admin/teachers/erin_adm/limits",
+                    data={"max_grades_per_day": "7", "daily_token_budget": ""})
+    if rl.status_code != 302:
+        errors.append(f"limits save should redirect, got {rl.status_code}")
+    import json as _json
+    ov = _json.loads(db_module.get_user_by_username("erin_adm")["limits_json"])
+    if ov.get("max_grades_per_day") != 7 or "daily_token_budget" in ov:
+        errors.append(f"limit overrides wrong: {ov}")
+    # Detail page renders.
+    rd = admin.get("/admin/teachers/erin_adm")
+    if rd.status_code != 200 or b"Rate limits" not in rd.data:
+        errors.append(f"teacher detail page should render, got {rd.status_code}")
+    # Disable locks the teacher out immediately.
+    admin.post("/admin/teachers/erin_adm/disable", data={"disabled": "1"})
+    r5 = teacher.get("/")
+    if r5.status_code != 302 or "/login" not in (r5.headers.get("Location") or ""):
+        errors.append("disabled teacher should be bounced to login")
+    # Re-enable.
+    admin.post("/admin/teachers/erin_adm/disable", data={"disabled": "0"})
+    teacher.post("/login", data={"username": "erin_adm",
+                                 "password": "test-teacher-pass-123"})
+    if teacher.get("/").status_code != 200:
+        errors.append("re-enabled teacher should log in again")
+    print("  done")
+
+def test_teacher_registration_hardening(errors):
+    """Review findings: password max length, quota order, session binding."""
+    print("Testing teacher registration hardening...")
+    setup = _setup_teacher_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    client = app_module.app.test_client()
+    # Over-long password rejected (hashing DoS guard).
+    r = client.post("/register", data={
+        "username": "frank_long", "password": "x" * 257, "confirm": "x" * 257})
+    if r.status_code != 200 or b"12-256" not in r.data:
+        errors.append("257-char password should be rejected")
+    # Malformed signups do not consume the per-IP quota: burn through bad
+    # usernames, then a valid signup must still work.
+    for i in range(9):
+        client.post("/register", data={
+            "username": f"bad name {i}", "password": "test-teacher-pass-123",
+            "confirm": "test-teacher-pass-123"})
+    r2 = client.post("/register", data={
+        "username": "grace_ok", "password": "test-teacher-pass-123",
+        "confirm": "test-teacher-pass-123"})
+    if r2.status_code != 302:
+        errors.append("valid signup after malformed ones should succeed (quota intact)")
+    # Session bound to user id: tampered user_id kills the session.
+    client.post("/login", data={"username": "grace_ok",
+                                "password": "test-teacher-pass-123"})
+    with client.session_transaction() as sess:
+        sess["user_id"] = 999999
+    r3 = client.get("/")
+    if r3.status_code != 302 or "/login" not in (r3.headers.get("Location") or ""):
+        errors.append("session with mismatched user_id should be cleared")
+    # Duplicate usernames do not consume the signup quota.
+    db_module.reset_rate_limits("register:127.0.0.1")
+    db_module.reset_rate_limits("register")
+    for _ in range(9):
+        rd = client.post("/register", data={
+            "username": "grace_ok", "password": "test-teacher-pass-123",
+            "confirm": "test-teacher-pass-123"})
+        if rd.status_code != 200 or b"taken" not in rd.data:
+            errors.append("duplicate signup should be rejected without quota")
+    rv = client.post("/register", data={
+        "username": "henry_ok", "password": "test-teacher-pass-123",
+        "confirm": "test-teacher-pass-123"})
+    if rv.status_code != 302:
+        errors.append("valid signup after duplicates should succeed (quota intact)")
+    # Teacher login throttling.
+    app_module.REGISTER_MAX_LOGIN_PER_IP_PER_DAY = 2
+    db_module.reset_rate_limits("login:127.0.0.1")
+    lc = app_module.app.test_client()
+    for _ in range(2):
+        lc.post("/login", data={"username": "henry_ok",
+                                "password": "wrong-password-xyz"})
+    rl = lc.post("/login", data={"username": "henry_ok",
+                                 "password": "test-teacher-pass-123"})
+    if rl.status_code != 200 or b"Too many login attempts" not in rl.data:
+        errors.append("teacher login should be throttled after the cap")
+    app_module.REGISTER_MAX_LOGIN_PER_IP_PER_DAY = 100
+    # Disabled teacher AJAX callers get JSON 401, not a redirect.
+    admin = app_module.app.test_client()
+    admin.post("/login", data={"username": "teacher",
+                               "password": "test-admin-pass-123"})
+    admin.post("/admin/teachers/henry_ok/disable", data={"disabled": "1"})
+    lc2 = app_module.app.test_client()
+    lc2.post("/login", data={"username": "henry_ok",
+                             "password": "test-teacher-pass-123"})
+    # Force the session to look logged-in but disabled (login itself is
+    # blocked for disabled accounts; simulate a session from before).
+    db_module.set_user_disabled(db_module.get_user_by_username("henry_ok")["id"], 0)
+    lc2.post("/login", data={"username": "henry_ok",
+                             "password": "test-teacher-pass-123"})
+    db_module.set_user_disabled(db_module.get_user_by_username("henry_ok")["id"], 1)
+    rj = lc2.post("/api/extract_name", headers={"X-Requested-With": "XMLHttpRequest"})
+    if rj.status_code != 401:
+        errors.append(f"disabled teacher AJAX should get 401, got {rj.status_code}")
+    print("  done")
+
+def test_teacher_partition_keyed_by_id(errors):
+    """Partitions use the immutable user id: a recycled username inherits nothing."""
+    print("Testing teacher partition id-keying...")
+    setup = _setup_teacher_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    _register_teacher(app_module.app.test_client(), "ivan_part")
+    user = db_module.get_user_by_username("ivan_part")
+    uid = user["id"]
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "ivan_part",
+                                "password": "test-teacher-pass-123"})
+    r = client.post("/class/new", data={"name": "Ivan Class"})
+    if r.status_code != 302:
+        errors.append(f"class creation failed, got {r.status_code}")
+        return
+    classes = db_module.list_classes(f"teacher:{uid}")
+    if len(classes) != 1 or classes[0]["name"] != "Ivan Class":
+        errors.append("teacher class not found under id-keyed partition")
+    # The username-keyed partition must not exist/hold data.
+    if not db_module._valid_owner(f"teacher:{uid}"):
+        errors.append("id-keyed owner should be valid")
+    if db_module._valid_owner("teacher:ivan_part"):
+        errors.append("username-keyed owner should be invalid")
+    # _data_owner returns the id-keyed partition for the session.
+    with client.session_transaction() as sess:
+        assert sess.get("role") == "teacher"
+    with app_module.app.test_request_context("/"):
+        from flask import session as _flask_session
+        _flask_session["auth_v"] = app_module.AUTH_VERSION
+        _flask_session["role"] = "teacher"
+        _flask_session["user_id"] = uid
+        _flask_session["username"] = "ivan_part"
+        if app_module._data_owner() != f"teacher:{uid}":
+            errors.append("_data_owner should return the id-keyed partition")
+    print("  done")
+
 if __name__ == "__main__":
     ok = main()
     sys.exit(0 if ok else 1)
-
-
-
-

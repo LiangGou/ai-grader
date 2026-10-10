@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Teacher {{ user.username }} - AI Grader{% endblock %}
+{% block content %}
+<h2>Teacher <code>{{ user.username }}</code></h2>
+<p class="muted">
+  Tier:
+  <form method="post" action="{{ url_for('teacher_set_tier', username=user.username) }}" style="display:inline">
+    <select name="tier" onchange="this.form.submit()">
+      {% for tier in tiers %}
+      <option value="{{ tier }}" {% if tier == user.tier %}selected{% endif %}>{{ tier }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  &nbsp;·&nbsp; Status: {% if user.disabled %}<span class="error-text">disabled</span>{% else %}<span class="success">active</span>{% endif %}
+  &nbsp;·&nbsp; Tokens today: <strong>{{ "{:,}".format(tokens_today) }}</strong>
+  &nbsp;·&nbsp; Lifetime questions: <strong>{{ lifetime_questions }}</strong>
+</p>
+<p class="muted">Changing the tier resets all per-teacher overrides below to the tier defaults.</p>
+
+<div class="card">
+<h3>Rate limits</h3>
+<form method="post" action="{{ url_for('teacher_set_limits', username=user.username) }}">
+<table class="stats-table">
+  <tr><th>Limit</th><th>Tier default</th><th>Override (blank = default)</th><th>Effective</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td>{{ r.label }}</td>
+    <td>{{ "{:,}".format(r.tier_default) if r.tier_default > 0 else "unlimited" }}</td>
+    <td><input type="number" name="{{ r.key }}" min="0" step="1" value="{{ r.override }}" placeholder="{{ r.tier_default }}" style="width:110px"></td>
+    <td><strong>{{ "{:,}".format(r.effective) if r.effective > 0 else "unlimited" }}</strong>{% if r.override != "" %} <span class="muted">(custom)</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+<p style="margin-top:10px"><button type="submit" class="btn btn-primary">Save overrides</button>
+<a href="{{ url_for('teachers_page') }}" class="btn" style="margin-left:8px">Back</a></p>
+</form>
+</div>
+{% endblock %}

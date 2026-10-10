@@ -225,6 +225,23 @@ def init_db():
             created REAL NOT NULL
         )
     """)
+    # Registered teachers (self-service signup, 2026-10-10). Each teacher gets
+    # their own data partition ("teacher:<username>") isolated from the
+    # owner's "private" partition and the "public" demo sandbox. limits_json
+    # holds an optional per-teacher override of the tier limits (JSON object);
+    # NULL/empty means "use the tier defaults". disabled=1 locks the account
+    # out immediately (checked on every request).
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS users (
+            id {idcol},
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            tier TEXT NOT NULL DEFAULT 'free',
+            limits_json TEXT DEFAULT '',
+            disabled INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -470,13 +487,30 @@ def serialized_mutation(lock_key):
             _serialized_state.active = False
 
 
+def _valid_owner(owner):
+    """True for a known data partition.
+
+    'private' (owner's own data), 'public' (demo sandbox), or
+    'teacher:<id>' (registered teacher's own dataset, keyed by the immutable
+    user id so a recycled username can never inherit another dataset).
+    """
+    if owner in ("private", "public"):
+        return True
+    if isinstance(owner, str) and owner.startswith("teacher:"):
+        try:
+            return int(owner[len("teacher:"):]) > 0
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
 def create_class_capped(name, owner, cap):
     """Create a class for `owner` if under `cap`; return id, or None if capped.
 
     The count check and the insert run atomically (see serialized_mutation),
     so concurrent requests cannot overshoot the cap.
     """
-    if owner not in ("private", "public"):
+    if not _valid_owner(owner):
         raise ValueError(f"Invalid owner: {owner!r}")
     with serialized_mutation(f"classes:{owner}") as conn:
         cur = conn.cursor()
@@ -605,7 +639,7 @@ def _insert_returning_id(cur, sql, params):
 def create_class(name, owner="private"):
     """Create a class owned by `owner` ('private' for the owner, 'public' for
     the public test role). Data is isolated by owner."""
-    if owner not in ("private", "public"):
+    if not _valid_owner(owner):
         raise ValueError(f"Invalid owner: {owner!r}")
     conn = _connect()
     cur = conn.cursor()
@@ -1051,7 +1085,7 @@ def set_image_owner(filename, owner):
     this guarantees a colliding upload can neither read nor reassign another
     partition's image.
     """
-    if owner not in ("private", "public"):
+    if not _valid_owner(owner):
         raise ValueError(f"Invalid owner: {owner!r}")
     conn = _connect()
     cur = conn.cursor()
@@ -1180,3 +1214,125 @@ def get_lifetime_usage(role, op):
     row = cur.fetchone()
     conn.close()
     return row[0] if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Registered teachers (self-service signup).
+# ---------------------------------------------------------------------------
+
+class DuplicateUserError(ValueError):
+    """Raised when a username is already taken."""
+
+
+def _is_unique_violation(e):
+    """True when the DB error is a UNIQUE-constraint violation."""
+    if isinstance(e, sqlite3.IntegrityError):
+        return True
+    if _psycopg2 is not None:
+        try:
+            from psycopg2 import errors as _pg_errors
+            return isinstance(e, _pg_errors.UniqueViolation)
+        except Exception:
+            pass
+    return False
+
+
+def create_user(username, password_hash, tier="free"):
+    """Create a teacher account. Returns the new user id.
+
+    Raises DuplicateUserError when the username is taken (UNIQUE constraint).
+    Other database errors propagate unchanged. Usernames are stored
+    lowercase; callers must normalize first.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            _q("INSERT INTO users (username, password_hash, tier, limits_json,"
+               " disabled, created_at) VALUES (?, ?, ?, '', 0, ?)"),
+            (username, password_hash, tier,
+             datetime.now().isoformat(timespec="seconds")))
+        if USE_POSTGRES:
+            # psycopg2 cursors have no lastrowid; re-select instead.
+            cur.execute(_q("SELECT id FROM users WHERE username = ?"),
+                        (username,))
+            uid = cur.fetchone()[0]
+        else:
+            uid = cur.lastrowid
+        conn.commit()
+        return uid
+    except Exception as e:
+        conn.rollback()
+        if _is_unique_violation(e):
+            raise DuplicateUserError(f"username taken: {username}") from e
+        raise
+    finally:
+        conn.close()
+
+
+def get_user_by_username(username):
+    """Return the user dict, or None."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM users WHERE username = ?"), (username,))
+    row = cur.fetchone()
+    user = _one_to_dict(row, cur)
+    conn.close()
+    return user
+
+
+def get_user_by_id(user_id):
+    """Return the user dict, or None."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM users WHERE id = ?"), (user_id,))
+    row = cur.fetchone()
+    user = _one_to_dict(row, cur)
+    conn.close()
+    return user
+
+
+def list_users():
+    """Return all teacher accounts, newest first."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM users ORDER BY id DESC"))
+    users = _rows_to_dicts(cur.fetchall(), cur)
+    conn.close()
+    return users
+
+
+def set_user_tier(user_id, tier):
+    """Assign a tier; clears any per-teacher limit overrides."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _q("UPDATE users SET tier = ?, limits_json = '' WHERE id = ?"),
+        (tier, user_id))
+    conn.commit()
+    conn.close()
+
+
+def set_user_limits(user_id, limits):
+    """Store per-teacher limit overrides (dict of key -> number).
+
+    An empty dict clears the overrides (tier defaults apply again).
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _q("UPDATE users SET limits_json = ? WHERE id = ?"),
+        (json.dumps(limits or {}), user_id))
+    conn.commit()
+    conn.close()
+
+
+def set_user_disabled(user_id, disabled):
+    """Disable (1) or re-enable (0) a teacher account immediately."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _q("UPDATE users SET disabled = ? WHERE id = ?"),
+        (1 if disabled else 0, user_id))
+    conn.commit()
+    conn.close()

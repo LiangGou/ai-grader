@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create teacher account - AI Grader</title>
+<style>
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --text: #18181b;
+  --text-muted: #71717a;
+  --border: #e4e4e7;
+  --primary: #635bff;
+  --primary-hover: #554df1;
+  --primary-active: #4840db;
+  --danger: #dc3e42;
+  --danger-soft: #fff1f2;
+  --shadow-md: 0 8px 24px rgba(24, 24, 27, 0.08);
+  --radius-lg: 16px;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.login-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 40px 32px;
+  width: 100%;
+  max-width: 380px;
+}
+h2 {
+  text-align: center;
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  letter-spacing: -0.02em;
+}
+.login-sub {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+  margin: 0 0 28px;
+}
+input {
+  width: 100%;
+  padding: 14px 16px;
+  margin: 0 0 12px;
+  box-sizing: border-box;
+  font-size: 16px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(99, 91, 255, 0.12);
+}
+button {
+  width: 100%;
+  padding: 14px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: background 0.15s;
+}
+button:hover { background: var(--primary-hover); }
+button:active { background: var(--primary-active); }
+.err {
+  color: var(--danger);
+  background: var(--danger-soft);
+  text-align: center;
+  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin: 0 0 16px;
+}
+.hint { font-size: 12px; color: var(--text-muted); margin: -6px 0 12px; }
+</style>
+</head>
+<body>
+<div class="login-card">
+  <h2>Teacher sign up</h2>
+  <p class="login-sub">Your own classes, assignments, and usage limits</p>
+  {% if error %}<p class="err">{{ error }}</p>{% endif %}
+  <form method="post">
+    <input name="username" placeholder="Username" autocomplete="username" required>
+    <div class="hint">3-32 characters: lowercase letters, digits, underscore.</div>
+    <input name="password" type="password" placeholder="Password (12+ characters)" autocomplete="new-password" required>
+    <input name="confirm" type="password" placeholder="Confirm password" autocomplete="new-password" required>
+    <button type="submit">Create account</button>
+  </form>
+  <p style="text-align:center;margin-top:18px;font-size:14px;color:var(--text-muted)">Already have an account? <a href="{{ url_for('login_page') }}" style="color:var(--primary)">Log in</a></p>
+</div>
+</body>
+</html>

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Teachers - AI Grader{% endblock %}
+{% block content %}
+<h2>Registered Teachers</h2>
+<p class="muted">Each teacher has an isolated dataset. Assign tiers and limits per teacher. Admin only.</p>
+
+{% if not teachers %}
+<div class="card"><p class="muted">No registered teachers yet. Teachers can sign up from the login page.</p></div>
+{% else %}
+<div class="card">
+<table class="stats-table">
+  <tr><th>Username</th><th>Tier</th><th>Status</th><th>Tokens today</th><th>Token budget</th><th>Lifetime Qs</th><th>Created</th><th></th><th></th></tr>
+  {% for t in teachers %}
+  <tr>
+    <td><a href="{{ url_for('teacher_detail_page', username=t.username) }}"><code>{{ t.username }}</code></a></td>
+    <td>
+      <form method="post" action="{{ url_for('teacher_set_tier', username=t.username) }}" style="display:inline">
+        <select name="tier" onchange="this.form.submit()">
+          {% for tier in tiers %}
+          <option value="{{ tier }}" {% if tier == t.tier %}selected{% endif %}>{{ tier }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </td>
+    <td>{% if t.disabled %}<span class="error-text">disabled</span>{% else %}<span class="success">active</span>{% endif %}</td>
+    <td>{{ "{:,}".format(t.tokens_today) }}</td>
+    <td>{{ "{:,}".format(t.daily_token_budget) if t.daily_token_budget > 0 else "unlimited" }}</td>
+    <td>{{ t.lifetime_questions }}</td>
+    <td class="muted">{{ t.created_at }}</td>
+    <td><a href="{{ url_for('teacher_detail_page', username=t.username) }}">Limits</a></td>
+    <td>
+      <form method="post" action="{{ url_for('teacher_set_disabled', username=t.username) }}" style="display:inline">
+        <input type="hidden" name="disabled" value="{{ '0' if t.disabled else '1' }}">
+        <button type="submit" class="btn btn-small{% if not t.disabled %} btn-danger{% endif %}">{{ 'Enable' if t.disabled else 'Disable' }}</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endif %}
+{% endblock %}

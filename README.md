@@ -88,6 +88,15 @@ Share a limited demo login without exposing your data or API budget:
 - **Monitoring**: log in as admin and open **Demo Monitor** in the nav to see the demo account's usage today (operations, tokens, rate-limit status, recent API calls) and reset its counters.
 - The demo role cannot access `/settings` (your API key stays private).
 
+### Teacher registration and tiers
+
+Teachers can sign up themselves from the login page (**Create an account**). Each teacher gets a **fully isolated dataset** — they only ever see their own classes, assignments, and uploads.
+
+- **Tiers**: every teacher is on a tier (`free`, `standard`, `pro`) that sets their rate limits — daily rubric generations, gradings, retries, token budget, lifetime questions, text/rubric size caps, image caps, and class/assignment caps. New signups start on `free` (same limits as the demo account).
+- **Admin control**: log in as admin and open **Teachers** in the nav to see every teacher's tier, today's token usage, and lifetime questions — change anyone's tier, override individual limits, or disable an account (takes effect immediately).
+- Teachers log in with their own username/password (12+ characters, stored hashed), cannot access `/settings`, and use the same models as the owner's account — their tier's token budget bounds the cost.
+- Signup anti-spam: `REGISTER_MAX_PER_IP_PER_DAY` (default 10) and `REGISTER_MAX_GLOBAL_PER_DAY` (default 200).
+
 ## Deploy to Render (free)
 
 1. Fork this repo on GitHub

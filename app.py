@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import io
 import json
+import re
 import threading
 import time
 import uuid
@@ -35,6 +36,19 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # max 32MB per request
+
+# Trust the last N proxy hops for X-Forwarded-For (Render = 1). With
+# ProxyFix, request.remote_addr is the real client IP; without it,
+# access_route[0] is client-spoofable and per-IP rate limits are useless.
+TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "1"))
+if TRUSTED_PROXY_HOPS > 0:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=TRUSTED_PROXY_HOPS)
+
+
+def _client_ip():
+    """Client IP for rate limiting (proxy-aware via ProxyFix)."""
+    return request.remote_addr or "unknown"
 
 # Sessions: must be set so login cookies work across gunicorn workers and
 # survive restarts. Fail closed: no silent random fallback.
@@ -141,13 +155,190 @@ grader.usage_logger = db.log_api_usage
 DAILY_TOKEN_BUDGET = int(os.environ.get("DAILY_TOKEN_BUDGET", "2000000"))
 
 
+# ---------------------------------------------------------------------------
+# Registered teachers: self-service signup, per-teacher data partitions,
+# tiered rate limits controlled by the admin.
+# ---------------------------------------------------------------------------
+
+# Limit keys (shared by the public demo role and teacher tiers).
+_LIMIT_KEYS = (
+    "max_rubric_jobs_per_day",
+    "max_grades_per_day",
+    "max_retries_per_day",
+    "daily_token_budget",
+    "max_questions_lifetime",
+    "max_text_chars",
+    "max_rubric_chars",
+    "max_reference_images",
+    "max_example_images",
+    "max_rubric_images",
+    "max_grade_images",
+    "max_classes",
+    "max_assignments",
+)
+
+# Tier presets. "free" mirrors the public demo defaults. A 0 disables the
+# lifetime-question and daily-token caps (matching the PUBLIC_* convention);
+# for the count caps, 0 means "none allowed". The admin assigns a tier per
+# teacher and may additionally store per-teacher overrides.
+TEACHER_TIERS = {
+    "free": {
+        "max_rubric_jobs_per_day": 3,
+        "max_grades_per_day": 20,
+        "max_retries_per_day": 10,
+        "daily_token_budget": 500000,
+        "max_questions_lifetime": 100,
+        "max_text_chars": 4000,
+        "max_rubric_chars": 20000,
+        "max_reference_images": 3,
+        "max_example_images": 4,
+        "max_rubric_images": 1,
+        "max_grade_images": 4,
+        "max_classes": 10,
+        "max_assignments": 20,
+    },
+    "standard": {
+        "max_rubric_jobs_per_day": 10,
+        "max_grades_per_day": 100,
+        "max_retries_per_day": 30,
+        "daily_token_budget": 1000000,
+        "max_questions_lifetime": 500,
+        "max_text_chars": 8000,
+        "max_rubric_chars": 50000,
+        "max_reference_images": 5,
+        "max_example_images": 8,
+        "max_rubric_images": 2,
+        "max_grade_images": 8,
+        "max_classes": 30,
+        "max_assignments": 60,
+    },
+    "pro": {
+        "max_rubric_jobs_per_day": 30,
+        "max_grades_per_day": 500,
+        "max_retries_per_day": 100,
+        "daily_token_budget": 3000000,
+        "max_questions_lifetime": 0,
+        "max_text_chars": 16000,
+        "max_rubric_chars": 100000,
+        "max_reference_images": 10,
+        "max_example_images": 12,
+        "max_rubric_images": 4,
+        "max_grade_images": 12,
+        "max_classes": 100,
+        "max_assignments": 200,
+    },
+}
+DEFAULT_TEACHER_TIER = "free"
+
+# Usernames that can never be registered (they address the env-password roles).
+# Built from the configured login names, so a custom GRADER_USER/PUBLIC_USER
+# cannot be shadowed by a teacher account either.
+def _reserved_usernames():
+    return {"teacher", "admin", "public",
+            (GRADER_USER or "").strip().lower(),
+            (PUBLIC_USER or "").strip().lower()} - {""}
+
+# Registration anti-spam: signups per client IP per day, and global per day.
+REGISTER_MAX_PER_IP_PER_DAY = int(os.environ.get("REGISTER_MAX_PER_IP_PER_DAY", "10"))
+REGISTER_MAX_GLOBAL_PER_DAY = int(os.environ.get("REGISTER_MAX_GLOBAL_PER_DAY", "200"))
+# Teacher-login brute-force guard: attempts per client IP per day.
+REGISTER_MAX_LOGIN_PER_IP_PER_DAY = int(os.environ.get("REGISTER_MAX_LOGIN_PER_IP_PER_DAY", "100"))
+
+
+def _teacher_limits_for(user_id):
+    """Effective limits dict for a teacher: tier defaults + per-teacher overrides.
+
+    Fail closed: unknown tier, missing user, or corrupt overrides fall back to
+    the free tier.
+    """
+    tier = TEACHER_TIERS.get(DEFAULT_TEACHER_TIER, {})
+    try:
+        user = db.get_user_by_id(user_id) if user_id else None
+    except Exception:
+        user = None
+    if user:
+        tier = TEACHER_TIERS.get(user.get("tier") or "", tier) or tier
+        try:
+            overrides = json.loads(user.get("limits_json") or "{}")
+        except Exception:
+            overrides = {}
+        if isinstance(overrides, dict):
+            merged = dict(tier)
+            for k, v in overrides.items():
+                if k in _LIMIT_KEYS:
+                    try:
+                        merged[k] = int(v)
+                    except (TypeError, ValueError):
+                        pass
+            return merged
+    return dict(tier)
+
+
+def _limits_for_role(role):
+    """Limits dict for an owner/role string, or None when unlimited.
+
+    "public" -> the PUBLIC_* demo constants (read live so tests can patch
+    them). "teacher:<username>" -> that teacher's tier limits. Anything else
+    (owner roles) -> None. Session-free: safe in worker threads.
+    """
+    if role == "public":
+        return {
+            "max_rubric_jobs_per_day": PUBLIC_MAX_RUBRIC_JOBS_PER_DAY,
+            "max_grades_per_day": PUBLIC_MAX_GRADES_PER_DAY,
+            "max_retries_per_day": PUBLIC_MAX_RETRIES_PER_DAY,
+            "daily_token_budget": PUBLIC_DAILY_TOKEN_BUDGET,
+            "max_questions_lifetime": PUBLIC_MAX_QUESTIONS_LIFETIME,
+            "max_text_chars": PUBLIC_MAX_TEXT_CHARS,
+            "max_rubric_chars": PUBLIC_MAX_RUBRIC_CHARS,
+            "max_reference_images": PUBLIC_MAX_REFERENCE_IMAGES,
+            "max_example_images": PUBLIC_MAX_EXAMPLE_IMAGES,
+            "max_rubric_images": PUBLIC_MAX_RUBRIC_IMAGES,
+            "max_grade_images": PUBLIC_MAX_GRADE_IMAGES,
+            "max_classes": PUBLIC_MAX_CLASSES,
+            "max_assignments": PUBLIC_MAX_ASSIGNMENTS,
+        }
+    if role and role.startswith("teacher:"):
+        try:
+            return _teacher_limits_for(int(role[len("teacher:"):]))
+        except (TypeError, ValueError):
+            return _teacher_limits_for(0)
+    return None
+
+
+def _is_teacher():
+    """True when the current session is a registered teacher."""
+    return session.get("auth_v") == AUTH_VERSION and session.get("role") == "teacher"
+
+
+def _limited_limits():
+    """Limits dict for the current rate-limited role, else None.
+
+    Covers the public demo role and registered teachers. Owner roles
+    (tester/admin) are unlimited.
+    """
+    if session.get("auth_v") != AUTH_VERSION:
+        return None
+    role = session.get("role")
+    if role == "public":
+        return _limits_for_role("public")
+    if role == "teacher":
+        return _limits_for_role(f"teacher:{session.get('user_id') or 0}")
+    return None
+
+
+def _limit_label():
+    """Human label for limit errors: 'Demo' for the public role, 'Plan' for teachers."""
+    return "Demo" if _is_public() else "Plan"
+
+
 def _budget_ok():
     """Token-budget gate, checked before every OpenAI call.
 
     Enforces the global DAILY_TOKEN_BUDGET for everyone, and additionally the
-    PUBLIC_DAILY_TOKEN_BUDGET for the public role on each call — not just at
-    route entry — so multi-call operations (rubric builds, retries) and any
-    future route cannot overshoot it by more than the in-flight calls.
+    per-role daily token budget for rate-limited roles (public demo,
+    registered teachers) on each call — not just at route entry — so
+    multi-call operations (rubric builds, retries) and any future route cannot
+    overshoot it by more than the in-flight calls.
 
     Uses the ContextVar role, never `session`: this runs in background and
     worker threads that have no request context. The role is propagated into
@@ -157,9 +348,11 @@ def _budget_ok():
     s = db.get_api_usage_summary(since_ts=start_of_day)
     if (s["prompt_tokens"] + s["completion_tokens"]) >= DAILY_TOKEN_BUDGET:
         return False
-    if grader._get_current_role() == "public" and PUBLIC_DAILY_TOKEN_BUDGET > 0:
-        used = db.get_api_usage_summary_for_role("public")
-        if (used["prompt_tokens"] + used["completion_tokens"]) >= PUBLIC_DAILY_TOKEN_BUDGET:
+    role = grader._get_current_role()
+    lim = _limits_for_role(role)
+    if lim is not None and lim["daily_token_budget"] > 0:
+        used = db.get_api_usage_summary_for_role(role)
+        if (used["prompt_tokens"] + used["completion_tokens"]) >= lim["daily_token_budget"]:
             return False
     return True
 
@@ -199,7 +392,8 @@ db.init_db()
 
 @app.before_request
 def _require_login():
-    if request.path == "/login" or request.path.startswith("/static/"):
+    if request.path == "/login" or request.path == "/register" \
+            or request.path.startswith("/static/"):
         return None
     if session.get("auth_v") != AUTH_VERSION:
         session.clear()
@@ -208,6 +402,20 @@ def _require_login():
                 "X-Requested-With") == "XMLHttpRequest":
             return jsonify({"ok": False, "error": "auth_required"}), 401
         return redirect(url_for("login_page"))
+    # A disabled teacher is locked out immediately, on every request.
+    # The session is also bound to the immutable user id: if the row's id
+    # ever stops matching (e.g. username recycled), the session dies.
+    if session.get("role") == "teacher":
+        try:
+            user = db.get_user_by_username(session.get("username") or "")
+        except Exception:
+            user = None
+        if not user or user.get("disabled") or user["id"] != session.get("user_id"):
+            session.clear()
+            if request.path.startswith("/api/") or request.headers.get(
+                    "X-Requested-With") == "XMLHttpRequest":
+                return jsonify({"ok": False, "error": "auth_required"}), 401
+            return redirect(url_for("login_page"))
     # Attribute API token usage to the caller's role for monitoring.
     # Background job threads set their own role at start (see _run_solve_job);
     # ContextVar keeps threads isolated.
@@ -232,7 +440,8 @@ def _data_owner():
     """Data partition for the current session.
 
     'public' for the public demo role (fully isolated sandbox),
-    'private' for the owner's tester/admin roles.
+    'teacher:<username>' for registered teachers (each teacher's own
+    dataset), 'private' for the owner's tester/admin roles.
 
     Fail closed: any stale session or unknown role aborts instead of falling
     through to the owner's partition.
@@ -242,26 +451,36 @@ def _data_owner():
     role = session.get("role")
     if role == "public":
         return "public"
+    if role == "teacher":
+        # Partitions are keyed by the immutable user id, never the username:
+        # a recycled username must never inherit another teacher's dataset.
+        # _require_login already verified this id against the users table.
+        user_id = session.get("user_id")
+        if isinstance(user_id, int) and user_id > 0:
+            return f"teacher:{user_id}"
+        abort(403)
     if role in ("tester", "admin"):
         return "private"
     abort(403)
 
 
-def _public_text_too_long(*fields):
-    """True when a public-role text input exceeds the demo character cap."""
-    return _is_public() and any(len(f or "") > PUBLIC_MAX_TEXT_CHARS
-                                 for f in fields)
+def _limited_text_too_long(*fields):
+    """True when a rate-limited role's text input exceeds its character cap."""
+    lim = _limited_limits()
+    return lim is not None and any(len(f or "") > lim["max_text_chars"]
+                                   for f in fields)
 
 
-def _public_rubric_too_long(a):
-    """True when a public assignment's stored rubric exceeds the demo cap.
+def _limited_rubric_too_long(a):
+    """True when a rate-limited role's stored rubric exceeds its size cap.
 
     Stored rubrics are sent to the model on every grading, so the size must
     be bounded both when saved and when used.
     """
-    return _is_public() and (
+    lim = _limited_limits()
+    return lim is not None and (
         len(a.get("rubric_text") or "") + len(a.get("rubric_json") or "")
-    ) > PUBLIC_MAX_RUBRIC_CHARS
+    ) > lim["max_rubric_chars"]
 
 
 def _require_class(class_id):
@@ -292,41 +511,48 @@ def _require_grade(grade_id):
     return g
 
 
-def _public_rate_limit_exceeded(op, limit):
-    """Check + record one hit of a daily rate limit for the public role.
+def _limited_rate_limit_exceeded(op):
+    """Check + record one hit of a daily rate limit for rate-limited roles.
 
     Returns an error string when the limit is hit, else None. No-op for
-    non-public roles.
+    unlimited (owner) roles. The counter key is the data-owner partition, so
+    each teacher gets their own counters.
     """
-    if not _is_public():
+    lim = _limited_limits()
+    if lim is None:
         return None
-    if not db.check_rate_limit("public", op, limit):
-        return (f"Demo limit reached: {limit} {op.replace('_', ' ')}s per day. "
-                "Please try again tomorrow.")
+    key = {"rubric_job": "max_rubric_jobs_per_day",
+           "grade": "max_grades_per_day",
+           "retry": "max_retries_per_day"}[op]
+    if not db.check_rate_limit(_data_owner(), op, lim[key]):
+        return (f"{_limit_label()} limit reached: {lim[key]} {op.replace('_', ' ')}s "
+                "per day. Please try again tomorrow.")
     return None
 
 
-def _public_token_budget_exceeded():
-    """True when the public role burned its daily token budget (0 = disabled)."""
-    if not _is_public() or PUBLIC_DAILY_TOKEN_BUDGET <= 0:
+def _limited_token_budget_exceeded():
+    """True when the rate-limited role burned its daily token budget (0 = disabled)."""
+    lim = _limited_limits()
+    if lim is None or lim["daily_token_budget"] <= 0:
         return False
     day = db._rate_limit_day()
-    used = db.get_api_usage_summary_for_role("public", day)
-    return (used["prompt_tokens"] + used["completion_tokens"]) >= PUBLIC_DAILY_TOKEN_BUDGET
+    used = db.get_api_usage_summary_for_role(_data_owner(), day)
+    return (used["prompt_tokens"] + used["completion_tokens"]) >= lim["daily_token_budget"]
 
 
-def _public_lifetime_cap_error():
-    """Error string when the public role hit its lifetime question cap.
+def _limited_lifetime_cap_error():
+    """Error string when the rate-limited role hit its lifetime question cap.
 
-    Returns None for non-public roles, when the cap is disabled (0), or when
+    Returns None for unlimited roles, when the cap is disabled (0), or when
     under the cap.
     """
-    if not _is_public() or PUBLIC_MAX_QUESTIONS_LIFETIME <= 0:
+    lim = _limited_limits()
+    if lim is None or lim["max_questions_lifetime"] <= 0:
         return None
-    used = db.get_lifetime_usage("public", "questions")
-    if used >= PUBLIC_MAX_QUESTIONS_LIFETIME:
-        return (f"Demo limit reached: {PUBLIC_MAX_QUESTIONS_LIFETIME} questions total "
-                "for this demo account. No more questions can be created or fixed.")
+    used = db.get_lifetime_usage(_data_owner(), "questions")
+    if used >= lim["max_questions_lifetime"]:
+        return (f"{_limit_label()} limit reached: {lim['max_questions_lifetime']} questions "
+                "total for this account. No more questions can be created or fixed.")
     return None
 
 
@@ -343,6 +569,9 @@ def login_page():
             return bool(pw) and bool(s) and hmac.compare_digest(pw, s)
         # Constant-time comparison (L1). Admin check first (see fail-closed
         # note above); public check last so it can never shadow the others.
+        # Registered teachers are checked after the env-password roles: their
+        # usernames can never be "teacher"/"admin"/"public" (reserved at
+        # signup), so there is no shadowing either way.
         if user == GRADER_USER and _match(ADMIN_PASSWORD):
             session["auth_v"] = AUTH_VERSION
             session["role"] = "admin"
@@ -358,7 +587,26 @@ def login_page():
             session["role"] = "public"
             session.permanent = True
             return redirect(url_for("index"))
-        err = "Wrong username or password."
+        teacher = db.get_user_by_username(user.strip().lower())
+        if teacher and not teacher.get("disabled"):
+            # Brute-force guard: cap teacher-login attempts per client IP.
+            # (Env-password roles keep their existing behavior.)
+            login_ip = _client_ip()
+            if not db.check_rate_limit(f"login:{login_ip}", "teacher_attempt",
+                                       REGISTER_MAX_LOGIN_PER_IP_PER_DAY):
+                err = "Too many login attempts from this address today. Please try again tomorrow."
+            else:
+                from werkzeug.security import check_password_hash as _check
+                if _check(teacher["password_hash"], pw.decode("utf-8", "replace")):
+                    session["auth_v"] = AUTH_VERSION
+                    session["role"] = "teacher"
+                    session["user_id"] = teacher["id"]
+                    session["username"] = teacher["username"]
+                    session.permanent = True
+                    return redirect(url_for("index"))
+                err = "Wrong username or password."
+        else:
+            err = "Wrong username or password."
     return render_template("login.html", error=err)
 
 
@@ -366,6 +614,54 @@ def login_page():
 def logout_page():
     session.clear()
     return redirect(url_for("login_page"))
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register_page():
+    """Self-service teacher signup.
+
+    Creates a teacher account with its own isolated data partition
+    ("teacher:<username>") on the default tier. Usernames are lowercase
+    [a-z0-9_], 3-32 chars; passwords need 12-256 characters (same bar as the
+    env-password roles). Anti-spam: per-IP and global daily signup caps, and
+    cheap syntactic validation runs before any quota is consumed.
+    """
+    err = ""
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip().lower()
+        password = request.form.get("password") or ""
+        confirm = request.form.get("confirm") or ""
+        ip = _client_ip()
+        # Validate first: malformed traffic must not burn the signup quota.
+        if not re.fullmatch(r"[a-z0-9_]{3,32}", username):
+            err = "Username must be 3-32 characters: lowercase letters, digits, underscore."
+        elif username in _reserved_usernames():
+            err = "That username is reserved. Please choose another."
+        elif not 12 <= len(password) <= 256:
+            err = "Password must be 12-256 characters."
+        elif password != confirm:
+            err = "Passwords do not match."
+        elif db.get_user_by_username(username):
+            # Taken: report without consuming quota (the UNIQUE constraint
+            # remains the backstop for the check-then-act race).
+            err = "That username is taken. Please choose another."
+        elif not db.check_rate_limit(f"register:{ip}", "signup",
+                                     REGISTER_MAX_PER_IP_PER_DAY):
+            err = "Too many signups from this address today. Please try again tomorrow."
+        elif not db.check_rate_limit("register", "signup",
+                                     REGISTER_MAX_GLOBAL_PER_DAY):
+            err = "Registration is temporarily paused. Please try again tomorrow."
+        else:
+            from werkzeug.security import generate_password_hash as _gen
+            try:
+                db.create_user(username, _gen(password), DEFAULT_TEACHER_TIER)
+            except db.DuplicateUserError:
+                err = "That username is taken. Please choose another."
+            else:
+                # Do not auto-login: a cross-site forged signup must not drop
+                # the victim into an attacker-known account.
+                return redirect(url_for("login_page"))
+    return render_template("register.html", error=err)
 
 
 def _save_upload(file_storage, prefix):
@@ -484,9 +780,10 @@ def _env_status():
         "key_hint": ("…" + key[-4:]) if key and len(key) > 4 else "",
         "model": os.environ.get("OPENAI_MODEL", grader.DEFAULT_MODEL),
     }
-    if _is_public():
-        # The demo account must never see any part of the owner's API key,
-        # not even the last-4 hint shown to the owner's own roles.
+    if _limited_limits() is not None:
+        # Rate-limited roles (demo + registered teachers) must never see any
+        # part of the owner's API key, not even the last-4 hint shown to the
+        # owner's own roles.
         status["key_hint"] = ""
     return status
 
@@ -501,22 +798,23 @@ def index():
     # Tell the template whether the public demo account is enabled, so the
     # login page can hint at it (the password itself is never exposed).
     return render_template("index.html", classes=classes, env=_env_status(),
-                           dup_name=dup, is_public=_is_public())
+                           dup_name=dup, is_public=_limited_limits() is not None)
 
 
 @app.route("/class/new", methods=["POST"])
 def class_new():
     name = (request.form.get("name") or "").strip()
     if name:
-        if _is_public():
+        _lim = _limited_limits()
+        if _lim is not None:
             # Atomic cap: the count check and the insert run in one locked
             # transaction, so a parallel burst of requests cannot overshoot
-            # the demo account's class limit (each class can hold images that
+            # the account's class limit (each class can hold images that
             # live in the owner's database).
-            if db.create_class_capped(name, "public", PUBLIC_MAX_CLASSES) is None:
+            if db.create_class_capped(name, _data_owner(), _lim["max_classes"]) is None:
                 return jsonify({"ok": False, "error":
-                                f"Demo limit reached: at most {PUBLIC_MAX_CLASSES} classes "
-                                f"for this demo account."}), 429
+                                f"{_limit_label()} limit reached: at most {_lim['max_classes']} classes "
+                                f"for this account."}), 429
         else:
             db.create_class(name, _data_owner())
     return redirect(url_for("index"))
@@ -528,18 +826,19 @@ def assignment_new():
     name = (request.form.get("name") or "").strip()
     if class_id and name:
         _require_class(int(class_id))  # 403 if cross-partition
-        if _is_public():
+        _lim = _limited_limits()
+        if _lim is not None:
             # Atomic cap (see class_new).
             try:
-                aid = db.create_assignment_capped(int(class_id), name, "public",
-                                                  PUBLIC_MAX_ASSIGNMENTS)
+                aid = db.create_assignment_capped(int(class_id), name, _data_owner(),
+                                                  _lim["max_assignments"])
             except ValueError:
                 # Duplicate name in this class — bounce back with an error flag.
                 return redirect(url_for("index", dup=name))
             if aid is None:
                 return jsonify({"ok": False, "error":
-                                f"Demo limit reached: at most {PUBLIC_MAX_ASSIGNMENTS} assignments "
-                                f"for this demo account."}), 429
+                                f"{_limit_label()} limit reached: at most {_lim['max_assignments']} assignments "
+                                f"for this account."}), 429
         else:
             try:
                 aid = db.create_assignment(int(class_id), name)
@@ -585,7 +884,7 @@ def api_rubric_job(job_id):
     # Pre-migration jobs have assignment_id=0 and are treated as private.
     if job.get("assignment_id"):
         _require_assignment(job["assignment_id"])  # 404/403 on cross-partition
-    elif _is_public():
+    elif _limited_limits() is not None:
         return jsonify({"ok": False, "error": "Job not found."}), 404
     if job["status"] == "running" and time.time() - job["updated"] > db.JOB_STALE_SECONDS:
         db.fail_rubric_job(job_id, "The generation worker stopped unexpectedly — please tap Generate again.")
@@ -626,19 +925,20 @@ def api_solve_rubric():
     paths = [saved_names[n] for n in include if n in saved_names]
     if not paths:
         return jsonify({"ok": False, "error": "No question photos selected. Please add them first."}), 400
-    if _is_public() and len(paths) > PUBLIC_MAX_RUBRIC_IMAGES:
+    _lim = _limited_limits()
+    if _lim is not None and len(paths) > _lim["max_rubric_images"]:
         return jsonify({"ok": False, "error":
-                        f"Demo limit: at most {PUBLIC_MAX_RUBRIC_IMAGES} photos per rubric generation."}), 400
+                        f"{_limit_label()} limit: at most {_lim['max_rubric_images']} photos per rubric generation."}), 400
     # Public demo guardrails: lifetime cap + token budget first (these don't
     # consume quota), then the daily operation cap immediately before
     # starting costly work.
-    err = _public_lifetime_cap_error()
+    err = _limited_lifetime_cap_error()
     if err:
         return jsonify({"ok": False, "error": err}), 429
-    if _public_token_budget_exceeded():
+    if _limited_token_budget_exceeded():
         return jsonify({"ok": False,
-                        "error": "Demo token budget exhausted for today. Please try again tomorrow."}), 429
-    err = _public_rate_limit_exceeded("rubric_job", PUBLIC_MAX_RUBRIC_JOBS_PER_DAY)
+                        "error": f"{_limit_label()} token budget exhausted for today. Please try again tomorrow."}), 429
+    err = _limited_rate_limit_exceeded("rubric_job")
     if err:
         return jsonify({"ok": False, "error": err}), 429
     job_id = uuid.uuid4().hex[:12]
@@ -702,10 +1002,11 @@ def api_retry_question():
         return jsonify({"ok": False, "error": "Missing assignment or question text."}), 400
     if model not in ("o3", "gpt-4o"):
         return jsonify({"ok": False, "error": "Model must be 'o3' or 'gpt-4o'."}), 400
-    if _public_text_too_long(q_label, question_text):
+    _lim = _limited_limits()
+    if _lim is not None and _limited_text_too_long(q_label, question_text):
         return jsonify({"ok": False, "error":
-                        f"Demo limit: question label or question text too long "
-                        f"(max {PUBLIC_MAX_TEXT_CHARS} characters each)."}), 400
+                        f"{_limit_label()} limit: question label or question text too long "
+                        f"(max {_lim['max_text_chars']} characters each)."}), 400
     if _is_public():
         # The demo may not pick the reasoning model: keep per-call cost bounded.
         # Use the allowlisted public model (not a "gpt-4o" literal) so the
@@ -715,20 +1016,23 @@ def api_retry_question():
     _require_assignment(assignment_id)  # 404/403 on cross-partition access
     # Public demo guardrails: lifetime cap + token budget first (no quota
     # consumed), then the daily retry cap immediately before costly work.
-    err = _public_lifetime_cap_error()
+    err = _limited_lifetime_cap_error()
     if err:
         return jsonify({"ok": False, "error": err}), 429
-    if _public_token_budget_exceeded():
+    if _limited_token_budget_exceeded():
         return jsonify({"ok": False,
-                        "error": "Demo token budget exhausted for today. Please try again tomorrow."}), 429
-    err = _public_rate_limit_exceeded("retry", PUBLIC_MAX_RETRIES_PER_DAY)
+                        "error": f"{_limit_label()} token budget exhausted for today. Please try again tomorrow."}), 429
+    err = _limited_rate_limit_exceeded("retry")
     if err:
         return jsonify({"ok": False, "error": err}), 429
     # Give the solver the assignment's question photos for a second read.
     # Demo accounts get at most 1 photo of context (one photo per question).
     image_paths = [p for p in db.get_rubric_example_images(assignment_id) if _upload_exists(p)]
+    _lim = _limited_limits()
     if _is_public():
         image_paths = image_paths[:1]
+    elif _lim is not None:
+        image_paths = image_paths[:_lim["max_rubric_images"]]
     try:
         result = grader.retry_solve_question(
             question_text, max_score, q_label,
@@ -743,8 +1047,8 @@ def api_retry_question():
     except Exception as e:  # noqa: BLE001
         return jsonify({"ok": False, "error": f"Retry failed: {e}"}), 500
     # Public demo lifetime cap: each retry fixes one question.
-    if _is_public():
-        db.add_lifetime_usage("public", "questions", 1)
+    if _limited_limits() is not None:
+        db.add_lifetime_usage(_data_owner(), "questions", 1)
     return jsonify({"ok": True, "result": result})
 
 @app.route("/api/regenerate_rubric", methods=["POST"])
@@ -770,10 +1074,11 @@ def api_regenerate_rubric():
         return jsonify({"ok": False, "error": "Reference solution is empty."}), 400
     if max_score <= 0:
         return jsonify({"ok": False, "error": "Max score must be positive."}), 400
-    if _public_text_too_long(q_label, question_text, reference_solution):
+    _lim = _limited_limits()
+    if _lim is not None and _limited_text_too_long(q_label, question_text, reference_solution):
         return jsonify({"ok": False, "error":
-                        f"Demo limit: question label, question text, or reference solution "
-                        f"too long (max {PUBLIC_MAX_TEXT_CHARS} characters each)."}), 400
+                        f"{_limit_label()} limit: question label, question text, or reference solution "
+                        f"too long (max {_lim['max_text_chars']} characters each)."}), 400
     try:
         assignment_id = int(data["assignment_id"])
     except (KeyError, TypeError, ValueError):
@@ -781,13 +1086,13 @@ def api_regenerate_rubric():
     _require_assignment(assignment_id)  # 404/403 on cross-partition access
     # Public demo guardrails: lifetime cap + token budget first (no quota
     # consumed), then the daily retry cap immediately before costly work.
-    err = _public_lifetime_cap_error()
+    err = _limited_lifetime_cap_error()
     if err:
         return jsonify({"ok": False, "error": err}), 429
-    if _public_token_budget_exceeded():
+    if _limited_token_budget_exceeded():
         return jsonify({"ok": False,
-                        "error": "Demo token budget exhausted for today. Please try again tomorrow."}), 429
-    err = _public_rate_limit_exceeded("retry", PUBLIC_MAX_RETRIES_PER_DAY)
+                        "error": f"{_limit_label()} token budget exhausted for today. Please try again tomorrow."}), 429
+    err = _limited_rate_limit_exceeded("retry")
     if err:
         return jsonify({"ok": False, "error": err}), 429
     try:
@@ -797,9 +1102,9 @@ def api_regenerate_rubric():
         # generate_ap_rubric_only raises on validation failure; fall back
         # to structural AP format so the teacher always gets usable output.
         criteria = grader._minimal_ap_rubric(reference_solution, max_score, q_label)
-    # Public demo lifetime cap: each regeneration fixes one question.
-    if _is_public():
-        db.add_lifetime_usage("public", "questions", 1)
+    # Rate-limited lifetime cap: each regeneration fixes one question.
+    if _limited_limits() is not None:
+        db.add_lifetime_usage(_data_owner(), "questions", 1)
     # Generate diagram if the question needs one (user requirement 2026-10-08:
     # "有图的你要画图" - questions mentioning graph/sketch must have diagrams).
     graph = None
@@ -825,7 +1130,7 @@ def assignment_upload_rubric_example(assignment_id):
     # Stage-then-atomic-append (see assignment_upload_reference): a parallel
     # upload burst cannot overshoot the cap, and no failure path leaks bytes.
     staged = _stage_uploads(new_files, "rubric_example")
-    cap = PUBLIC_MAX_EXAMPLE_IMAGES if _is_public() else None
+    cap = (_limited_limits() or {}).get("max_example_images")
     try:
         appended = db.try_append_image_paths(
             assignment_id, "rubric_example_images", staged, cap)
@@ -834,9 +1139,10 @@ def assignment_upload_rubric_example(assignment_id):
         raise
     if not appended:
         _purge_uploads(staged)
-        if _is_public():
+        _lim = _limited_limits()
+        if _lim is not None:
             return jsonify({"ok": False, "error":
-                            f"Demo limit: at most {PUBLIC_MAX_EXAMPLE_IMAGES} example photos "
+                            f"{_limit_label()} limit: at most {_lim['max_example_images']} example photos "
                             f"per assignment."}), 400
         return jsonify({"ok": False, "error": "Assignment not found."}), 404
     names = [_upload_basename(p) for p in db.get_rubric_example_images(assignment_id)
@@ -893,9 +1199,10 @@ def assignment_save_rubric(assignment_id):
     # Stored rubrics are sent to the model on every grading: cap the stored
     # size for the demo account so a huge saved rubric can't bypass the
     # per-request text caps.
-    if _is_public() and len(rubric_text) + len(json.dumps(items)) > PUBLIC_MAX_RUBRIC_CHARS:
+    _lim = _limited_limits()
+    if _lim is not None and len(rubric_text) + len(json.dumps(items)) > _lim["max_rubric_chars"]:
         return jsonify({"ok": False, "error":
-                        f"Demo limit: rubric too long (max {PUBLIC_MAX_RUBRIC_CHARS} characters)."}), 400
+                        f"{_limit_label()} limit: rubric too long (max {_lim['max_rubric_chars']} characters)."}), 400
     db.save_rubric(assignment_id, rubric_text, items)
     return jsonify({"ok": True, "rubric_text": rubric_text, "items": items})
 
@@ -912,7 +1219,7 @@ def assignment_upload_reference(assignment_id):
     # locked transaction, so a parallel upload burst cannot overshoot the
     # cap. Rejected or failed appends purge the staged uploads.
     staged = _stage_uploads(new_files, "ref")
-    cap = PUBLIC_MAX_REFERENCE_IMAGES if _is_public() else None
+    cap = (_limited_limits() or {}).get("max_reference_images")
     try:
         appended = db.try_append_image_paths(
             assignment_id, "reference_images", staged, cap)
@@ -921,9 +1228,10 @@ def assignment_upload_reference(assignment_id):
         raise
     if not appended:
         _purge_uploads(staged)
-        if _is_public():
+        _lim = _limited_limits()
+        if _lim is not None:
             return jsonify({"ok": False, "error":
-                            f"Demo limit: at most {PUBLIC_MAX_REFERENCE_IMAGES} reference photos "
+                            f"{_limit_label()} limit: at most {_lim['max_reference_images']} reference photos "
                             f"per assignment."}), 400
         return jsonify({"ok": False, "error": "Assignment not found."}), 404
     return redirect(url_for("assignment_page", assignment_id=assignment_id))
@@ -967,9 +1275,9 @@ def api_extract_name():
     # Blocked for the demo account: this is an OpenAI vision call outside the
     # grading rate limits and token budget. Public grading (/api/grade)
     # already auto-extracts the name inside its guarded operation.
-    if _is_public():
+    if _limited_limits() is not None:
         return jsonify({"ok": False, "error":
-                        "Standalone name extraction is unavailable for the demo account. "
+                        "Standalone name extraction is unavailable for limited accounts. "
                         "Grade a paper instead — the name is extracted automatically."}), 403
     f = request.files.get("image")
     if not f or not f.filename:
@@ -1003,9 +1311,10 @@ def api_grade():
     # Validate inputs BEFORE consuming rate-limit quota.
     files = request.files.getlist("images")
     valid_files = [f for f in files if f and f.filename]
-    if _is_public() and len(valid_files) > PUBLIC_MAX_GRADE_IMAGES:
+    _lim = _limited_limits()
+    if _lim is not None and len(valid_files) > _lim["max_grade_images"]:
         return jsonify({"ok": False, "error":
-                        f"Demo limit: at most {PUBLIC_MAX_GRADE_IMAGES} photos per paper."}), 400
+                        f"{_limit_label()} limit: at most {_lim['max_grade_images']} photos per paper."}), 400
     if not valid_files:
         return jsonify({"ok": False, "error": "No paper photos received. Please take/upload photos first."}), 400
     # Reference (answer-key) photos are also sent to the model, so for the
@@ -1013,23 +1322,24 @@ def api_grade():
     # stay within the photo cap — otherwise stored reference images would
     # bypass it.
     ref_paths = [p for p in json.loads(a["reference_images"] or "[]") if _upload_exists(p)]
-    if _is_public() and len(valid_files) + len(ref_paths) > PUBLIC_MAX_GRADE_IMAGES:
+    if _lim is not None and len(valid_files) + len(ref_paths) > _lim["max_grade_images"]:
         return jsonify({"ok": False, "error":
-                        f"Demo limit: at most {PUBLIC_MAX_GRADE_IMAGES} total photos per grading "
+                        f"{_limit_label()} limit: at most {_lim['max_grade_images']} total photos per grading "
                         f"(paper + reference). Remove some reference photos first."}), 400
     # The stored rubric is sent to the model on every grading: reject an
     # over-long saved rubric for the demo account (defense in depth with the
     # write-time cap in assignment_save_rubric).
-    if _public_rubric_too_long(a):
+    _lim = _limited_limits()
+    if _lim is not None and _limited_rubric_too_long(a):
         return jsonify({"ok": False, "error":
-                        f"Demo limit: rubric too long (max {PUBLIC_MAX_RUBRIC_CHARS} characters). "
+                        f"{_limit_label()} limit: rubric too long (max {_lim['max_rubric_chars']} characters). "
                         f"Shorten the rubric first."}), 400
     # Public demo guardrails: lifetime cap + token budget first (no quota
     # consumed), then the daily grading cap immediately before costly work.
-    if _public_token_budget_exceeded():
+    if _limited_token_budget_exceeded():
         return jsonify({"ok": False,
-                        "error": "Demo token budget exhausted for today. Please try again tomorrow."}), 429
-    err = _public_rate_limit_exceeded("grade", PUBLIC_MAX_GRADES_PER_DAY)
+                        "error": f"{_limit_label()} token budget exhausted for today. Please try again tomorrow."}), 429
+    err = _limited_rate_limit_exceeded("grade")
     if err:
         return jsonify({"ok": False, "error": err}), 429
 
@@ -1157,10 +1467,11 @@ def grade_detail_page(grade_id):
 # ---------- Settings ----------
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
-    # Require login (tester or admin). The public demo role is blocked here:
-    # it must never see or change the owner's OpenAI key.
+    # Require login (tester or admin). Rate-limited roles (demo + registered
+    # teachers) are blocked here: they must never see or change the owner's
+    # OpenAI key.
     _require_login()
-    if _is_public():
+    if _limited_limits() is not None:
         abort(403)
     msg = ""
     if request.method == "POST":
@@ -1236,6 +1547,156 @@ def public_reset_limits():
     return redirect(url_for("public_monitor_page"))
 
 
+# ---------- Registered teachers (admin only) ----------
+
+_LIMIT_LABELS = {
+    "max_rubric_jobs_per_day": "Rubric generations / day",
+    "max_grades_per_day": "Paper gradings / day",
+    "max_retries_per_day": "Question retries / day",
+    "daily_token_budget": "Token budget / day",
+    "max_questions_lifetime": "Questions lifetime (0 = unlimited)",
+    "max_text_chars": "Text input chars",
+    "max_rubric_chars": "Rubric chars",
+    "max_reference_images": "Reference images / assignment",
+    "max_example_images": "Example images / assignment",
+    "max_rubric_images": "Rubric-gen images",
+    "max_grade_images": "Grade images / paper",
+    "max_classes": "Classes",
+    "max_assignments": "Assignments",
+}
+
+
+def _teacher_effective_limits(user):
+    """Merge tier defaults with the teacher's overrides (for display)."""
+    tier = TEACHER_TIERS.get(user.get("tier") or "", TEACHER_TIERS[DEFAULT_TEACHER_TIER])
+    merged = dict(tier)
+    try:
+        overrides = json.loads(user.get("limits_json") or "{}")
+    except Exception:
+        overrides = {}
+    clean = {}
+    if isinstance(overrides, dict):
+        for k, v in overrides.items():
+            if k in _LIMIT_KEYS:
+                try:
+                    clean[k] = int(v)
+                except (TypeError, ValueError):
+                    pass
+    merged.update(clean)
+    return merged, clean
+
+
+@app.route("/admin/teachers")
+def teachers_page():
+    """Admin dashboard: registered teachers, tiers, usage, limits."""
+    if not _is_admin():
+        abort(403)
+    day = db._rate_limit_day()
+    teachers = []
+    for u in db.list_users():
+        owner = f"teacher:{u['id']}"
+        usage = db.get_api_usage_summary_for_role(owner, day)
+        tokens = usage["prompt_tokens"] + usage["completion_tokens"]
+        effective, _ = _teacher_effective_limits(u)
+        teachers.append({
+            "id": u["id"],
+            "username": u["username"],
+            "tier": u.get("tier") or DEFAULT_TEACHER_TIER,
+            "disabled": bool(u.get("disabled")),
+            "created_at": u.get("created_at"),
+            "tokens_today": tokens,
+            "calls_today": usage.get("calls", 0),
+            "daily_token_budget": effective["daily_token_budget"],
+            "lifetime_questions": db.get_lifetime_usage(owner, "questions"),
+        })
+    return render_template(
+        "teachers.html",
+        teachers=teachers,
+        tiers=sorted(TEACHER_TIERS),
+        env=_env_status(),
+    )
+
+
+@app.route("/admin/teachers/<username>")
+def teacher_detail_page(username):
+    """Admin detail: a teacher's effective limits with per-key overrides."""
+    if not _is_admin():
+        abort(403)
+    user = db.get_user_by_username(username)
+    if not user:
+        abort(404)
+    effective, overrides = _teacher_effective_limits(user)
+    tier_defaults = TEACHER_TIERS.get(user.get("tier") or "",
+                                      TEACHER_TIERS[DEFAULT_TEACHER_TIER])
+    rows = [{"key": k, "label": _LIMIT_LABELS[k],
+             "tier_default": tier_defaults[k],
+             "override": overrides.get(k, ""),
+             "effective": effective[k]} for k in _LIMIT_KEYS]
+    owner = f"teacher:{user['id']}"
+    day = db._rate_limit_day()
+    usage = db.get_api_usage_summary_for_role(owner, day)
+    return render_template(
+        "teacher_detail.html",
+        user=user,
+        tiers=sorted(TEACHER_TIERS),
+        rows=rows,
+        tokens_today=usage["prompt_tokens"] + usage["completion_tokens"],
+        lifetime_questions=db.get_lifetime_usage(owner, "questions"),
+        env=_env_status(),
+    )
+
+
+@app.route("/admin/teachers/<username>/tier", methods=["POST"])
+def teacher_set_tier(username):
+    """Assign a tier (resets per-teacher overrides). Admin only."""
+    if not _is_admin():
+        abort(403)
+    user = db.get_user_by_username(username)
+    if not user:
+        abort(404)
+    tier = (request.form.get("tier") or "").strip()
+    if tier not in TEACHER_TIERS:
+        abort(400)
+    db.set_user_tier(user["id"], tier)
+    return redirect(url_for("teacher_detail_page", username=username))
+
+
+@app.route("/admin/teachers/<username>/limits", methods=["POST"])
+def teacher_set_limits(username):
+    """Save per-teacher limit overrides (empty input = tier default)."""
+    if not _is_admin():
+        abort(403)
+    user = db.get_user_by_username(username)
+    if not user:
+        abort(404)
+    overrides = {}
+    for k in _LIMIT_KEYS:
+        raw = (request.form.get(k) or "").strip()
+        if raw == "":
+            continue
+        try:
+            v = int(raw)
+        except ValueError:
+            abort(400)
+        if v < 0:
+            abort(400)
+        overrides[k] = v
+    db.set_user_limits(user["id"], overrides)
+    return redirect(url_for("teacher_detail_page", username=username))
+
+
+@app.route("/admin/teachers/<username>/disable", methods=["POST"])
+def teacher_set_disabled(username):
+    """Disable or re-enable a teacher account (takes effect immediately)."""
+    if not _is_admin():
+        abort(403)
+    user = db.get_user_by_username(username)
+    if not user:
+        abort(404)
+    db.set_user_disabled(user["id"], request.form.get("disabled") == "1")
+    return redirect(url_for("teachers_page"))
+
+
 @app.template_filter("timestamp_to_time")
 def _timestamp_to_time_filter(ts):
     """Format an epoch timestamp as HH:MM:SS server-local for admin tables."""
@@ -1248,7 +1709,7 @@ def _timestamp_to_time_filter(ts):
 @app.context_processor
 def _inject_role():
     """Make the current role available to all templates (for nav links)."""
-    return {"is_admin": _is_admin(), "is_public_role": _is_public()}
+    return {"is_admin": _is_admin(), "is_limited_role": _limited_limits() is not None}
 
 
 def _write_env(api_key, model):
