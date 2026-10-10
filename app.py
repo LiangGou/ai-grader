@@ -663,9 +663,8 @@ def grade_detail_page(grade_id):
 # ---------- Settings ----------
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
-    # Testers share the app login but must not change the owner's API key (H2).
-    if not _is_admin():
-        return redirect(url_for("index"))
+    # Require login (teacher or admin). Owner uses teacher login.
+    _require_login()
     msg = ""
     if request.method == "POST":
         api_key = (request.form.get("api_key") or "").strip()
