@@ -1,91 +1,152 @@
 # AI Grader
 
-A web app for teachers to grade homework and exams with AI (MVP).
+Grade homework and exams with AI. Photograph a student's paper → AI grades each question against your rubric → class stats + CSV export.
 
-**Core flow**: photograph a student's paper/homework with your phone → the teacher
-**speaks** the grading rules out loud (no typing needed) → speech is automatically
-structured into an **editable rubric** → **OpenAI API (GPT-4o vision)** grades each
-question against the rubric → totals are tallied → class-wide stats + CSV export.
+Built for teachers who grade on their phones. Mobile-first, no build step, works offline except for OpenAI API calls.
 
-- English UI, mobile-first (teachers photograph papers on their phones).
-- Stack: Python + Flask + SQLite (stdlib), vanilla HTML/CSS/JS (no build step).
+## How it works
 
----
+1. **Set up**: Create a class → create an assignment. Upload a reference example (a paper you graded by hand, an answer key, or a printed exam).
+2. **Generate rubric**: AI digitizes your example — question text, reference solutions, point values — then independently re-solves each question and Python-checks the math to verify. You can edit everything.
+3. **Grade**: Enter a student name, snap photos of their paper. AI grades each question against the rubric with per-question feedback.
+4. **Results**: Class score table, average/high/low, score distribution chart, CSV export.
 
 ## Features
 
-1. **Classes / assignments**: create a class → create grading assignments under it (homework/exam name).
-2. **Rubric entry** (assignment setup page):
-   - 📝 Reference example: take a photo or upload existing photos of a reference — a paper you already graded by hand (with your check marks, crosses, and point notes), an answer key, or a printed scoring guide. Examples are **saved** per assignment: revisit them any time, check/uncheck which ones to use, delete and replace them;
-   - ✨ Generate rubric from example: the backend **digitizes** the example (question text + reference solution + rubric, with math in LaTeX), then **validates** each reference solution by independently re-solving the question and Python-checking the math. Diagrams are either **regenerated** as function plots or **cropped** from your photo and shown with the question. Failed questions are retried once; anything still unresolved is flagged ⚠️ for you to fix (editing a flagged row marks it verified by you);
-   - The digitized table is fully editable: add/remove rows, change labels, max scores, solutions, rules;
-   - Optional reference/answer-key photos, sent along as grading context.
-3. **Photo grading**: enter the student name → take photos or pick from the photo library (multiple pages supported, can mix both)
-   → the backend sends the rubric + answer-key images + paper photos to GPT-4o, which must return strict JSON
-   (per question: detected answer summary, score, max score, scoring rationale; total; overall feedback) →
-   the teacher can adjust any score before saving.
-4. **Results**: full class score table, average/highest/lowest, score-distribution histogram (pure CSS/JS), CSV export.
-5. **Settings page**: enter the OpenAI API key (written to the local `.env`), model name configurable (default `gpt-4o`).
+- **Example-aware rubrics**: Upload a hand-graded paper or answer key; AI extracts questions, solutions, and scoring rules
+- **Generate-then-verify**: Every AI solution is independently re-solved and Python-checked before being trusted
+- **Per-photo digitization**: Each reference photo is processed individually for reliable question detection
+- **Editable everything**: The digitized rubric is a fully editable table — add/remove rows, fix solutions, adjust points
+- **Diagrams**: AI regenerates function plots or crops diagrams from your photos
+- **Mobile-first**: Designed for photographing papers on a phone; 44px touch targets throughout
+- **Login**: Simple password auth with teacher/admin roles
 
-## Install & run
+## Quick start
+
+### Prerequisites
+
+- Python 3.11+
+- An [OpenAI API key](https://platform.openai.com/api-keys) (needs vision + reasoning model access)
+
+### Run locally
 
 ```bash
+git clone https://github.com/LiangGou/ai-grader.git
 cd ai-grader
+
+# One-command startup (creates venv, installs deps, runs server)
 ./run.sh
-# or manually:
+```
+
+Open http://localhost:5000 in your browser.
+
+On first run you'll be asked to set:
+- `GRADER_PASSWORD` — teacher login (≥12 chars)
+- `ADMIN_PASSWORD` — admin login, can access Settings (≥12 chars)
+- `OPENAI_API_KEY` — your OpenAI key (or paste it on the Settings page later)
+
+These are written to `.env` (git-ignored, never committed).
+
+### Manual setup
+
+```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+
+cp .env.example .env
+# Edit .env: set GRADER_PASSWORD, ADMIN_PASSWORD, OPENAI_API_KEY
+
 flask --app app run --host=0.0.0.0 --port=5000
 ```
 
-Open http://localhost:5000 in a browser.
+### Environment variables
 
-## Configure the OpenAI key
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GRADER_PASSWORD` | Yes | Teacher login password (≥12 chars) |
+| `ADMIN_PASSWORD` | Yes | Admin login password; can change API key in Settings |
+| `OPENAI_API_KEY` | Yes | OpenAI API key (starts with `sk-`) |
+| `OPENAI_MODEL` | No | Override grading model (default: `gpt-4o`) |
+| `DATABASE_URL` | No | Postgres URL; falls back to local SQLite if unset |
 
-1. Sign in at https://platform.openai.com and open the **API keys** page;
-2. Click **Create new secret key** and copy the generated key (starts with `sk-`, shown only once);
-3. Paste it on the app's **Settings** page and save (or copy `.env.example` to `.env` and fill it in).
+Copy `.env.example` to `.env` and fill in the values.
 
-Tip: set usage limits (Limits) on your key in the OpenAI dashboard to avoid surprise spend.
-The model is configured via the `OPENAI_MODEL` environment variable, default `gpt-4o`
-(vision quality prioritized for grading).
+## Deploy to Render (free)
 
-> 🔒 Security: the key lives only in the server's local `.env` file; `.env` is in
-> `.gitignore` and is never committed to git; requests go only to `api.openai.com`.
+1. Fork this repo on GitHub
+2. On [render.com](https://render.com), New → Web Service → connect your fork
+3. Render reads `render.yaml` automatically
+4. Set environment variables in the Render dashboard:
+   - `GRADER_PASSWORD`, `ADMIN_PASSWORD`, `OPENAI_API_KEY`
+   - Optional: `DATABASE_URL` (add a free Neon Postgres for persistence)
+5. Deploy — your app is live at `https://your-app.onrender.com`
 
-## Deployment
-
-Run it on any machine with Python 3.11+:
-
-```bash
-cd ai-grader
-./run.sh   # creates .venv, installs deps, serves http://localhost:5000
-```
-
-To run it for other devices on the same network (e.g. your phone), the Flask
-command in `run.sh` already binds `0.0.0.0` — open `http://<server-ip>:5000` on
-the phone. The OpenAI key goes in the local `.env` (via the Settings page);
-data lives in `ai_grader.db` and paper photos in `uploads/` — back up the
-directory (or export CSVs) regularly.
+> **Note**: Render free instances spin down after inactivity (~50s cold start on next visit). The SQLite database is ephemeral on free tier — use Postgres via `DATABASE_URL` for persistent data.
 
 ## Project layout
 
 ```
 ai-grader/
-  app.py            Flask routes (pages + API)
-  grader.py         OpenAI calls: rubric-from-example vision, paper grading
-  db.py             SQLite schema + CRUD (stdlib sqlite3)
-  DESIGN.md         Design doc (English)
-  templates/        base / index / assignment / grade / results / settings
-  static/           style.css (mobile-first) / app.js (camera, grading UI)
-  uploads/          uploaded paper / answer-key photos (git-ignored)
-  requirements.txt  flask / openai / python-dotenv
-  .env.example      environment variable template (placeholders only)
-  run.sh            one-command startup
+├── app.py              Flask routes (pages + JSON API)
+├── grader.py           OpenAI integration: digitization, solving, grading
+├── db.py               Database layer (SQLite locally, Postgres via DATABASE_URL)
+├── templates/          Jinja templates (base, index, assignment, grade, results, settings, login)
+├── static/
+│   ├── style.css       Mobile-first styles, no framework
+│   └── app.js          Vanilla JS (camera, polling, CSV)
+├── tests/
+│   ├── test_regression.py   Backend regression tests (no API calls, mocked)
+│   └── test_frontend.js     Frontend logic tests (Node)
+├── eval/               AP Calculus AB FRQ evaluation sets
+├── requirements.txt
+├── render.yaml         Render deploy config
+├── run.sh              One-command local startup
+└── .env.example        Environment template (placeholders only)
 ```
 
-## Known limitations (MVP)
+## Testing
 
-- Rubric generation reads your example photos with OpenAI vision (GPT-4o) — clear, well-lit shots of your markings give the best results;
-- Oversized photos may exceed the model's per-image limits — take clear but not excessively zoomed shots;
-- Single-file SQLite: switch to Postgres if many teachers use it concurrently.
+```bash
+# Backend (mocked, no API calls, no cost)
+.venv/bin/python tests/test_regression.py
+
+# Frontend
+node tests/test_frontend.js
+```
+
+**Testing policy**: Every bug fix ships with a regression test. Every new feature ships with tests. See `AGENTS.md` in the repo for the full workflow.
+
+## Configuration details
+
+### Models
+
+- **Digitization** (reading reference photos): `gpt-5.6-sol` — vision
+- **Solving** (generating reference solutions): `o3` — reasoning, up to 10 attempts with error feedback
+- **Grading** (scoring student papers): configurable via `OPENAI_MODEL`, default `gpt-4o`
+
+### Database
+
+- **Local**: SQLite (`ai_grader.db`, auto-created, git-ignored)
+- **Production**: Set `DATABASE_URL` for Postgres (e.g. free [Neon](https://neon.tech) tier). The app auto-creates tables on startup. Images are stored in the DB in Postgres mode.
+
+## Security notes
+
+- API keys live only in `.env` (local) or Render env vars (production) — never in git
+- `.env`, `*.db`, `uploads/` are all in `.gitignore`
+- Passwords are hashed with Werkzeug; sessions are signed
+- Teacher role cannot change the API key (admin only)
+- All OpenAI requests go to `api.openai.com` only
+
+## Known limitations
+
+- Rubric generation quality depends on photo clarity — well-lit, full-page shots work best
+- AI solving is best-effort; hard problems may need manual review (the UI flags these)
+- Single-process Flask dev server — use gunicorn (included) for production
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Contributing
+
+Bug reports and PRs welcome. Please include a regression test with every fix (`tests/test_regression.py` for backend, `tests/test_frontend.js` for frontend logic).
