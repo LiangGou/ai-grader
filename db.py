@@ -5,8 +5,11 @@ with Postgres (Neon). No ORM.
 """
 import json
 import os
+import re
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_grader.db")
@@ -260,6 +263,331 @@ def get_image(name):
     return row[0], row[1]
 
 
+def _normalize_image_names(names):
+    """Normalize stored image entries to bare filenames, deduplicated.
+
+    Both the "db:" form and full paths go through os.path.basename: a
+    "db:../../x" entry must not survive as a traversal primitive (dual
+    review 2026-10-10).
+    """
+    seen = []
+    for p in names:
+        if isinstance(p, str) and p.startswith("db:"):
+            raw = p[3:]
+        else:
+            raw = p or ""
+        base = os.path.basename(raw)
+        if base and base not in (".", "..") and base not in seen:
+            seen.append(base)
+    return seen
+
+
+_UPLOADS_URL_RE = re.compile(r"/uploads/([A-Za-z0-9_.\-]+)")
+
+
+def _diagram_names_in_rubric(rubric_json):
+    """Bare filenames referenced as /uploads/<name> inside stored rubric JSON.
+
+    Generated diagrams (_process_graph) are recorded in the rubric items'
+    `graph` fields, not in the image-list columns — without this scan,
+    assignment deletion would never purge them (storage leak).
+    """
+    if not isinstance(rubric_json, str):
+        return []
+    names = []
+    for m in _UPLOADS_URL_RE.finditer(rubric_json):
+        base = os.path.basename(m.group(1))
+        if base and base not in (".", "..") and base not in names:
+            names.append(base)
+    return names
+
+
+def _assignment_image_names_cur(cur, assignment_id):
+    """Image names referenced by an assignment (cursor-based).
+
+    For use inside a serialized transaction: the caller holds the
+    assignment-images lock. Covers reference images, rubric example images,
+    generated-diagram URLs inside the rubric JSON, and every grade's paper
+    photos.
+    """
+    names = []
+    cur.execute(_q("SELECT reference_images, rubric_example_images, rubric_json"
+                   " FROM assignments WHERE id = ?"), (assignment_id,))
+    row = cur.fetchone()
+    if row:
+        for col in (row[0], row[1]):
+            try:
+                names.extend(json.loads(col or "[]"))
+            except (TypeError, ValueError):
+                pass
+        names.extend(_diagram_names_in_rubric(row[2]))
+    cur.execute(_q("SELECT images FROM grades WHERE assignment_id = ?"),
+                (assignment_id,))
+    for (col,) in cur.fetchall():
+        try:
+            names.extend(json.loads(col or "[]"))
+        except (TypeError, ValueError):
+            pass
+    return _normalize_image_names(names)
+
+
+def delete_image(name):
+    """Delete an image's bytes and its ownership record (storage hygiene)."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_q("DELETE FROM images WHERE name = ?"), (name,))
+    cur.execute(_q("DELETE FROM image_owners WHERE filename = ?"), (name,))
+    conn.commit()
+    conn.close()
+
+
+def get_assignment_image_names(assignment_id):
+    """All stored image filenames referenced by an assignment.
+
+    Covers reference images, rubric example images, and every grade's paper
+    photos — used to purge bytes when the assignment is deleted.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        return _assignment_image_names_cur(cur, assignment_id)
+    finally:
+        conn.close()
+
+
+def delete_assignment_returning_images(assignment_id):
+    """Delete an assignment (+ its grades) and return its image names.
+
+    The name gathering and the row deletes run in ONE serialized transaction
+    under the same assignment-images lock as try_append_image_paths, so a
+    concurrent upload cannot slip new bytes in between the snapshot and the
+    delete (which would orphan them). Callers purge the returned names' bytes
+    after this returns (after commit).
+    """
+    with serialized_mutation(f"assignment-images:{assignment_id}") as conn:
+        cur = conn.cursor()
+        names = _assignment_image_names_cur(cur, assignment_id)
+        cur.execute(_q("DELETE FROM grades WHERE assignment_id = ?"),
+                    (assignment_id,))
+        cur.execute(_q("DELETE FROM assignments WHERE id = ?"), (assignment_id,))
+        return names
+
+
+def image_referenced_elsewhere(name, exclude_assignment_id=None):
+    """True if image `name` is still referenced outside one assignment.
+
+    Scans every other assignment's reference/example image lists and every
+    other assignment's grades. Used during assignment deletion so a shared
+    image (legacy name collision, or a copy feature) is never destroyed while
+    another assignment still needs it. `name` is a bare normalized filename.
+    """
+    def _bases(col):
+        try:
+            entries = json.loads(col or "[]")
+        except (TypeError, ValueError):
+            return
+        for e in entries:
+            if isinstance(e, str) and e.startswith("db:"):
+                raw = e[3:]
+            else:
+                raw = e or ""
+            yield os.path.basename(raw)
+
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT id, reference_images, rubric_example_images, rubric_json"
+                   " FROM assignments"))
+    for aid, ref_col, ex_col, rubric_col in cur.fetchall():
+        if exclude_assignment_id is not None and aid == exclude_assignment_id:
+            continue
+        for col in (ref_col, ex_col):
+            if name in _bases(col):
+                conn.close()
+                return True
+        if name in _diagram_names_in_rubric(rubric_col):
+            conn.close()
+            return True
+    if exclude_assignment_id is None:
+        cur.execute(_q("SELECT images FROM grades"))
+        grade_rows = cur.fetchall()
+    else:
+        cur.execute(_q("SELECT images FROM grades WHERE assignment_id != ?"),
+                    (exclude_assignment_id,))
+        grade_rows = cur.fetchall()
+    for (col,) in grade_rows:
+        if name in _bases(col):
+            conn.close()
+            return True
+    conn.close()
+    return False
+
+
+# Thread-local reentrancy flag for serialized_mutation (see below).
+_serialized_state = threading.local()
+
+
+@contextmanager
+def serialized_mutation(lock_key):
+    """Run a check-then-mutate sequence as one atomic unit.
+
+    SQLite: BEGIN IMMEDIATE takes a reserved write lock on the whole DB file,
+    so concurrent writers serialize. Postgres: a transaction-scoped advisory
+    lock keyed by `lock_key` serializes mutations for the same owner or
+    assignment across processes. Use for every capped mutation so a parallel
+    burst of requests cannot overshoot the demo account's storage caps
+    (count-then-insert races, dual review 2026-10-10).
+
+    Not reentrant: nesting would self-deadlock on Postgres (the advisory lock
+    waits inside a single thread, invisible to deadlock detection) and fail
+    with "database is locked" on SQLite. Fail loudly instead.
+    """
+    if getattr(_serialized_state, "active", False):
+        raise RuntimeError("serialized_mutation is not reentrant")
+    # Set the flag before _connect(): if connecting raises, the finally below
+    # still clears it — otherwise one transient DB failure would permanently
+    # poison this worker thread (dual review 2026-10-10).
+    _serialized_state.active = True
+    conn = None
+    try:
+        conn = _connect()
+        if USE_POSTGRES:
+            cur = conn.cursor()
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_key,))
+        else:
+            conn.isolation_level = None  # autocommit; we manage BEGIN/COMMIT
+            conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.commit()
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+        raise
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        finally:
+            _serialized_state.active = False
+
+
+def create_class_capped(name, owner, cap):
+    """Create a class for `owner` if under `cap`; return id, or None if capped.
+
+    The count check and the insert run atomically (see serialized_mutation),
+    so concurrent requests cannot overshoot the cap.
+    """
+    if owner not in ("private", "public"):
+        raise ValueError(f"Invalid owner: {owner!r}")
+    with serialized_mutation(f"classes:{owner}") as conn:
+        cur = conn.cursor()
+        cur.execute(_q("SELECT COUNT(*) FROM classes WHERE owner = ?"), (owner,))
+        if cur.fetchone()[0] >= cap:
+            return None
+        return _insert_returning_id(
+            cur, "INSERT INTO classes (name, created_at, owner) VALUES (?, ?, ?)",
+            (name, now(), owner))
+
+
+def create_assignment_capped(class_id, name, owner, cap):
+    """Create an assignment if `owner` is under `cap`; None if capped.
+
+    Raises ValueError on duplicate name in the class (same contract as
+    create_assignment). Count, duplicate check, and insert are atomic.
+    """
+    with serialized_mutation(f"assignments:{owner}") as conn:
+        cur = conn.cursor()
+        cur.execute(_q("SELECT COUNT(*) FROM assignments a"
+                       " JOIN classes c ON a.class_id = c.id"
+                       " WHERE c.owner = ?"), (owner,))
+        if cur.fetchone()[0] >= cap:
+            return None
+        cur.execute(
+            _q("SELECT id FROM assignments WHERE class_id = ? AND name = ?"),
+            (class_id, name))
+        if cur.fetchone():
+            raise ValueError(f"Assignment '{name}' already exists in this class.")
+        return _insert_returning_id(
+            cur,
+            "INSERT INTO assignments (class_id, name, created_at) VALUES (?, ?, ?)",
+            (class_id, name, now()))
+
+
+_IMAGE_LIST_COLUMNS = ("reference_images", "rubric_example_images")
+
+
+def try_append_image_paths(assignment_id, column, paths, cap=None):
+    """Atomically append `paths` to an assignment's image list.
+
+    `column` must be one of the image-list columns. When `cap` is set, the
+    append only happens if len(current) + len(paths) <= cap; otherwise the
+    stored list is untouched and False is returned. The read-check-update
+    runs atomically (see serialized_mutation) so a parallel upload burst
+    cannot overshoot the cap. Returns True on success.
+    """
+    if column not in _IMAGE_LIST_COLUMNS:
+        raise ValueError(f"Not an image-list column: {column!r}")
+    # Same assignment-images lock as try_remove_image_path and
+    # delete_assignment_returning_images: appends, removes, and deletes are
+    # mutually serialized so no update is lost and no upload slips past a
+    # delete snapshot.
+    with serialized_mutation(f"assignment-images:{assignment_id}") as conn:
+        cur = conn.cursor()
+        cur.execute(_q(f"SELECT {column} FROM assignments WHERE id = ?"),
+                    (assignment_id,))
+        row = cur.fetchone()
+        if not row:
+            return False
+        try:
+            current = json.loads(row[0] or "[]")
+        except (TypeError, ValueError):
+            current = []
+        if cap is not None and len(current) + len(list(paths)) > cap:
+            return False
+        merged = list(current) + list(paths)
+        cur.execute(_q(f"UPDATE assignments SET {column} = ? WHERE id = ?"),
+                    (json.dumps(merged), assignment_id))
+        return True
+
+
+def try_remove_image_path(assignment_id, column, name):
+    """Atomically remove list entries matching `name`; return removed paths.
+
+    `name` is a bare filename. An entry matches when it equals `name`, equals
+    "db:{name}", or its basename equals `name` (covers full-path forms).
+    Runs under the same assignment-images lock as try_append_image_paths, so
+    a concurrent append cannot be silently lost (no read-modify-write race).
+    Returns the removed stored paths so the caller can purge their bytes
+    after commit.
+    """
+    if column not in _IMAGE_LIST_COLUMNS:
+        raise ValueError(f"Not an image-list column: {column!r}")
+
+    def _matches(p):
+        if not isinstance(p, str):
+            return False
+        if p == name or p == f"db:{name}":
+            return True
+        raw = p[3:] if p.startswith("db:") else p
+        return os.path.basename(raw) == name
+
+    with serialized_mutation(f"assignment-images:{assignment_id}") as conn:
+        cur = conn.cursor()
+        cur.execute(_q(f"SELECT {column} FROM assignments WHERE id = ?"),
+                    (assignment_id,))
+        row = cur.fetchone()
+        if not row:
+            return []
+        try:
+            current = json.loads(row[0] or "[]")
+        except (TypeError, ValueError):
+            current = []
+        removed = [p for p in current if _matches(p)]
+        kept = [p for p in current if not _matches(p)]
+        cur.execute(_q(f"UPDATE assignments SET {column} = ? WHERE id = ?"),
+                    (json.dumps(kept), assignment_id))
+        return removed
+
+
 def now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -298,6 +626,28 @@ def list_classes(owner="private"):
     rows = _rows_to_dicts(cur.fetchall(), cur)
     conn.close()
     return rows
+
+
+def count_classes(owner="private"):
+    """Number of classes in one data partition (for demo data-volume caps)."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT COUNT(*) FROM classes WHERE owner = ?"), (owner,))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
+
+
+def count_assignments_for_owner(owner="private"):
+    """Number of assignments in one data partition (demo data-volume caps)."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT COUNT(*) FROM assignments a"
+                   " JOIN classes c ON a.class_id = c.id"
+                   " WHERE c.owner = ?"), (owner,))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
 
 
 def get_class(class_id):
@@ -694,17 +1044,25 @@ def reset_rate_limits(role, day=None):
 
 
 def set_image_owner(filename, owner):
-    """Record which data partition uploaded an image file."""
+    """Record which data partition uploaded an image file.
+
+    Insert-only: if a row for `filename` already exists, its owner is NEVER
+    changed. Combined with unguessable uuid filenames in app._save_upload,
+    this guarantees a colliding upload can neither read nor reassign another
+    partition's image.
+    """
+    if owner not in ("private", "public"):
+        raise ValueError(f"Invalid owner: {owner!r}")
     conn = _connect()
     cur = conn.cursor()
     if USE_POSTGRES:
         cur.execute(_q(
             "INSERT INTO image_owners (filename, owner, created) VALUES (?, ?, ?)"
-            " ON CONFLICT (filename) DO UPDATE SET owner=EXCLUDED.owner"),
+            " ON CONFLICT (filename) DO NOTHING"),
             (filename, owner, time.time()))
     else:
         cur.execute(
-            "INSERT OR REPLACE INTO image_owners (filename, owner, created)"
+            "INSERT OR IGNORE INTO image_owners (filename, owner, created)"
             " VALUES (?, ?, ?)",
             (filename, owner, time.time()))
     conn.commit()

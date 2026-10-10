@@ -16,7 +16,6 @@ import hashlib
 import hmac
 import io
 import json
-import random
 import threading
 import time
 import uuid
@@ -83,9 +82,22 @@ if PUBLIC_PASSWORD:
 # Auth version: changing any password invalidates all sessions.
 # HMAC-keyed with the server secret so the cookie value (signed, not encrypted)
 # doesn't leak a crackable password hash.
+def _auth_version_material():
+    """Canonical serialization of the login passwords for AUTH_VERSION.
+
+    JSON — not f"{a}:{b}:{c}" — so passwords containing ':' can never make
+    two different triples serialize identically. A password change must always
+    invalidate existing sessions.
+    """
+    return json.dumps(
+        {"grader": GRADER_PASSWORD, "admin": ADMIN_PASSWORD,
+         "public": PUBLIC_PASSWORD},
+        sort_keys=True, separators=(",", ":")).encode()
+
+
 AUTH_VERSION = hmac.new(
     app.secret_key.encode(),
-    f"{GRADER_PASSWORD}:{ADMIN_PASSWORD}:{PUBLIC_PASSWORD}".encode(),
+    _auth_version_material(),
     hashlib.sha256).hexdigest()[:32]
 
 # Public demo account limits (only apply to the "public" role).
@@ -102,6 +114,25 @@ PUBLIC_MAX_QUESTIONS_LIFETIME = int(os.environ.get("PUBLIC_MAX_QUESTIONS_LIFETIM
 # Per-day token cap for the public role specifically (in addition to the
 # global DAILY_TOKEN_BUDGET). 0 disables the per-role cap.
 PUBLIC_DAILY_TOKEN_BUDGET = int(os.environ.get("PUBLIC_DAILY_TOKEN_BUDGET", "500000"))
+# Public demo text-input cap (characters) for retry/regenerate: each
+# operation's prompt must stay bounded, or a single call with a huge
+# question_text could blow past the daily token budget.
+PUBLIC_MAX_TEXT_CHARS = int(os.environ.get("PUBLIC_MAX_TEXT_CHARS", "4000"))
+# Public demo stored-image caps per assignment (storage + token protection):
+# reference photos (answer keys) and rubric example photos. The reference
+# default is deliberately below PUBLIC_MAX_GRADE_IMAGES: with 4 reference
+# photos and a 4-photo grading cap, no paper photo would fit and the
+# assignment could never be graded.
+PUBLIC_MAX_REFERENCE_IMAGES = int(os.environ.get("PUBLIC_MAX_REFERENCE_IMAGES", "3"))
+PUBLIC_MAX_EXAMPLE_IMAGES = int(os.environ.get("PUBLIC_MAX_EXAMPLE_IMAGES", "4"))
+# Public demo rubric size cap (characters, rubric_text + rubric_json): rubrics
+# are saved by the user and sent to the model on every grading, so an
+# uncapped stored rubric would bypass the per-request text caps.
+PUBLIC_MAX_RUBRIC_CHARS = int(os.environ.get("PUBLIC_MAX_RUBRIC_CHARS", "20000"))
+# Public demo data-volume caps (storage protection): strangers must not fill
+# the database with unlimited classes/assignments.
+PUBLIC_MAX_CLASSES = int(os.environ.get("PUBLIC_MAX_CLASSES", "10"))
+PUBLIC_MAX_ASSIGNMENTS = int(os.environ.get("PUBLIC_MAX_ASSIGNMENTS", "20"))
 
 # Log every OpenAI call for owner cost visibility.
 grader.usage_logger = db.log_api_usage
@@ -111,12 +142,57 @@ DAILY_TOKEN_BUDGET = int(os.environ.get("DAILY_TOKEN_BUDGET", "2000000"))
 
 
 def _budget_ok():
+    """Token-budget gate, checked before every OpenAI call.
+
+    Enforces the global DAILY_TOKEN_BUDGET for everyone, and additionally the
+    PUBLIC_DAILY_TOKEN_BUDGET for the public role on each call — not just at
+    route entry — so multi-call operations (rubric builds, retries) and any
+    future route cannot overshoot it by more than the in-flight calls.
+
+    Uses the ContextVar role, never `session`: this runs in background and
+    worker threads that have no request context. The role is propagated into
+    pool workers by grader._submit_with_context.
+    """
     start_of_day = time.time() - (time.time() % 86400)
     s = db.get_api_usage_summary(since_ts=start_of_day)
-    return (s["prompt_tokens"] + s["completion_tokens"]) < DAILY_TOKEN_BUDGET
+    if (s["prompt_tokens"] + s["completion_tokens"]) >= DAILY_TOKEN_BUDGET:
+        return False
+    if grader._get_current_role() == "public" and PUBLIC_DAILY_TOKEN_BUDGET > 0:
+        used = db.get_api_usage_summary_for_role("public")
+        if (used["prompt_tokens"] + used["completion_tokens"]) >= PUBLIC_DAILY_TOKEN_BUDGET:
+            return False
+    return True
 
 
 grader.budget_checker = _budget_ok
+
+# The public demo's daily token budget must sit well below the global daily
+# budget: strangers must never be able to exhaust the owner's own grading
+# budget (financial-adjacent denial of service). 2x headroom minimum.
+# Fail closed: with the public account enabled, neither budget may be
+# disabled (0) — an unbounded demo account is not a supported configuration.
+if PUBLIC_PASSWORD:
+    if DAILY_TOKEN_BUDGET <= 0:
+        raise RuntimeError(
+            "DAILY_TOKEN_BUDGET must be positive when the public account is enabled")
+    if PUBLIC_DAILY_TOKEN_BUDGET <= 0:
+        raise RuntimeError(
+            "PUBLIC_DAILY_TOKEN_BUDGET must be positive when the public account is enabled")
+    if PUBLIC_DAILY_TOKEN_BUDGET * 2 > DAILY_TOKEN_BUDGET:
+        raise RuntimeError(
+            "PUBLIC_DAILY_TOKEN_BUDGET must be at most half of DAILY_TOKEN_BUDGET")
+    # The reference-photo default must leave room for at least one paper photo
+    # under the grading cap; otherwise a maxed-out assignment is ungradable.
+    if PUBLIC_MAX_REFERENCE_IMAGES >= PUBLIC_MAX_GRADE_IMAGES:
+        raise RuntimeError(
+            "PUBLIC_MAX_REFERENCE_IMAGES must be below PUBLIC_MAX_GRADE_IMAGES")
+    # The demo role's model must be a cheap non-reasoning model: an
+    # OPENAI_MODEL=o3 (or PUBLIC_MODEL=o3) override would otherwise give
+    # strangers unbounded reasoning spend against the demo token budget.
+    if grader.PUBLIC_MODEL not in grader.PUBLIC_MODEL_ALLOWLIST:
+        raise RuntimeError(
+            f"PUBLIC_MODEL must be one of {sorted(grader.PUBLIC_MODEL_ALLOWLIST)} "
+            "when the public account is enabled")
 
 db.init_db()
 
@@ -136,6 +212,11 @@ def _require_login():
     # Background job threads set their own role at start (see _run_solve_job);
     # ContextVar keeps threads isolated.
     grader._set_current_role(_data_owner())
+    # Reset the operation label: worker threads serve requests sequentially
+    # and the ContextVar persists across them — without this reset, a retry
+    # handled right after a grading on the same thread would be logged under
+    # the wrong operation on the admin monitor page.
+    grader._set_current_operation("general")
 
 
 def _is_admin():
@@ -152,8 +233,35 @@ def _data_owner():
 
     'public' for the public demo role (fully isolated sandbox),
     'private' for the owner's tester/admin roles.
+
+    Fail closed: any stale session or unknown role aborts instead of falling
+    through to the owner's partition.
     """
-    return "public" if _is_public() else "private"
+    if session.get("auth_v") != AUTH_VERSION:
+        abort(401)
+    role = session.get("role")
+    if role == "public":
+        return "public"
+    if role in ("tester", "admin"):
+        return "private"
+    abort(403)
+
+
+def _public_text_too_long(*fields):
+    """True when a public-role text input exceeds the demo character cap."""
+    return _is_public() and any(len(f or "") > PUBLIC_MAX_TEXT_CHARS
+                                 for f in fields)
+
+
+def _public_rubric_too_long(a):
+    """True when a public assignment's stored rubric exceeds the demo cap.
+
+    Stored rubrics are sent to the model on every grading, so the size must
+    be bounded both when saved and when used.
+    """
+    return _is_public() and (
+        len(a.get("rubric_text") or "") + len(a.get("rubric_json") or "")
+    ) > PUBLIC_MAX_RUBRIC_CHARS
 
 
 def _require_class(class_id):
@@ -264,18 +372,84 @@ def _save_upload(file_storage, prefix):
     ext = os.path.splitext(file_storage.filename or "")[1].lower()
     if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
         ext = ".jpg"
-    name = f"{prefix}_{int(time.time())}_{random.randint(1000, 9999)}{ext}"
+    # Unpredictable, collision-free name. The old time+randint(1000,9999)
+    # scheme had only 9,000 names per second per prefix, so a colliding
+    # upload could flip a private image's owner row (and overwrite its bytes)
+    # into the uploader's partition. uuid4 makes collisions and guessing
+    # computationally infeasible.
+    name = f"{prefix}_{uuid.uuid4().hex}{ext}"
     # Record the data partition for /uploads/<filename> authorization.
+    # Insert-only: an existing row keeps its original owner (see
+    # db.set_image_owner), so a collision can never transfer ownership.
     db.set_image_owner(name, _data_owner())
-    if db.USE_POSTGRES:
-        # Render disk is ephemeral: store image bytes in Postgres.
-        data = file_storage.read()
-        mime = file_storage.mimetype or "image/jpeg"
-        db.save_image(name, data, mime)
-        return f"db:{name}"
-    path = os.path.join(UPLOAD_DIR, name)
-    file_storage.save(path)
-    return path
+    try:
+        if db.USE_POSTGRES:
+            # Render disk is ephemeral: store image bytes in Postgres.
+            data = file_storage.read()
+            mime = file_storage.mimetype or "image/jpeg"
+            db.save_image(name, data, mime)
+            return f"db:{name}"
+        path = os.path.join(UPLOAD_DIR, name)
+        file_storage.save(path)
+        return path
+    except Exception:
+        # The owner row was already inserted: roll it (and any partial file)
+        # back so a failed upload never leaks rows or bytes.
+        try:
+            db.delete_image(name)
+        except Exception:
+            pass
+        if not db.USE_POSTGRES:
+            try:
+                os.remove(os.path.join(UPLOAD_DIR, name))
+            except OSError:
+                pass
+        raise
+
+
+def _purge_upload(p):
+    """Delete one stored upload's bytes and file, partition-safe.
+
+    Only touches images owned by the caller's data partition: a planted
+    cross-partition name can never destroy another partition's bytes.
+    Filesystem deletes are contained to UPLOAD_DIR via realpath comparison
+    (defense in depth — stored names are already normalized to basenames).
+    """
+    name = _upload_basename(p)
+    if not name or db.get_image_owner(name) != _data_owner():
+        return
+    db.delete_image(name)
+    if not db.USE_POSTGRES:
+        upload_root = os.path.realpath(UPLOAD_DIR)
+        path = os.path.realpath(os.path.join(UPLOAD_DIR, name))
+        if os.path.dirname(path) == upload_root:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _purge_uploads(paths):
+    """Purge several stored uploads (see _purge_upload)."""
+    for p in paths:
+        _purge_upload(p)
+
+
+def _stage_uploads(files, prefix):
+    """Save uploads one by one; on ANY failure purge what was staged.
+
+    Returns the list of stored paths. Re-raises the original exception after
+    cleanup, so callers never leak staged bytes or owner rows when a
+    multi-file batch fails partway through.
+    """
+    staged = []
+    try:
+        for f in files:
+            staged.append(_save_upload(f, prefix))
+        return staged
+    except Exception:
+        _purge_uploads(staged)
+        raise
 
 
 def _upload_exists(p):
@@ -305,11 +479,16 @@ def _upload_basename(p):
 
 def _env_status():
     key = os.environ.get("OPENAI_API_KEY", "").strip()
-    return {
+    status = {
         "key_set": bool(key),
         "key_hint": ("…" + key[-4:]) if key and len(key) > 4 else "",
         "model": os.environ.get("OPENAI_MODEL", grader.DEFAULT_MODEL),
     }
+    if _is_public():
+        # The demo account must never see any part of the owner's API key,
+        # not even the last-4 hint shown to the owner's own roles.
+        status["key_hint"] = ""
+    return status
 
 
 # ---------- Home: classes / assignments ----------
@@ -329,7 +508,17 @@ def index():
 def class_new():
     name = (request.form.get("name") or "").strip()
     if name:
-        db.create_class(name, _data_owner())
+        if _is_public():
+            # Atomic cap: the count check and the insert run in one locked
+            # transaction, so a parallel burst of requests cannot overshoot
+            # the demo account's class limit (each class can hold images that
+            # live in the owner's database).
+            if db.create_class_capped(name, "public", PUBLIC_MAX_CLASSES) is None:
+                return jsonify({"ok": False, "error":
+                                f"Demo limit reached: at most {PUBLIC_MAX_CLASSES} classes "
+                                f"for this demo account."}), 429
+        else:
+            db.create_class(name, _data_owner())
     return redirect(url_for("index"))
 
 
@@ -339,11 +528,24 @@ def assignment_new():
     name = (request.form.get("name") or "").strip()
     if class_id and name:
         _require_class(int(class_id))  # 403 if cross-partition
-        try:
-            aid = db.create_assignment(int(class_id), name)
-        except ValueError:
-            # Duplicate name in this class — bounce back with an error flag.
-            return redirect(url_for("index", dup=name))
+        if _is_public():
+            # Atomic cap (see class_new).
+            try:
+                aid = db.create_assignment_capped(int(class_id), name, "public",
+                                                  PUBLIC_MAX_ASSIGNMENTS)
+            except ValueError:
+                # Duplicate name in this class — bounce back with an error flag.
+                return redirect(url_for("index", dup=name))
+            if aid is None:
+                return jsonify({"ok": False, "error":
+                                f"Demo limit reached: at most {PUBLIC_MAX_ASSIGNMENTS} assignments "
+                                f"for this demo account."}), 429
+        else:
+            try:
+                aid = db.create_assignment(int(class_id), name)
+            except ValueError:
+                # Duplicate name in this class — bounce back with an error flag.
+                return redirect(url_for("index", dup=name))
         return redirect(url_for("assignment_page", assignment_id=aid))
     return redirect(url_for("index"))
 
@@ -481,9 +683,11 @@ def api_retry_question():
 
     Body: {assignment_id, q, question_text, max_score, model, high_effort}.
     `model` is "o3" (default) or "gpt-4o"; `high_effort` requests o3 with
-    reasoning_effort="high". Returns the new solution, criteria, verification
+    reasoning_effort="high". The public demo role is always forced onto the
+    allowlisted public model (see grader.PUBLIC_MODEL). Returns the new solution, criteria, verification
     status, and the raw model outputs for debugging.
     """
+    grader._set_current_operation("retry_question")
     data = request.get_json(force=True, silent=True) or {}
     assignment_id = data.get("assignment_id")
     q_label = str(data.get("q", "")).strip()
@@ -498,6 +702,16 @@ def api_retry_question():
         return jsonify({"ok": False, "error": "Missing assignment or question text."}), 400
     if model not in ("o3", "gpt-4o"):
         return jsonify({"ok": False, "error": "Model must be 'o3' or 'gpt-4o'."}), 400
+    if _public_text_too_long(q_label, question_text):
+        return jsonify({"ok": False, "error":
+                        f"Demo limit: question label or question text too long "
+                        f"(max {PUBLIC_MAX_TEXT_CHARS} characters each)."}), 400
+    if _is_public():
+        # The demo may not pick the reasoning model: keep per-call cost bounded.
+        # Use the allowlisted public model (not a "gpt-4o" literal) so the
+        # guarantee holds even if the default model env is a reasoning model.
+        model = grader.PUBLIC_MODEL
+        high_effort = False
     _require_assignment(assignment_id)  # 404/403 on cross-partition access
     # Public demo guardrails: lifetime cap + token budget first (no quota
     # consumed), then the daily retry cap immediately before costly work.
@@ -541,6 +755,7 @@ def api_regenerate_rubric():
     Uses generate_ap_rubric_only with the AP enforcement (5 attempts + fallback).
     Returns {ok, criteria}.
     """
+    grader._set_current_operation("regenerate_rubric")
     data = request.get_json(force=True, silent=True) or {}
     q_label = str(data.get("q", "")).strip()
     question_text = str(data.get("question_text", "")).strip()
@@ -555,6 +770,10 @@ def api_regenerate_rubric():
         return jsonify({"ok": False, "error": "Reference solution is empty."}), 400
     if max_score <= 0:
         return jsonify({"ok": False, "error": "Max score must be positive."}), 400
+    if _public_text_too_long(q_label, question_text, reference_solution):
+        return jsonify({"ok": False, "error":
+                        f"Demo limit: question label, question text, or reference solution "
+                        f"too long (max {PUBLIC_MAX_TEXT_CHARS} characters each)."}), 400
     try:
         assignment_id = int(data["assignment_id"])
     except (KeyError, TypeError, ValueError):
@@ -578,6 +797,9 @@ def api_regenerate_rubric():
         # generate_ap_rubric_only raises on validation failure; fall back
         # to structural AP format so the teacher always gets usable output.
         criteria = grader._minimal_ap_rubric(reference_solution, max_score, q_label)
+    # Public demo lifetime cap: each regeneration fixes one question.
+    if _is_public():
+        db.add_lifetime_usage("public", "questions", 1)
     # Generate diagram if the question needs one (user requirement 2026-10-08:
     # "有图的你要画图" - questions mentioning graph/sketch must have diagrams).
     graph = None
@@ -599,12 +821,26 @@ def api_regenerate_rubric():
 @app.route("/assignment/<int:assignment_id>/upload_rubric_example", methods=["POST"])
 def assignment_upload_rubric_example(assignment_id):
     a = _require_assignment(assignment_id)
-    existing = db.get_rubric_example_images(assignment_id)
-    for f in request.files.getlist("images"):
-        if f and f.filename:
-            existing.append(_save_upload(f, "rubric_example"))
-    db.save_rubric_example_images(assignment_id, existing)
-    names = [_upload_basename(p) for p in existing if _upload_exists(p)]
+    new_files = [f for f in request.files.getlist("images") if f and f.filename]
+    # Stage-then-atomic-append (see assignment_upload_reference): a parallel
+    # upload burst cannot overshoot the cap, and no failure path leaks bytes.
+    staged = _stage_uploads(new_files, "rubric_example")
+    cap = PUBLIC_MAX_EXAMPLE_IMAGES if _is_public() else None
+    try:
+        appended = db.try_append_image_paths(
+            assignment_id, "rubric_example_images", staged, cap)
+    except Exception:
+        _purge_uploads(staged)
+        raise
+    if not appended:
+        _purge_uploads(staged)
+        if _is_public():
+            return jsonify({"ok": False, "error":
+                            f"Demo limit: at most {PUBLIC_MAX_EXAMPLE_IMAGES} example photos "
+                            f"per assignment."}), 400
+        return jsonify({"ok": False, "error": "Assignment not found."}), 404
+    names = [_upload_basename(p) for p in db.get_rubric_example_images(assignment_id)
+             if _upload_exists(p)]
     return jsonify({"ok": True, "examples": names})
 
 
@@ -613,18 +849,15 @@ def assignment_delete_rubric_example(assignment_id):
     _require_assignment(assignment_id)  # 404/403 on cross-partition access
     data = request.get_json(force=True, silent=True) or {}
     name = _upload_basename(data.get("filename") or "")
-    existing = db.get_rubric_example_images(assignment_id)
-    kept = []
-    for p in existing:
-        if _upload_basename(p) == name or p == name or p == f"db:{name}":
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-        else:
-            kept.append(p)
-    db.save_rubric_example_images(assignment_id, kept)
-    names = [_upload_basename(p) for p in kept if _upload_exists(p)]
+    # Atomic remove under the assignment-images lock: a concurrent upload
+    # cannot be silently lost, and the removed photos' bytes are purged in
+    # both storage modes (otherwise a remove/re-upload loop grows storage
+    # without bound despite the per-assignment caps).
+    removed = db.try_remove_image_path(assignment_id, "rubric_example_images", name)
+    for p in removed:
+        _purge_upload(p)
+    names = [_upload_basename(p) for p in db.get_rubric_example_images(assignment_id)
+             if _upload_exists(p)]
     return jsonify({"ok": True, "examples": names})
 
 
@@ -657,6 +890,12 @@ def assignment_save_rubric(assignment_id):
     rubric_text = grader.rubric_items_to_text(items)
     if not rubric_text.strip():
         return jsonify({"ok": False, "error": "The rubric is empty. Please generate it from a reference example in Step 1 first."}), 400
+    # Stored rubrics are sent to the model on every grading: cap the stored
+    # size for the demo account so a huge saved rubric can't bypass the
+    # per-request text caps.
+    if _is_public() and len(rubric_text) + len(json.dumps(items)) > PUBLIC_MAX_RUBRIC_CHARS:
+        return jsonify({"ok": False, "error":
+                        f"Demo limit: rubric too long (max {PUBLIC_MAX_RUBRIC_CHARS} characters)."}), 400
     db.save_rubric(assignment_id, rubric_text, items)
     return jsonify({"ok": True, "rubric_text": rubric_text, "items": items})
 
@@ -667,11 +906,26 @@ def assignment_upload_reference(assignment_id):
     a = _require_assignment(assignment_id)
     if not a:
         return redirect(url_for("index"))
-    existing = json.loads(a["reference_images"] or "[]")
-    for f in files:
-        if f and f.filename:
-            existing.append(_save_upload(f, "ref"))
-    db.save_reference_images(assignment_id, existing)
+    new_files = [f for f in files if f and f.filename]
+    # Stage the uploads first (any mid-batch failure purges what was staged),
+    # then append atomically: the count check and the list update run in one
+    # locked transaction, so a parallel upload burst cannot overshoot the
+    # cap. Rejected or failed appends purge the staged uploads.
+    staged = _stage_uploads(new_files, "ref")
+    cap = PUBLIC_MAX_REFERENCE_IMAGES if _is_public() else None
+    try:
+        appended = db.try_append_image_paths(
+            assignment_id, "reference_images", staged, cap)
+    except Exception:
+        _purge_uploads(staged)
+        raise
+    if not appended:
+        _purge_uploads(staged)
+        if _is_public():
+            return jsonify({"ok": False, "error":
+                            f"Demo limit: at most {PUBLIC_MAX_REFERENCE_IMAGES} reference photos "
+                            f"per assignment."}), 400
+        return jsonify({"ok": False, "error": "Assignment not found."}), 404
     return redirect(url_for("assignment_page", assignment_id=assignment_id))
 
 
@@ -679,7 +933,19 @@ def assignment_upload_reference(assignment_id):
 @app.route("/api/assignment/<int:assignment_id>/delete", methods=["POST"])
 def api_assignment_delete(assignment_id):
     _require_assignment(assignment_id)  # 404/403 before deleting
-    db.delete_assignment(assignment_id)
+    # Gather names and delete rows atomically (same lock as uploads): a
+    # concurrent upload cannot slip bytes in after the snapshot and orphan
+    # them. Purge image bytes afterwards: in Postgres mode they live in the
+    # owner's database, so deleting the rows without the bytes would leak
+    # storage. Each name is ownership-checked: a planted cross-partition name
+    # can never destroy another partition's image, and a shared image (legacy
+    # name collision) is kept while another assignment still references it.
+    for name in db.delete_assignment_returning_images(assignment_id):
+        if db.get_image_owner(name) != _data_owner():
+            continue
+        if db.image_referenced_elsewhere(name, exclude_assignment_id=assignment_id):
+            continue
+        _purge_upload("db:" + name)
     return jsonify({"ok": True})
 
 
@@ -697,6 +963,14 @@ def api_extract_name():
 
     Body: multipart with 'image' file. Returns {ok, name}.
     """
+    grader._set_current_operation("extract_name")
+    # Blocked for the demo account: this is an OpenAI vision call outside the
+    # grading rate limits and token budget. Public grading (/api/grade)
+    # already auto-extracts the name inside its guarded operation.
+    if _is_public():
+        return jsonify({"ok": False, "error":
+                        "Standalone name extraction is unavailable for the demo account. "
+                        "Grade a paper instead — the name is extracted automatically."}), 403
     f = request.files.get("image")
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "No image."}), 400
@@ -719,11 +993,13 @@ def api_extract_name():
 @app.route("/api/grade", methods=["POST"])
 def api_grade():
     grader._set_current_operation("grade")
-    assignment_id = request.form.get("assignment_id")
+    raw_assignment_id = request.form.get("assignment_id")
     student_name = (request.form.get("student_name") or "").strip()
-    if not assignment_id:
-        return jsonify({"ok": False, "error": "Missing assignment ID."}), 400
-    a = _require_assignment(int(assignment_id))
+    try:
+        assignment_id = int(raw_assignment_id)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid assignment ID."}), 400
+    a = _require_assignment(assignment_id)
     # Validate inputs BEFORE consuming rate-limit quota.
     files = request.files.getlist("images")
     valid_files = [f for f in files if f and f.filename]
@@ -732,6 +1008,22 @@ def api_grade():
                         f"Demo limit: at most {PUBLIC_MAX_GRADE_IMAGES} photos per paper."}), 400
     if not valid_files:
         return jsonify({"ok": False, "error": "No paper photos received. Please take/upload photos first."}), 400
+    # Reference (answer-key) photos are also sent to the model, so for the
+    # demo account the *total* images per grading (paper + reference) must
+    # stay within the photo cap — otherwise stored reference images would
+    # bypass it.
+    ref_paths = [p for p in json.loads(a["reference_images"] or "[]") if _upload_exists(p)]
+    if _is_public() and len(valid_files) + len(ref_paths) > PUBLIC_MAX_GRADE_IMAGES:
+        return jsonify({"ok": False, "error":
+                        f"Demo limit: at most {PUBLIC_MAX_GRADE_IMAGES} total photos per grading "
+                        f"(paper + reference). Remove some reference photos first."}), 400
+    # The stored rubric is sent to the model on every grading: reject an
+    # over-long saved rubric for the demo account (defense in depth with the
+    # write-time cap in assignment_save_rubric).
+    if _public_rubric_too_long(a):
+        return jsonify({"ok": False, "error":
+                        f"Demo limit: rubric too long (max {PUBLIC_MAX_RUBRIC_CHARS} characters). "
+                        f"Shorten the rubric first."}), 400
     # Public demo guardrails: lifetime cap + token budget first (no quota
     # consumed), then the daily grading cap immediately before costly work.
     if _public_token_budget_exceeded():
@@ -741,43 +1033,47 @@ def api_grade():
     if err:
         return jsonify({"ok": False, "error": err}), 429
 
+    # Any failure from here on (a mid-batch upload error, name extraction, or
+    # the grading call itself) discards the staged paper photos: no orphaned
+    # bytes. _stage_uploads already purges on mid-batch save failures.
     paths = []
-    first_path = None
-    for f in valid_files:
-        p = _save_upload(f, "paper")
-        paths.append(p)
-        if first_path is None:
-            first_path = p
-    # Auto-extract student name from first photo if not provided
-    if not student_name and first_path:
-        try:
-            # Resolve db: path to a real file for the extractor
-            extract_path = first_path
-            if first_path.startswith("db:"):
-                import tempfile
-                data, _ = db.get_image(first_path[3:])
-                if data:
-                    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                        tmp.write(data)
-                        extract_path = tmp.name
-            student_name = grader.extract_student_name(extract_path) or ""
-            if first_path.startswith("db:") and extract_path != first_path:
-                try:
-                    os.unlink(extract_path)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    if not student_name:
-        student_name = "Student"
-
-    items = json.loads(a["rubric_json"] or "[]")
-    ref_paths = [p for p in json.loads(a["reference_images"] or "[]") if _upload_exists(p)]
     try:
+        first_path = None
+        for f in valid_files:
+            p = _save_upload(f, "paper")
+            paths.append(p)
+            if first_path is None:
+                first_path = p
+        # Auto-extract student name from first photo if not provided
+        if not student_name and first_path:
+            try:
+                # Resolve db: path to a real file for the extractor
+                extract_path = first_path
+                if first_path.startswith("db:"):
+                    import tempfile
+                    data, _ = db.get_image(first_path[3:])
+                    if data:
+                        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                            tmp.write(data)
+                            extract_path = tmp.name
+                student_name = grader.extract_student_name(extract_path) or ""
+                if first_path.startswith("db:") and extract_path != first_path:
+                    try:
+                        os.unlink(extract_path)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        if not student_name:
+            student_name = "Student"
+
+        items = json.loads(a["rubric_json"] or "[]")
         result = grader.grade_paper(a["rubric_text"], items, paths, ref_paths)
     except RuntimeError as e:
+        _purge_uploads(paths)
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:  # noqa: BLE001
+        _purge_uploads(paths)
         return jsonify({"ok": False, "error": f"Grading failed: {e}"}), 500
     return jsonify({"ok": True, "result": result, "photos": [_upload_basename(p) for p in paths]})
 

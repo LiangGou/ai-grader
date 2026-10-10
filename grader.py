@@ -20,6 +20,13 @@ DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 # Reasoning model for hard tasks (diagram code generation, complex math).
 # Simple tasks (transcription) use DEFAULT_MODEL to save cost/time.
 REASONING_MODEL = os.environ.get("OPENAI_REASONING_MODEL", "o3")
+# Model used for EVERY call made as the public demo role. The demo role never
+# touches a reasoning model (o1/o3/o4): their per-call cost is unbounded
+# relative to the demo's token budget. Locked to a small allowlist at startup
+# (see app.py) so an OPENAI_MODEL=o3 override cannot re-enable reasoning for
+# strangers. The default model for the owner's own roles is still OPENAI_MODEL.
+PUBLIC_MODEL = os.environ.get("PUBLIC_MODEL", "gpt-4o")
+PUBLIC_MODEL_ALLOWLIST = {"gpt-4o", "gpt-4o-mini"}
 
 EXAMPLE_RUBRIC_SYSTEM = """You are digitizing a teacher's reference example (a hand-graded paper, answer key, or scoring guide) into structured data.
 For each question, transcribe and extract:
@@ -339,6 +346,35 @@ def _set_current_role(role):
     _current_role_var.set(role)
 
 
+def _submit_with_context(pool, fn, /, *args, **kwargs):
+    """Submit fn to a ThreadPoolExecutor, propagating the caller's context.
+
+    Worker threads start with default ContextVar values ("private"/"general"),
+    which would misattribute the caller's role and operation in usage logs —
+    public-role token spend would be logged as 'private', invisible to the
+    public token budget and the admin monitor. Copying the submitter's context
+    into the worker fixes the attribution.
+    """
+    ctx = _contextvars.copy_context()
+    return pool.submit(lambda: ctx.run(fn, *args, **kwargs))
+
+
+def _reasoning_model():
+    """Reasoning model for the current role.
+
+    The public demo role never uses the reasoning model: its per-call cost is
+    unbounded relative to the demo's token budget (up to 10 solve attempts per
+    question). Public calls use the allowlisted PUBLIC_MODEL instead — this
+    also stays correct when OPENAI_MODEL itself is set to a reasoning model.
+    The role is propagated into worker threads (see _submit_with_context), so
+    this holds on every code path. Any other role gets the configured
+    REASONING_MODEL unchanged.
+    """
+    if _get_current_role() == "public":
+        return PUBLIC_MODEL
+    return REASONING_MODEL
+
+
 def _get_current_operation():
     return _current_operation_var.get()
 
@@ -350,6 +386,15 @@ def _set_current_operation(op):
 def _chat_json(system, user_content, max_tokens, model=None, reasoning_effort=None, _raw=None):
     client = _get_client()
     model = model or DEFAULT_MODEL
+    # The public demo role ALWAYS uses the allowlisted public model — no
+    # exceptions and no prefix checks. DEFAULT_MODEL (or any explicitly
+    # passed model) could be an expensive model the operator configured for
+    # their own use; strangers must never inherit it. The startup allowlist
+    # check on PUBLIC_MODEL is the single authoritative control, and call
+    # sites additionally resolve through _reasoning_model().
+    if _get_current_role() == "public":
+        model = PUBLIC_MODEL
+        reasoning_effort = None
     # Reasoning models (o1/o3) and gpt-5.x use max_completion_tokens and don't
     # support response_format=json_object; ask for JSON in the prompt instead.
     is_reasoning = (model.startswith("o1") or model.startswith("o3")
@@ -904,7 +949,10 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
     import time
     import subprocess
     import sys
-    name = f"diagram_gen_{int(time.time())}_{random.randint(1000, 9999)}.png"
+    import uuid
+    # UUID name: collision-free. The old time+randint scheme had only ~9000
+    # names/sec and could collide across concurrent generations.
+    name = f"diagram_gen_{uuid.uuid4().hex}.png"
     # Absolute path: the subprocess runs with cwd=/tmp, so a relative
     # uploads/ path would not resolve.
     out_path = os.path.abspath(os.path.join(upload_dir, name))
@@ -956,9 +1004,15 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
         except Exception:
             pass
         return None
-    # Postgres mode: store diagram in DB (Render disk is ephemeral).
+    # Record the data-partition owner (both modes): /uploads authorizes by
+    # owner row — unknown files are treated as private, so without this the
+    # public demo role would get 404s on its own diagrams — and assignment
+    # deletion purges diagram bytes by owner. Postgres mode additionally
+    # stores the bytes in the DB (Render disk is ephemeral).
     try:
         import db as _db
+        _db.set_image_owner(
+            name, "public" if _get_current_role() == "public" else "private")
         if _db.USE_POSTGRES:
             with open(out_path, "rb") as f:
                 _db.save_image(name, f.read(), "image/png")
@@ -1008,10 +1062,18 @@ def _crop_graph(image_paths, spec, upload_dir, question_text=""):
         px = (int(w * x0 / 1000), int(h * y0 / 1000), int(w * x1 / 1000), int(h * y1 / 1000))
         if px[2] - px[0] < 20 or px[3] - px[1] < 20:
             return None
-        import random
-        import time
-        name = f"graph_crop_{int(time.time())}_{random.randint(1000, 9999)}.png"
+        import uuid
+        # UUID name: collision-free (see _generate_diagram).
+        name = f"graph_crop_{uuid.uuid4().hex}.png"
         im.crop(px).save(os.path.join(upload_dir, name))
+        # Record the data-partition owner so /uploads auth and assignment
+        # deletion handle this file (see _generate_diagram).
+        try:
+            import db as _db
+            _db.set_image_owner(
+                name, "public" if _get_current_role() == "public" else "private")
+        except Exception:
+            pass
         return {"kind": "image", "url": f"/uploads/{name}"}
     except Exception:
         return None
@@ -1477,7 +1539,7 @@ def generate_ap_rubric_only(question_text, reference_solution, max_score, q_labe
         AP_RUBRIC_ONLY_SYSTEM,
         [{"type": "text", "text": prompt}],
         max_tokens=2048,
-        model=REASONING_MODEL,
+        model=_reasoning_model(),
     )
     pts = data.get("ap_points") or []
     # Hard guardrails on the rubric points. The solution is the teacher's,
@@ -1553,7 +1615,7 @@ def build_example_rubric_streaming(image_paths, upload_dir=None, max_workers=5,
 
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futs = {pool.submit(_validate, q): i for i, q in enumerate(questions)}
+        futs = {_submit_with_context(pool, _validate, q): i for i, q in enumerate(questions)}
         verdicts = {}
         for f in as_completed(futs):
             i = futs[f]
@@ -1580,7 +1642,7 @@ def build_example_rubric_streaming(image_paths, upload_dir=None, max_workers=5,
         if on_total:
             on_total(len(questions))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futs = {pool.submit(_validate, questions[i]): i for i in failed if i < len(questions)}
+            futs = {_submit_with_context(pool, _validate, questions[i]): i for i in failed if i < len(questions)}
             for f in as_completed(futs):
                 i = futs[f]
                 v = f.result()
@@ -1758,7 +1820,7 @@ def solve_and_rubric(question_text, max_score, q_label="", image_paths=None,
     `retry_hint` (optional) describes what went wrong in a previous attempt so
     the model can correct itself.
     """
-    use_model = model or REASONING_MODEL
+    use_model = model or _reasoning_model()
 
     # Shared image content (both phases see the printed question).
     def _with_images(text):
@@ -1884,7 +1946,7 @@ def verify_solution(question_text, solution, model=None, reasoning_effort=None, 
         VERIFY_SOLUTION_SYSTEM,
         [{"type": "text", "text": f"Question:\n{question_text}\n\nProposed solution (AI-generated answer key):\n{solution}"}],
         max_tokens=2048,
-        model=model or REASONING_MODEL,
+        model=model or _reasoning_model(),
         reasoning_effort=reasoning_effort,
         _raw=_debug,
     )
@@ -1914,20 +1976,21 @@ def verify_solution(question_text, solution, model=None, reasoning_effort=None, 
     return {"verdict": "unsure", "note": note or "Could not confidently verify the answer key."}
 
 
-def retry_solve_question(question_text, max_score, q_label="", model="o3",
+def retry_solve_question(question_text, max_score, q_label="", model=None,
                          high_effort=False, image_paths=None, max_attempts=10):
     """Retry solving a single question, with full debug output.
 
-    `model` is "o3" or "gpt-4o". `high_effort` requests o3 with
-    reasoning_effort="high" (slower, more thorough). Tries up to
-    `max_attempts` times; each retry sees the previous failure.
+    `model` is "o3", "gpt-4o", or None (default: the role's reasoning model —
+    the allowlisted public model for the demo role, never o3). `high_effort`
+    requests o3 with reasoning_effort="high" (slower, more thorough). Tries up
+    to `max_attempts` times; each retry sees the previous failure.
 
     Returns {solution, criteria, verified, verify_note, debug} where debug is
     a list of {step, model, raw} showing exactly what each model call returned.
     """
     debug = []
-    effort = "high" if high_effort and model.startswith("o") else None
-    use_model = model or REASONING_MODEL
+    use_model = model or _reasoning_model()
+    effort = "high" if high_effort and use_model.startswith("o") else None
 
     solved, verdict, last_exc = None, None, None
     retry_hint = ""
@@ -2162,7 +2225,13 @@ def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
             f"max_attempts must be >= 1, got {max_attempts}.")
     # Resolve the model explicitly so generation and verification always use
     # the same model, and the empty-response fallback below is testable.
-    use_model = REASONING_MODEL
+    # `fallback` is the reliable chat model for this role: after two straight
+    # empty reasoning responses, the remaining attempts switch to it instead
+    # of burning more reasoning spend on a known-failing path. (For the
+    # public role the primary model already IS the chat model, so the
+    # fallback is a no-op and only the stronger hint applies.)
+    use_model = _reasoning_model()
+    fallback_model = PUBLIC_MODEL if _get_current_role() == "public" else DEFAULT_MODEL
     empty_streak = 0
     for attempt in range(1, max_attempts + 1):
         try:
@@ -2198,8 +2267,8 @@ def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
         except EmptyModelResponseError as e:
             last_exc = e
             empty_streak += 1
-            if empty_streak >= 2 and use_model != DEFAULT_MODEL:
-                use_model = DEFAULT_MODEL
+            if empty_streak >= 2 and use_model != fallback_model:
+                use_model = fallback_model
                 retry_hint = (
                     f"Attempt {attempt} raised an error: {str(e)[:300]}. "
                     "Switching to a more reliable model — output ONLY "
@@ -2450,7 +2519,7 @@ def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
 
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futs = {pool.submit(_build, i, q): i for i, q in enumerate(questions)}
+        futs = {_submit_with_context(pool, _build, i, q): i for i, q in enumerate(questions)}
         for f in as_completed(futs):
             i = futs[f]
             try:
@@ -2563,7 +2632,7 @@ def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
 
     items = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [pool.submit(_build, idx, q) for idx, q in enumerate(questions)]
+        futures = [_submit_with_context(pool, _build, idx, q) for idx, q in enumerate(questions)]
         for f in futures:
             try:
                 item = f.result()
@@ -2640,7 +2709,7 @@ def generate_ap_comparison(teacher_questions):
             AP_RUBRIC_SYSTEM,
             [{"type": "text", "text": prompt}],
             max_tokens=4000,
-            model=REASONING_MODEL,
+            model=_reasoning_model(),
         )
     except Exception as e:
         return {"questions": [], "overall": f"AP comparison failed: {e}"}

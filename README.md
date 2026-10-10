@@ -76,13 +76,15 @@ Copy `.env.example` to `.env` and fill in the values.
 
 Share a limited demo login without exposing your data or API budget:
 
-- Set `PUBLIC_USER` (default `public`) and `PUBLIC_PASSWORD` (≥12 chars, must differ from the other passwords).
+- Set `PUBLIC_USER` (default `public`) and `PUBLIC_PASSWORD` (may be short/simple — it's a shared demo login; must differ from the other passwords). Empty `PUBLIC_PASSWORD` disables the account.
 - The demo account gets a **fully isolated sandbox**: it only sees classes and assignments it creates itself — never your real data.
 - **Guardrails** (all tunable via env):
   - `PUBLIC_MAX_RUBRIC_JOBS_PER_DAY` (default 3), `PUBLIC_MAX_GRADES_PER_DAY` (default 20), `PUBLIC_MAX_RETRIES_PER_DAY` (default 10)
-  - `PUBLIC_MAX_RUBRIC_IMAGES` (default 1) — one photo per question
+  - `PUBLIC_MAX_RUBRIC_IMAGES` (default 1) — one photo per question; `PUBLIC_MAX_GRADE_IMAGES` (default 4) — max paper + reference photos per grading
   - `PUBLIC_MAX_QUESTIONS_LIFETIME` (default 100) — total questions the demo account may ever create/fix
-  - `PUBLIC_DAILY_TOKEN_BUDGET` (default 500000) — daily token cap for the demo role
+  - `PUBLIC_DAILY_TOKEN_BUDGET` (default 500000) — daily token cap for the demo role, enforced per API call; must be positive and at most half of `DAILY_TOKEN_BUDGET`
+  - `PUBLIC_MAX_TEXT_CHARS` (default 4000) — max text input per retry/regenerate; the demo role always uses the allowlisted public model (`PUBLIC_MODEL`, default `gpt-4o`), never the reasoning model
+  - `PUBLIC_MAX_REFERENCE_IMAGES` (default 3), `PUBLIC_MAX_EXAMPLE_IMAGES` (default 4), `PUBLIC_MAX_RUBRIC_CHARS` (default 20000), `PUBLIC_MAX_CLASSES` (default 10), `PUBLIC_MAX_ASSIGNMENTS` (default 20)
 - **Monitoring**: log in as admin and open **Demo Monitor** in the nav to see the demo account's usage today (operations, tokens, rate-limit status, recent API calls) and reset its counters.
 - The demo role cannot access `/settings` (your API key stays private).
 

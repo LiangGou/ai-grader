@@ -2862,6 +2862,49 @@ def main():
     test_public_disabled_without_password(errors)
     test_image_partition_authorization(errors)
     test_rubric_job_assignment_isolation(errors)
+    # Dual-review security fixes (2026-10-10, gpt-5.6-sol + claude-opus-5-5):
+    # guardrail coverage for the public demo account (no API calls, mocked).
+    test_public_extract_name_blocked(errors)
+    test_upload_filename_uuid_and_owner_insert_only(errors)
+    test_public_reference_upload_cap(errors)
+    test_public_example_upload_cap(errors)
+    test_public_grade_total_image_cap(errors)
+    test_regenerate_rubric_counts_lifetime_question(errors)
+    test_public_retry_text_cap(errors)
+    test_public_retry_forces_gpt4o(errors)
+    test_regenerate_text_cap(errors)
+    test_auth_version_material_unambiguous(errors)
+    test_operation_label_reset_each_request(errors)
+    test_unknown_role_fails_closed(errors)
+    test_env_status_hides_key_hint_for_public(errors)
+    test_token_budget_blocks_all_public_ops(errors)
+    test_public_short_password_allowed(errors)
+    test_startup_budget_assertion(errors)
+    test_public_qlabel_text_cap(errors)
+    test_startup_budget_assertion_fail_closed(errors)
+    test_public_reasoning_model_disabled(errors)
+    test_submit_with_context_propagates_role(errors)
+    test_public_rubric_char_cap_save(errors)
+    test_public_rubric_char_cap_grade(errors)
+    test_public_class_assignment_caps(errors)
+    test_public_model_allowlist_blocks_reasoning(errors)
+    test_public_model_startup_rejects_reasoning(errors)
+    test_assignment_delete_keeps_foreign_images(errors)
+    test_assignment_delete_traversal_safe(errors)
+    test_capped_creation_race(errors)
+    test_try_append_image_paths_race(errors)
+    test_grade_failure_discards_uploads(errors)
+    test_public_model_forced_unconditional(errors)
+    test_save_upload_rolls_back_on_failure(errors)
+    test_staged_uploads_purged_on_append_error(errors)
+    test_try_remove_image_path_atomic(errors)
+    test_delete_upload_race_no_orphans(errors)
+    test_solve_empty_response_falls_back(errors)
+    test_assignment_delete_purges_diagram_images(errors)
+    test_serialized_mutation_recovers_after_connect_failure(errors)
+    test_assignment_delete_ignores_planted_cross_partition_urls(errors)
+    test_budget_checker_enforces_public_cap(errors)
+    test_assignment_delete_purges_images(errors)
     # gpt-5.6-sol generated tests (no API calls)
     test_normalize_latex_environments(errors)
     test_normalize_latex_multiple_environments(errors)
@@ -3008,6 +3051,9 @@ def test_public_data_isolation(errors):
     if r2.status_code != 403:
         errors.append(f"public access to private assignment should be 403, got {r2.status_code}")
     # Public can create its own class and it is isolated.
+    # (Raise the demo class cap: the shared test DB accumulates classes
+    # across tests, and the cap is enforced atomically on this route.)
+    app_module.PUBLIC_MAX_CLASSES = db_module.count_classes("public") + 1
     r3 = client.post("/class/new", data={"name": "My Demo Class"})
     if r3.status_code != 302:
         errors.append(f"public class creation failed, got {r3.status_code}")
@@ -3223,6 +3269,1460 @@ def test_rubric_job_assignment_isolation(errors):
     if r.status_code != 403:
         errors.append(f"public polling private job should be 403, got {r.status_code}")
     print("  done")
+
+
+# ---------- Dual-review security fixes (2026-10-10) ----------
+# Behavioral regression tests for the gpt-5.6-sol + claude-opus-5-5 review
+# findings on the public demo account. All mocked; no OpenAI API calls.
+
+
+def test_public_extract_name_blocked(errors):
+    """Public role is blocked from standalone name extraction (403, no OpenAI call)."""
+    print("Testing public extract_name block...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    with unittest.mock.patch.object(app_module.grader, "extract_student_name") as m:
+        r = client.post("/api/extract_name")
+    if r.status_code != 403:
+        errors.append(f"public extract_name should be 403, got {r.status_code}")
+    if m.called:
+        errors.append("extract_student_name must not run for the public role")
+    if "demo account" not in (r.get_json() or {}).get("error", "").lower():
+        errors.append(f"expected demo-account message, got {(r.get_json() or {}).get('error')!r}")
+    print("  done")
+
+
+def test_upload_filename_uuid_and_owner_insert_only(errors):
+    """Upload names are uuid4 hex; image ownership is insert-only (never re-owned)."""
+    print("Testing upload filename uuid + owner insert-only...")
+    import io as _io
+    import tempfile as _tempfile
+    import uuid as _uuid
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    tmpdir = _tempfile.mkdtemp()
+
+    class _FakeUpload:
+        def __init__(self, filename):
+            self.filename = filename
+            self.mimetype = "image/jpeg"
+
+        def read(self):
+            return b"fake-image-bytes"
+
+        def save(self, path):
+            with open(path, "wb") as f:
+                f.write(b"fake-image-bytes")
+
+    with app_module.app.test_request_context("/"):
+        from flask import session as _flask_session
+        _flask_session["auth_v"] = app_module.AUTH_VERSION
+        _flask_session["role"] = "public"
+        with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+            p1 = app_module._save_upload(_FakeUpload("a.jpg"), "paper")
+            p2 = app_module._save_upload(_FakeUpload("b.png"), "paper")
+    n1 = os.path.basename(p1)
+    n2 = os.path.basename(p2)
+    if not re.fullmatch(r"paper_[0-9a-f]{32}\.jpg", n1):
+        errors.append(f"upload name is not uuid4 hex: {n1!r}")
+    if not re.fullmatch(r"paper_[0-9a-f]{32}\.png", n2):
+        errors.append(f"upload name is not uuid4 hex: {n2!r}")
+    if n1 == n2:
+        errors.append("two uploads produced the same filename")
+    # Insert-only ownership: re-recording the same filename under another
+    # partition must not transfer ownership.
+    probe = f"probe_{_uuid.uuid4().hex}.jpg"
+    db_module.set_image_owner(probe, "private")
+    db_module.set_image_owner(probe, "public")
+    if db_module.get_image_owner(probe) != "private":
+        errors.append("set_image_owner transferred ownership on conflict (must be insert-only)")
+    try:
+        db_module.set_image_owner(f"probe_{_uuid.uuid4().hex}.jpg", "evil")
+        errors.append("set_image_owner should reject an invalid owner")
+    except ValueError:
+        pass
+    print("  done")
+
+
+def test_public_reference_upload_cap(errors):
+    """Public role: at most PUBLIC_MAX_REFERENCE_IMAGES stored reference photos."""
+    print("Testing public reference upload cap...")
+    import io as _io
+    import tempfile as _tempfile
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("PubRefCap", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    tmpdir = _tempfile.mkdtemp()
+
+    def _files(n, tag):
+        return {"images": [(_io.BytesIO(b"fake-image-data"), f"{tag}{i}.jpg")
+                           for i in range(n)]}
+
+    with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+        r1 = client.post(f"/assignment/{aid}/upload_reference", data=_files(3, "r"),
+                         content_type="multipart/form-data")
+        if r1.status_code != 302:
+            errors.append(f"uploading 3 reference photos should redirect, got {r1.status_code}")
+        r2 = client.post(f"/assignment/{aid}/upload_reference", data=_files(1, "r5"),
+                         content_type="multipart/form-data")
+    if r2.status_code != 400:
+        errors.append(f"4th reference photo should be 400, got {r2.status_code}")
+    if "Demo limit" not in (r2.get_json() or {}).get("error", ""):
+        errors.append(f"expected Demo limit message, got {(r2.get_json() or {}).get('error')!r}")
+    refs = json.loads(db_module.get_assignment(aid)["reference_images"] or "[]")
+    if len(refs) != 3:
+        errors.append(f"expected 3 stored reference photos, got {len(refs)}")
+    print("  done")
+
+
+def test_public_example_upload_cap(errors):
+    """Public role: at most PUBLIC_MAX_EXAMPLE_IMAGES stored rubric example photos."""
+    print("Testing public example upload cap...")
+    import io as _io
+    import tempfile as _tempfile
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("PubExCap", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    tmpdir = _tempfile.mkdtemp()
+
+    def _files(n, tag):
+        return {"images": [(_io.BytesIO(b"fake-image-data"), f"{tag}{i}.jpg")
+                           for i in range(n)]}
+
+    with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+        r1 = client.post(f"/assignment/{aid}/upload_rubric_example", data=_files(4, "e"),
+                         content_type="multipart/form-data")
+        if r1.status_code != 200:
+            errors.append(f"uploading 4 example photos should be 200, got {r1.status_code}")
+        r2 = client.post(f"/assignment/{aid}/upload_rubric_example", data=_files(1, "e5"),
+                         content_type="multipart/form-data")
+    if r2.status_code != 400:
+        errors.append(f"5th example photo should be 400, got {r2.status_code}")
+    if "Demo limit" not in (r2.get_json() or {}).get("error", ""):
+        errors.append(f"expected Demo limit message, got {(r2.get_json() or {}).get('error')!r}")
+    if len(db_module.get_rubric_example_images(aid)) != 4:
+        errors.append("expected 4 stored example photos after the rejected 5th upload")
+    print("  done")
+
+
+def test_public_grade_total_image_cap(errors):
+    """Public grading: paper + reference photos sent to the model stay within the cap."""
+    print("Testing public grade total image cap...")
+    import io as _io
+    import tempfile as _tempfile
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("PubGradeCap", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    tmpdir = _tempfile.mkdtemp()
+    ref_paths = []
+    for i in range(3):
+        p = os.path.join(tmpdir, f"ref{i}.jpg")
+        with open(p, "wb") as f:
+            f.write(b"ref-bytes")
+        ref_paths.append(p)
+    db_module.save_reference_images(aid, ref_paths)
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+
+    def _grade(n_photos):
+        files = [(_io.BytesIO(b"paper-bytes"), f"p{i}.jpg") for i in range(n_photos)]
+        data = {"assignment_id": str(aid), "student_name": "T", "images": files}
+        return client.post("/api/grade", data=data, content_type="multipart/form-data")
+
+    with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+        r1 = _grade(2)  # 2 paper + 3 reference = 5 > 4 -> 400
+        if r1.status_code != 400:
+            errors.append(f"2 paper + 3 reference photos should be 400, got {r1.status_code}")
+        if "total photos" not in (r1.get_json() or {}).get("error", ""):
+            errors.append(f"expected 'total photos' message, got {(r1.get_json() or {}).get('error')!r}")
+        with unittest.mock.patch.object(app_module.grader, "grade_paper",
+                                        return_value={"questions": [], "total": 0}) as m:
+            r2 = _grade(1)  # 1 paper + 3 reference = 4 -> allowed
+        if r2.status_code != 200:
+            errors.append(f"1 paper + 3 reference photos should be 200, got {r2.status_code}")
+        if not m.called:
+            errors.append("grade_paper should have been called when under the cap")
+    print("  done")
+
+
+def test_regenerate_rubric_counts_lifetime_question(errors):
+    """Successful public regenerate_rubric increments the lifetime question counter."""
+    print("Testing regenerate_rubric lifetime counting...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("PubRegenCount", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    before = db_module.get_lifetime_usage("public", "questions")
+    body = {"assignment_id": aid, "q": "Q1", "question_text": "Solve x+1=2.",
+            "reference_solution": "x = 1", "max_score": 9}
+    with unittest.mock.patch.object(app_module.grader, "generate_ap_rubric_only",
+                                    return_value="1 pt: Step 1: solve"):
+        with unittest.mock.patch.object(app_module.grader, "_process_graph", return_value=None):
+            r = client.post("/api/regenerate_rubric", json=body)
+    after = db_module.get_lifetime_usage("public", "questions")
+    if r.status_code != 200:
+        errors.append(f"regenerate_rubric should be 200, got {r.status_code}")
+    if after - before != 1:
+        errors.append(f"lifetime counter delta should be 1, got {after - before}")
+    print("  done")
+
+
+def test_public_retry_text_cap(errors):
+    """Public retry_question rejects over-long question text (400, no quota burned)."""
+    print("Testing public retry text cap...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    r = client.post("/api/retry_question",
+                    json={"assignment_id": 99999, "question_text": "x" * 4001, "max_score": 5})
+    if r.status_code != 400:
+        errors.append(f"over-long question_text should be 400, got {r.status_code}")
+    if "too long" not in (r.get_json() or {}).get("error", ""):
+        errors.append(f"expected 'too long' message, got {(r.get_json() or {}).get('error')!r}")
+    print("  done")
+
+
+def test_public_qlabel_text_cap(errors):
+    """Public retry/regenerate reject an over-long question label `q`.
+
+    `q` becomes q_label and is interpolated into model prompts, so it must be
+    covered by the demo text cap — otherwise the cap is bypassable by stuffing
+    the payload into `q` instead of `question_text`.
+    """
+    print("Testing public q label text cap...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("Demo", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    big_q = "Q" * 4001
+    r1 = client.post("/api/retry_question",
+                     json={"assignment_id": aid, "q": big_q,
+                           "question_text": "short", "max_score": 5})
+    if r1.status_code != 400:
+        errors.append(f"over-long q on retry should be 400, got {r1.status_code}")
+    if "too long" not in (r1.get_json() or {}).get("error", ""):
+        errors.append(f"expected 'too long' message on retry, got {(r1.get_json() or {}).get('error')!r}")
+    r2 = client.post("/api/regenerate_rubric",
+                     json={"assignment_id": aid, "q": big_q, "question_text": "short",
+                           "reference_solution": "short", "max_score": 9})
+    if r2.status_code != 400:
+        errors.append(f"over-long q on regenerate should be 400, got {r2.status_code}")
+    if "too long" not in (r2.get_json() or {}).get("error", ""):
+        errors.append(f"expected 'too long' message on regenerate, got {(r2.get_json() or {}).get('error')!r}")
+    print("  done")
+
+
+def test_public_retry_forces_gpt4o(errors):
+    """Public retry_question is forced to gpt-4o with high_effort=False."""
+    print("Testing public retry model forcing...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("PubRetryModel", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    body = {"assignment_id": aid, "question_text": "Solve x+1=2.", "max_score": 5,
+            "model": "o3", "high_effort": True}
+    with unittest.mock.patch.object(app_module.grader, "retry_solve_question",
+                                    return_value={"verdict": "confirmed"}) as m:
+        r = client.post("/api/retry_question", json=body)
+    if r.status_code != 200:
+        errors.append(f"retry should be 200, got {r.status_code}")
+    kwargs = m.call_args.kwargs if m.call_args else {}
+    if kwargs.get("model") != "gpt-4o":
+        errors.append(f"public retry model should be forced to gpt-4o, got {kwargs.get('model')!r}")
+    if kwargs.get("high_effort") is not False:
+        errors.append(f"public retry high_effort should be False, got {kwargs.get('high_effort')!r}")
+    print("  done")
+
+
+def test_regenerate_text_cap(errors):
+    """Public regenerate_rubric rejects over-long reference solution (400)."""
+    print("Testing public regenerate text cap...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    r = client.post("/api/regenerate_rubric",
+                    json={"assignment_id": 99999, "question_text": "short",
+                          "reference_solution": "y" * 4001, "max_score": 5})
+    if r.status_code != 400:
+        errors.append(f"over-long reference_solution should be 400, got {r.status_code}")
+    if "too long" not in (r.get_json() or {}).get("error", ""):
+        errors.append(f"expected 'too long' message, got {(r.get_json() or {}).get('error')!r}")
+    print("  done")
+
+
+def test_auth_version_material_unambiguous(errors):
+    """AUTH_VERSION material distinguishes colon-shifted password triples."""
+    print("Testing AUTH_VERSION material unambiguity...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    with unittest.mock.patch.object(app_module, "GRADER_PASSWORD", "a:b"), \
+         unittest.mock.patch.object(app_module, "ADMIN_PASSWORD", "c"), \
+         unittest.mock.patch.object(app_module, "PUBLIC_PASSWORD", ""):
+        m1 = app_module._auth_version_material()
+    with unittest.mock.patch.object(app_module, "GRADER_PASSWORD", "a"), \
+         unittest.mock.patch.object(app_module, "ADMIN_PASSWORD", "b:c"), \
+         unittest.mock.patch.object(app_module, "PUBLIC_PASSWORD", ""):
+        m2 = app_module._auth_version_material()
+    if m1 == m2:
+        errors.append("colon-shifted password triples must serialize differently")
+    # Prove the test is meaningful: the old f"{a}:{b}:{c}" scheme collides here.
+    old1 = ("a:b" + ":" + "c" + ":" + "").encode()
+    old2 = ("a" + ":" + "b:c" + ":" + "").encode()
+    if old1 != old2:
+        errors.append("test premise broken: old f-string scheme should collide on these triples")
+    print("  done")
+
+
+def test_operation_label_reset_each_request(errors):
+    """_require_login resets the operation label (no stale cross-request labels)."""
+    print("Testing operation label reset...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "teacher", "password": "test-grader-pass-123"})
+    # Simulate stale thread state: a previous request on this thread set "grade".
+    app_module.grader._set_current_operation("grade")
+    r = client.get("/")
+    if r.status_code != 200:
+        errors.append(f"index should be 200, got {r.status_code}")
+    if app_module.grader._get_current_operation() != "general":
+        errors.append("operation label was not reset to 'general' by _require_login")
+    print("  done")
+
+
+def test_unknown_role_fails_closed(errors):
+    """Unknown session roles get 403 and never see the private partition."""
+    print("Testing unknown role fail-closed...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    db_module.create_class("Secret Private Class", owner="private")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "teacher", "password": "test-grader-pass-123"})
+    with client.session_transaction() as s:
+        s["role"] = "hacker"
+    r = client.get("/")
+    if r.status_code != 403:
+        errors.append(f"unknown role should be 403, got {r.status_code}")
+    if b"Secret Private Class" in r.data:
+        errors.append("private class name leaked to unknown role")
+    print("  done")
+
+
+def test_env_status_hides_key_hint_for_public(errors):
+    """_env_status blanks key_hint for the public role only."""
+    print("Testing env_status key_hint hiding...")
+    old_key = os.environ.get("OPENAI_API_KEY")
+    os.environ["OPENAI_API_KEY"] = "sk-test-abcdefgh1234"
+    try:
+        setup = _setup_public_test_app(errors)
+        if not setup:
+            return
+        app_module, _ = setup
+        from flask import session as _flask_session
+        with app_module.app.test_request_context("/"):
+            _flask_session["auth_v"] = app_module.AUTH_VERSION
+            _flask_session["role"] = "public"
+            pub = app_module._env_status()
+            _flask_session["role"] = "tester"
+            tester = app_module._env_status()
+        if pub["key_hint"] != "":
+            errors.append(f"public key_hint should be blank, got {pub['key_hint']!r}")
+        if "1234" not in tester["key_hint"]:
+            errors.append(f"tester key_hint should contain last-4, got {tester['key_hint']!r}")
+    finally:
+        if old_key is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = old_key
+    print("  done")
+
+
+def test_token_budget_blocks_all_public_ops(errors):
+    """Exhausted public token budget -> 429 on solve/retry/regenerate/grade."""
+    print("Testing token budget blocks public ops...")
+    import io as _io
+    import tempfile as _tempfile
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("PubBudget", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    over = {"calls": 1, "prompt_tokens": 500000, "completion_tokens": 0, "by_endpoint": {}}
+    tmpdir = _tempfile.mkdtemp()
+    db_module.save_rubric_example_images(aid, ["db:test_img.jpg"])
+
+    def _over_budget():
+        return unittest.mock.patch.object(app_module.db, "get_api_usage_summary_for_role",
+                                          return_value=over)
+
+    with _over_budget():
+        with unittest.mock.patch.object(app_module.db, "get_rubric_example_images",
+                                        return_value=["db:test_img.jpg"]):
+            with unittest.mock.patch.object(app_module, "_upload_exists", return_value=True):
+                with unittest.mock.patch.object(app_module, "_upload_basename",
+                                                return_value="test_img.jpg"):
+                    r1 = client.post("/api/solve_rubric",
+                                     json={"assignment_id": aid, "include": ["test_img.jpg"]})
+        if r1.status_code != 429:
+            errors.append(f"solve_rubric at budget should be 429, got {r1.status_code}")
+        r2 = client.post("/api/retry_question",
+                         json={"assignment_id": aid, "question_text": "short", "max_score": 5})
+        if r2.status_code != 429:
+            errors.append(f"retry_question at budget should be 429, got {r2.status_code}")
+        r3 = client.post("/api/regenerate_rubric",
+                         json={"assignment_id": aid, "question_text": "short",
+                               "reference_solution": "x=1", "max_score": 5})
+        if r3.status_code != 429:
+            errors.append(f"regenerate_rubric at budget should be 429, got {r3.status_code}")
+        with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+            with unittest.mock.patch.object(app_module.grader, "grade_paper",
+                                            return_value={"questions": [], "total": 0}) as m:
+                data = {"assignment_id": str(aid), "student_name": "T",
+                        "images": [(_io.BytesIO(b"paper"), "p1.jpg")]}
+                r4 = client.post("/api/grade", data=data, content_type="multipart/form-data")
+        if r4.status_code != 429:
+            errors.append(f"grade at budget should be 429, got {r4.status_code}")
+        if m.called:
+            errors.append("grade_paper must not run when the token budget is exhausted")
+    print("  done")
+
+
+def test_public_short_password_allowed(errors):
+    """A short PUBLIC_PASSWORD is allowed (isolation + limits are the protection)."""
+    print("Testing short public password allowed...")
+    import importlib as _importlib
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    os.environ["PUBLIC_PASSWORD"] = "public"  # 6 chars; old code required >= 12
+    try:
+        _importlib.reload(app_module)
+    except RuntimeError as e:
+        errors.append(f"short PUBLIC_PASSWORD should not raise, got RuntimeError: {e}")
+        print("  done")
+        return
+    client = app_module.app.test_client()
+    r = client.post("/login", data={"username": "public", "password": "public"})
+    if r.status_code != 302:
+        errors.append(f"public login with short password failed, got {r.status_code}")
+    # Restore the standard fixture env so later tests are unaffected.
+    os.environ["PUBLIC_PASSWORD"] = "test-public-pass-123"
+    _importlib.reload(app_module)
+    print("  done")
+
+
+def test_startup_budget_assertion(errors):
+    """Startup refuses PUBLIC_DAILY_TOKEN_BUDGET >= half of DAILY_TOKEN_BUDGET."""
+    print("Testing startup budget assertion...")
+    import importlib as _importlib
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    os.environ["PUBLIC_DAILY_TOKEN_BUDGET"] = "1500000"  # 2*1.5M > 2M default global
+    try:
+        _importlib.reload(app_module)
+        errors.append("expected RuntimeError when public budget >= half of global budget")
+    except RuntimeError:
+        pass  # expected
+    # Restore the standard fixture env so later tests are unaffected.
+    os.environ.pop("PUBLIC_DAILY_TOKEN_BUDGET", None)
+    _importlib.reload(app_module)
+    print("  done")
+
+
+def test_startup_budget_assertion_fail_closed(errors):
+    """Startup refuses a disabled (0) token budget when the public account is on.
+
+    0 means "disabled" for these knobs; with the public demo enabled that
+    would leave stranger spend unbounded by any per-role cap (fail open).
+    """
+    print("Testing startup budget fail-closed...")
+    import importlib as _importlib
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    cases = [
+        ("PUBLIC_DAILY_TOKEN_BUDGET", "0", "disabled public budget"),
+        ("PUBLIC_DAILY_TOKEN_BUDGET", "-1", "negative public budget"),
+        ("DAILY_TOKEN_BUDGET", "0", "disabled global budget"),
+    ]
+    for var, val, label in cases:
+        os.environ[var] = val
+        try:
+            _importlib.reload(app_module)
+            errors.append(f"expected RuntimeError for {label}, got none")
+        except RuntimeError:
+            pass  # expected
+        finally:
+            os.environ.pop(var, None)
+    _importlib.reload(app_module)
+    print("  done")
+
+
+def test_public_reasoning_model_disabled(errors):
+    """The public demo role never uses the reasoning model (cost bounding)."""
+    print("Testing public reasoning-model disable...")
+    import grader as grader_module
+    grader_module._set_current_role("public")
+    try:
+        if grader_module._reasoning_model() != grader_module.PUBLIC_MODEL:
+            errors.append("public role should resolve to PUBLIC_MODEL, not the reasoning model")
+    finally:
+        grader_module._set_current_role("private")
+    if grader_module._reasoning_model() != grader_module.REASONING_MODEL:
+        errors.append("private role should keep REASONING_MODEL")
+    print("  done")
+
+
+def test_submit_with_context_propagates_role(errors):
+    """ThreadPoolExecutor workers inherit the submitter's role/operation.
+
+    Without _submit_with_context, worker threads see the ContextVar defaults
+    ("private"/"general") and public token spend would be misattributed.
+    """
+    print("Testing context propagation into workers...")
+    import grader as grader_module
+    from concurrent.futures import ThreadPoolExecutor
+    grader_module._set_current_role("public")
+    grader_module._set_current_operation("solve_rubric")
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut = grader_module._submit_with_context(
+                pool, lambda: (grader_module._get_current_role(),
+                               grader_module._get_current_operation()))
+            role, op = fut.result(timeout=30)
+    finally:
+        grader_module._set_current_role("private")
+        grader_module._set_current_operation("general")
+    if role != "public":
+        errors.append(f"worker saw role {role!r}, expected 'public'")
+    if op != "solve_rubric":
+        errors.append(f"worker saw operation {op!r}, expected 'solve_rubric'")
+    print("  done")
+
+
+def test_public_rubric_char_cap_save(errors):
+    """Public save_rubric rejects an over-long stored rubric (400)."""
+    print("Testing public rubric save cap...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("Demo", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    big_items = [{"q": "Q1", "max_score": 9, "criteria": "x" * 20001,
+                  "question_text": "qt", "reference_solution": "rs"}]
+    r = client.post(f"/assignment/{aid}/save_rubric", json={"items": big_items})
+    if r.status_code != 400:
+        errors.append(f"over-long rubric save should be 400, got {r.status_code}")
+    if "too long" not in (r.get_json() or {}).get("error", ""):
+        errors.append(f"expected 'too long' message, got {(r.get_json() or {}).get('error')!r}")
+    # A normal-size rubric still saves fine.
+    ok_items = [{"q": "Q1", "max_score": 9, "criteria": "1 pt: Step 1: ok"}]
+    r2 = client.post(f"/assignment/{aid}/save_rubric", json={"items": ok_items})
+    if r2.status_code != 200:
+        errors.append(f"normal rubric save should be 200, got {r2.status_code}")
+    print("  done")
+
+
+def test_public_rubric_char_cap_grade(errors):
+    """Public grading rejects an assignment whose stored rubric is over-long."""
+    print("Testing public rubric grade cap...")
+    import io as _io
+    import tempfile as _tempfile
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("Demo", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    db_module.save_rubric(aid, "x" * 20001, [])
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    tmpdir = _tempfile.mkdtemp()
+    called = []
+    def _fake_grade(*a, **k):
+        called.append(True)
+        return {"questions": [], "total": 0}
+    with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+        with unittest.mock.patch.object(app_module.grader, "grade_paper", _fake_grade):
+            r = client.post("/api/grade", data={
+                "assignment_id": str(aid), "student_name": "T",
+                "images": (_io.BytesIO(b"fake-image-data"), "p1.jpg"),
+            }, content_type="multipart/form-data")
+    if r.status_code != 400:
+        errors.append(f"grading with over-long stored rubric should be 400, got {r.status_code}")
+    if "too long" not in (r.get_json() or {}).get("error", ""):
+        errors.append(f"expected 'too long' message, got {(r.get_json() or {}).get('error')!r}")
+    if called:
+        errors.append("grade_paper must not run when the stored rubric is over-long")
+    print("  done")
+
+
+def test_public_class_assignment_caps(errors):
+    """Public role: bounded classes and assignments (storage protection)."""
+    print("Testing public class/assignment caps...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    # The test DB is shared across tests in one process: set the caps relative
+    # to the current counts so the test is order-independent.
+    app_module.PUBLIC_MAX_CLASSES = db_module.count_classes("public") + 1
+    app_module.PUBLIC_MAX_ASSIGNMENTS = db_module.count_assignments_for_owner("public") + 1
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    r1 = client.post("/class/new", data={"name": "C1"})
+    if r1.status_code != 302:
+        errors.append(f"first class should be created, got {r1.status_code}")
+    r2 = client.post("/class/new", data={"name": "C2"})
+    if r2.status_code != 429:
+        errors.append(f"second class should be 429, got {r2.status_code}")
+    classes = db_module.list_classes("public")
+    if not classes:
+        errors.append("expected at least one public class")
+        print("  done")
+        return
+    cid = classes[0]["id"]
+    r3 = client.post("/assignment/new", data={"class_id": str(cid), "name": "A1"})
+    if r3.status_code not in (302, 303):
+        errors.append(f"first assignment should redirect, got {r3.status_code}")
+    r4 = client.post("/assignment/new", data={"class_id": str(cid), "name": "A2"})
+    if r4.status_code != 429:
+        errors.append(f"second assignment should be 429, got {r4.status_code}")
+    print("  done")
+
+
+def test_public_model_allowlist_blocks_reasoning(errors):
+    """Public role never reaches a reasoning model, even if OPENAI_MODEL=o3."""
+    print("Testing public model allowlist...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    grader_module = app_module.grader
+    grader_module._set_current_role("public")
+    try:
+        # Simulate a deployment where OPENAI_MODEL itself is a reasoning model.
+        with unittest.mock.patch.object(grader_module, "DEFAULT_MODEL", "o3"):
+            if grader_module._reasoning_model() != grader_module.PUBLIC_MODEL:
+                errors.append(
+                    "public _reasoning_model() must return PUBLIC_MODEL even when "
+                    f"DEFAULT_MODEL=o3, got {grader_module._reasoning_model()!r}")
+            # Central _chat_json guard: an explicit model="o3" is rewritten.
+            captured = {}
+
+            class _FakeCompletions:
+                def create(self, **kwargs):
+                    captured.update(kwargs)
+
+                    class _Msg:
+                        content = '{"ok": true}'
+
+                    class _Choice:
+                        message = _Msg()
+
+                    class _Resp:
+                        choices = [_Choice()]
+                        usage = None
+
+                    return _Resp()
+
+            class _FakeChat:
+                completions = _FakeCompletions()
+
+            class _FakeClient:
+                chat = _FakeChat()
+
+            with unittest.mock.patch.object(grader_module, "_get_client",
+                                            return_value=_FakeClient()):
+                grader_module._chat_json("s", "u", 10, model="o3",
+                                         reasoning_effort="high")
+            if captured.get("model") != grader_module.PUBLIC_MODEL:
+                errors.append(
+                    "_chat_json should rewrite o3 to PUBLIC_MODEL for the public "
+                    f"role, got {captured.get('model')!r}")
+            if "reasoning_effort" in captured:
+                errors.append("reasoning_effort must be dropped when rewriting "
+                              "to the public model")
+            if captured.get("response_format") != {"type": "json_object"}:
+                errors.append("the rewritten call should use the non-reasoning JSON path")
+            # retry_solve_question's default (model=None) must resolve to the
+            # public model, not the o3 default it used to have.
+            seen = {}
+
+            def _fake_solve(*a, **k):
+                seen.update(k)
+                return {"solution": "x", "ap_points": []}
+
+            def _fake_verify(*a, **k):
+                return {"verdict": "confirmed"}
+
+            with unittest.mock.patch.object(grader_module, "solve_and_rubric",
+                                            side_effect=_fake_solve), \
+                 unittest.mock.patch.object(grader_module, "verify_solution",
+                                            side_effect=_fake_verify):
+                grader_module.retry_solve_question("Solve x+1=2.", 5, max_attempts=1)
+            if seen.get("model") != grader_module.PUBLIC_MODEL:
+                errors.append(
+                    "retry_solve_question default model should be PUBLIC_MODEL, "
+                    f"got {seen.get('model')!r}")
+    finally:
+        grader_module._set_current_role("private")
+    print("  done")
+
+
+def test_public_model_startup_rejects_reasoning(errors):
+    """Enabling the public account with PUBLIC_MODEL=o3 refuses to start."""
+    print("Testing PUBLIC_MODEL startup validation...")
+    import os as _os
+    import importlib as _importlib
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    grader_module = app_module.grader
+    _os.environ["PUBLIC_MODEL"] = "o3"
+    try:
+        _importlib.reload(grader_module)
+        try:
+            _importlib.reload(app_module)
+        except RuntimeError as e:
+            if "PUBLIC_MODEL" not in str(e):
+                errors.append(f"wrong RuntimeError for PUBLIC_MODEL=o3: {e}")
+        else:
+            errors.append("app should refuse to start with PUBLIC_MODEL=o3")
+    finally:
+        del _os.environ["PUBLIC_MODEL"]
+        _importlib.reload(grader_module)
+        _importlib.reload(app_module)
+        import db as _db_module
+        _importlib.reload(_db_module)
+        app_module.db = _db_module
+        _db_module.init_db()
+    print("  done")
+
+
+def test_assignment_delete_keeps_foreign_images(errors):
+    """Assignment delete purges only the caller's own images (ownership check)."""
+    print("Testing assignment delete ownership check...")
+    import tempfile as _tempfile
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    # A private-owned image whose name is planted in the public assignment's list.
+    db_module.save_image("priv_foreign.jpg", b"private-bytes", "image/jpeg")
+    db_module.set_image_owner("priv_foreign.jpg", "private")
+    db_module.save_image("pub_own.jpg", b"public-bytes", "image/jpeg")
+    db_module.set_image_owner("pub_own.jpg", "public")
+    cid = db_module.create_class("PubDelOwn", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    db_module.save_reference_images(aid, ["db:priv_foreign.jpg", "db:pub_own.jpg"])
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    tmpdir = _tempfile.mkdtemp()
+    with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+        r = client.post(f"/api/assignment/{aid}/delete")
+    if r.status_code != 200:
+        errors.append(f"delete should be 200, got {r.status_code}")
+    if db_module.get_image_owner("priv_foreign.jpg") != "private":
+        errors.append("private image owner row must survive the public assignment delete")
+    data, _ = db_module.get_image("priv_foreign.jpg")
+    if data != b"private-bytes":
+        errors.append("private image bytes must survive the public assignment delete")
+    if db_module.get_image("pub_own.jpg")[0] is not None:
+        errors.append("the caller's own image bytes should be purged on assignment delete")
+    print("  done")
+
+
+def test_assignment_delete_traversal_safe(errors):
+    """A 'db:../x' entry in an assignment's image list cannot escape UPLOAD_DIR."""
+    print("Testing assignment delete traversal safety...")
+    import tempfile as _tempfile
+    import os as _os
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    tmpdir = _tempfile.mkdtemp()
+    canary = _os.path.join(_os.path.dirname(tmpdir), "traversal_canary.txt")
+    with open(canary, "w") as f:
+        f.write("canary")
+    legit = _os.path.join(tmpdir, "legit.jpg")
+    with open(legit, "wb") as f:
+        f.write(b"legit")
+    db_module.set_image_owner("legit.jpg", "public")
+    # No owner row for the traversal target: the ownership gate must skip it.
+    cid = db_module.create_class("PubDelTrav", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    db_module.save_reference_images(aid, ["db:../traversal_canary.txt", "db:legit.jpg"])
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+        r = client.post(f"/api/assignment/{aid}/delete")
+    if r.status_code != 200:
+        errors.append(f"delete should be 200, got {r.status_code}")
+    if not _os.path.exists(canary):
+        errors.append("a traversal entry must not delete files outside UPLOAD_DIR")
+    if _os.path.exists(legit):
+        errors.append("the caller's own image file should be purged")
+    _os.unlink(canary)
+    print("  done")
+
+
+def test_capped_creation_race(errors):
+    """Concurrent class creation cannot overshoot the cap (atomic check+insert)."""
+    print("Testing atomic class cap under concurrency...")
+    import threading as _threading
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    _, db_module = setup
+    cap = db_module.count_classes("public") + 2
+    for i in range(2):
+        db_module.create_class(f"RaceBase{i}", owner="public")
+    # Now exactly at cap; 6 threads race to create one more each.
+    results = []
+
+    def _try(i):
+        try:
+            results.append(db_module.create_class_capped(f"Race{i}", "public", cap))
+        except Exception as e:  # noqa: BLE001
+            results.append(e)
+
+    threads = [_threading.Thread(target=_try, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if db_module.count_classes("public") != cap:
+        errors.append(f"class count must stay at cap {cap} under concurrency, "
+                      f"got {db_module.count_classes('public')}")
+    if [r for r in results if r is not None and not isinstance(r, Exception)]:
+        errors.append("no racer should succeed once the cap is reached")
+    raiser = [r for r in results if isinstance(r, Exception)]
+    if raiser:
+        errors.append(f"capped creation should return None, not raise: {raiser[0]!r}")
+    print("  done")
+
+
+def test_try_append_image_paths_race(errors):
+    """Concurrent image-list appends cannot overshoot the cap."""
+    print("Testing atomic image-list append under concurrency...")
+    import threading as _threading
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    _, db_module = setup
+    cid = db_module.create_class("RaceImg", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    db_module.save_reference_images(aid, ["db:seed.jpg"])
+    cap = 3
+    outcomes = []
+
+    def _try(i):
+        try:
+            outcomes.append(db_module.try_append_image_paths(
+                aid, "reference_images", [f"db:r{i}a.jpg", f"db:r{i}b.jpg"], cap))
+        except Exception as e:  # noqa: BLE001
+            outcomes.append(e)
+
+    threads = [_threading.Thread(target=_try, args=(i,)) for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    final = json.loads(db_module.get_assignment(aid)["reference_images"] or "[]")
+    if len(final) != cap:
+        errors.append(f"image list must stay at cap {cap} under concurrency, "
+                      f"got {len(final)}")
+    if sum(1 for o in outcomes if o is True) != 1:
+        errors.append(f"exactly one racer should succeed, got {outcomes!r}")
+    print("  done")
+
+
+def test_grade_failure_discards_uploads(errors):
+    """A failed grading discards the just-uploaded paper photos (no orphans)."""
+    print("Testing grade-failure upload cleanup...")
+    import io as _io
+    import tempfile as _tempfile
+    import os as _os
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("PubGradeFail", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    db_module.save_rubric(aid, "Q1 (5 pts)", [{"q": "Q1", "max_score": 5}])
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    tmpdir = _tempfile.mkdtemp()
+    data = {"assignment_id": str(aid), "student_name": "Test",
+            "images": (_io.BytesIO(b"fake-photo"), "paper.jpg")}
+    with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir), \
+         unittest.mock.patch.object(app_module.grader, "grade_paper",
+                                    side_effect=RuntimeError("boom")):
+        r = client.post("/api/grade", data=data, content_type="multipart/form-data")
+    if r.status_code != 400:
+        errors.append(f"failed grading should be 400, got {r.status_code}")
+    leftover = [f for f in _os.listdir(tmpdir)
+                if _os.path.isfile(_os.path.join(tmpdir, f))]
+    if leftover:
+        errors.append(f"failed grading must discard uploaded photos, leftover: {leftover}")
+    print("  done")
+
+
+def test_public_model_forced_unconditional(errors):
+    """Public _chat_json always uses PUBLIC_MODEL, even for non-reasoning models."""
+    print("Testing unconditional public model forcing...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+    grader_module = app_module.grader
+    grader_module._set_current_role("public")
+    try:
+        # An operator's expensive non-reasoning default must not leak to strangers.
+        with unittest.mock.patch.object(grader_module, "DEFAULT_MODEL", "gpt-4.1"):
+            captured = {}
+
+            class _FakeCompletions:
+                def create(self, **kwargs):
+                    captured.update(kwargs)
+
+                    class _Msg:
+                        content = '{"ok": true}'
+
+                    class _Choice:
+                        message = _Msg()
+
+                    class _Resp:
+                        choices = [_Choice()]
+                        usage = None
+
+                    return _Resp()
+
+            class _FakeChat:
+                completions = _FakeCompletions()
+
+            class _FakeClient:
+                chat = _FakeChat()
+
+            with unittest.mock.patch.object(grader_module, "_get_client",
+                                            return_value=_FakeClient()):
+                grader_module._chat_json("s", "u", 10)  # model=None -> DEFAULT_MODEL
+            if captured.get("model") != grader_module.PUBLIC_MODEL:
+                errors.append(
+                    "public _chat_json(model=None) must force PUBLIC_MODEL, "
+                    f"got {captured.get('model')!r}")
+    finally:
+        grader_module._set_current_role("private")
+    print("  done")
+
+
+def _seed_public_request_context(app_module):
+    """Push a request context authenticated as the public role."""
+    from flask import session as _flask_session
+    ctx = app_module.app.test_request_context("/")
+    ctx.push()
+    _flask_session["auth_v"] = app_module.AUTH_VERSION
+    _flask_session["role"] = "public"
+    return ctx
+
+
+def test_save_upload_rolls_back_on_failure(errors):
+    """_save_upload removes its owner row (and partial file) when saving fails."""
+    print("Testing _save_upload rollback on failure...")
+    import tempfile as _tempfile
+    import os as _os
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    tmpdir = _tempfile.mkdtemp()
+    created_names = []
+    orig_set_owner = db_module.set_image_owner
+
+    def _spy_set_owner(filename, owner):
+        created_names.append(filename)
+        return orig_set_owner(filename, owner)
+
+    class _FailFile:
+        filename = "boom.jpg"
+        mimetype = "image/jpeg"
+
+        def read(self):
+            return b"x"
+
+        def save(self, path):
+            raise OSError("disk full")
+
+    ctx = _seed_public_request_context(app_module)
+    try:
+        with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir), \
+             unittest.mock.patch.object(db_module, "set_image_owner",
+                                        side_effect=_spy_set_owner):
+            try:
+                app_module._save_upload(_FailFile(), "paper")
+            except OSError:
+                pass
+            else:
+                errors.append("_save_upload should re-raise the save error")
+    finally:
+        ctx.pop()
+    if not created_names:
+        errors.append("expected the owner row to be created before the failure")
+    for n in created_names:
+        if db_module.get_image_owner(n) is not None:
+            errors.append(f"owner row for {n} must be rolled back on save failure")
+        if _os.path.exists(_os.path.join(tmpdir, n)):
+            errors.append(f"partial file for {n} must be removed on save failure")
+    print("  done")
+
+
+def test_staged_uploads_purged_on_append_error(errors):
+    """If the atomic append raises, staged uploads are purged (no leak)."""
+    print("Testing staged-upload purge on append error...")
+    import io as _io
+    import tempfile as _tempfile
+    import os as _os
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("PubStageFail", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    tmpdir = _tempfile.mkdtemp()
+    data = {"images": [(_io.BytesIO(b"one"), "a.jpg"),
+                       (_io.BytesIO(b"two"), "b.jpg")]}
+    with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir), \
+         unittest.mock.patch.object(db_module, "try_append_image_paths",
+                                    side_effect=RuntimeError("db down")):
+        r = client.post(f"/assignment/{aid}/upload_reference", data=data,
+                        content_type="multipart/form-data")
+    if r.status_code != 500:
+        errors.append(f"append DB failure should be 500, got {r.status_code}")
+    leftover = [f for f in _os.listdir(tmpdir)
+                if _os.path.isfile(_os.path.join(tmpdir, f))]
+    if leftover:
+        errors.append(f"staged uploads must be purged on append error, leftover: {leftover}")
+    print("  done")
+
+
+def test_try_remove_image_path_atomic(errors):
+    """Atomic image-list remove: correct entries removed, no lost updates."""
+    print("Testing atomic image-list remove...")
+    import threading as _threading
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    _, db_module = setup
+    cid = db_module.create_class("RaceRemove", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    db_module.save_rubric_example_images(
+        aid, ["db:e1.jpg", "db:e2.jpg", "db:e3.jpg"])
+    removed = db_module.try_remove_image_path(aid, "rubric_example_images", "e2.jpg")
+    if removed != ["db:e2.jpg"]:
+        errors.append(f"expected ['db:e2.jpg'] removed, got {removed!r}")
+    remaining = db_module.get_rubric_example_images(aid)
+    if remaining != ["db:e1.jpg", "db:e3.jpg"]:
+        errors.append(f"expected e1+e3 to remain, got {remaining!r}")
+    # Concurrent remove + append: neither update may be lost.
+    outcomes = []
+
+    def _remover():
+        outcomes.append(("remove", db_module.try_remove_image_path(
+            aid, "rubric_example_images", "e1.jpg")))
+
+    def _appender():
+        outcomes.append(("append", db_module.try_append_image_paths(
+            aid, "rubric_example_images", ["db:e4.jpg"], cap=10)))
+
+    threads = [_threading.Thread(target=_remover),
+               _threading.Thread(target=_appender)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    final = db_module.get_rubric_example_images(aid)
+    if "db:e1.jpg" in final:
+        errors.append(f"e1.jpg must be gone after the concurrent remove, got {final!r}")
+    if "db:e4.jpg" not in final:
+        errors.append(f"e4.jpg must survive the concurrent append, got {final!r}")
+    print("  done")
+
+
+def test_delete_upload_race_no_orphans(errors):
+    """Concurrent assignment-delete vs image-append leaves no orphaned bytes."""
+    print("Testing delete-vs-upload race for orphans...")
+    import threading as _threading
+    import tempfile as _tempfile
+    import os as _os
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    tmpdir = _tempfile.mkdtemp()
+    staged_names = []
+    lock = _threading.Lock()
+
+    def _route_like_append(aid, tag):
+        # Mirrors assignment_upload_reference: stage, atomic append, purge
+        # staged uploads when the append fails (e.g. assignment already gone).
+        ctx = _seed_public_request_context(app_module)
+        try:
+            with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+                name = f"ref_{tag}_{_os.urandom(4).hex()}.jpg"
+                path = _os.path.join(tmpdir, name)
+                with open(path, "wb") as f:
+                    f.write(b"data")
+                db_module.set_image_owner(name, "public")
+                stored = path
+                with lock:
+                    staged_names.append(name)
+                try:
+                    ok = db_module.try_append_image_paths(
+                        aid, "reference_images", [stored], cap=100)
+                except Exception:
+                    ok = False
+                if not ok:
+                    # Assignment gone (or cap): purge like the route does.
+                    if db_module.get_image_owner(name) == "public":
+                        db_module.delete_image(name)
+                    try:
+                        _os.remove(path)
+                    except OSError:
+                        pass
+        finally:
+            ctx.pop()
+
+    def _deleter(aid, out):
+        ctx = _seed_public_request_context(app_module)
+        try:
+            names = db_module.delete_assignment_returning_images(aid)
+            for n in names:
+                if db_module.get_image_owner(n) == "public":
+                    db_module.delete_image(n)
+                try:
+                    _os.remove(_os.path.join(tmpdir, n))
+                except OSError:
+                    pass
+            out.append(True)
+        finally:
+            ctx.pop()
+
+    for round_i in range(3):
+        cid = db_module.create_class(f"RaceDel{round_i}", owner="public")
+        aid = db_module.create_assignment(cid, "A1")
+        done = []
+        threads = ([_threading.Thread(target=_route_like_append, args=(aid, f"r{round_i}t{i}"))
+                    for i in range(4)] +
+                   [_threading.Thread(target=_deleter, args=(aid, done))])
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    orphans = [n for n in staged_names
+               if db_module.get_image_owner(n) is not None
+               or _os.path.exists(_os.path.join(tmpdir, n))]
+    if orphans:
+        errors.append(f"race left orphaned uploads: {orphans!r}")
+    print("  done")
+
+
+def test_serialized_mutation_recovers_after_connect_failure(errors):
+    """A failed _connect() must not permanently poison the thread's flag."""
+    print("Testing serialized_mutation recovery after connect failure...")
+    import tempfile as _tempfile
+    import os as _os
+    import sqlite3 as _sqlite3
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    _, db_module = setup
+    real_connect = db_module._connect
+    calls = {"n": 0}
+
+    def _flaky_connect():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _sqlite3.OperationalError("transient failure")
+        return real_connect()
+
+    with unittest.mock.patch.object(db_module, "_connect",
+                                    side_effect=_flaky_connect):
+        try:
+            with db_module.serialized_mutation("test:key"):
+                pass
+        except _sqlite3.OperationalError:
+            pass
+        else:
+            errors.append("expected the transient connect failure to propagate")
+        # The thread must still be usable afterwards (no stale reentrancy flag).
+        try:
+            with db_module.serialized_mutation("test:key") as conn:
+                conn.execute("SELECT 1")
+        except RuntimeError as e:
+            errors.append(f"thread poisoned after transient connect failure: {e}")
+    print("  done")
+
+
+def test_assignment_delete_ignores_planted_cross_partition_urls(errors):
+    """Planted /uploads URLs in rubric_json cannot destroy other files.
+
+    A public assignment's rubric_json references a private-owned file and an
+    unowned file (both plantable via the rubric editor). Deleting the public
+    assignment must leave both files and the private owner row intact.
+    """
+    print("Testing planted cross-partition diagram URLs on delete...")
+    import tempfile as _tempfile
+    import os as _os
+    import uuid as _uuid
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    tmpdir = _tempfile.mkdtemp()
+    priv_name = f"priv_victim_{_uuid.uuid4().hex}.png"
+    unowned_name = f"unowned_{_uuid.uuid4().hex}.png"
+    for n in (priv_name, unowned_name):
+        with open(_os.path.join(tmpdir, n), "wb") as f:
+            f.write(b"fake-png")
+    db_module.set_image_owner(priv_name, "private")
+    with app_module.app.test_request_context("/"):
+        from flask import session as _flask_session
+        _flask_session["auth_v"] = app_module.AUTH_VERSION
+        _flask_session["role"] = "public"
+        with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+            cid = db_module.create_class("PubPlant", owner="public")
+            aid = db_module.create_assignment(cid, "A1")
+            rubric = json.dumps([
+                {"question": "Q1", "graph": {"url": f"/uploads/{priv_name}"}},
+                {"question": "Q2", "graph": {"url": f"/uploads/{unowned_name}"}},
+            ])
+            db_module.save_rubric(aid, "Q1 Q2", json.loads(rubric))
+            client = app_module.app.test_client()
+            client.post("/login", data={"username": "public",
+                                        "password": "test-public-pass-123"})
+            r = client.post(f"/api/assignment/{aid}/delete")
+            if r.status_code != 200:
+                errors.append(f"assignment delete should be 200, got {r.status_code}")
+    for n in (priv_name, unowned_name):
+        if not _os.path.exists(_os.path.join(tmpdir, n)):
+            errors.append(f"planted file {n} was purged on cross-partition delete")
+    if db_module.get_image_owner(priv_name) != "private":
+        errors.append("private owner row destroyed by public assignment delete")
+    print("  done")
+
+
+def test_solve_empty_response_falls_back(errors):
+    """Two straight empty reasoning responses fall back to the chat model."""
+    print("Testing empty-response model fallback...")
+    import grader as grader_module
+    grader_module._set_current_role("private")
+    models_seen = []
+
+    def _fake_solve(*a, **k):
+        models_seen.append(k.get("model"))
+        raise grader_module.EmptyModelResponseError("empty")
+
+    def _fake_solve_ok(*a, **k):
+        models_seen.append(k.get("model"))
+        return {"solution": "x", "ap_points": []}
+
+    calls = {"n": 0}
+
+    def _side_effect(*a, **k):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return _fake_solve(*a, **k)
+        return _fake_solve_ok(*a, **k)
+
+    def _fake_verify(*a, **k):
+        return {"verdict": "confirmed"}
+
+    try:
+        with unittest.mock.patch.object(grader_module, "REASONING_MODEL", "o3"), \
+             unittest.mock.patch.object(grader_module, "DEFAULT_MODEL", "gpt-4o"), \
+             unittest.mock.patch.object(grader_module, "solve_and_rubric",
+                                        side_effect=_side_effect), \
+             unittest.mock.patch.object(grader_module, "verify_solution",
+                                        side_effect=_fake_verify):
+            grader_module._solve_with_retries("Solve x+1=2.", 5, max_attempts=4)
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"_solve_with_retries should succeed after fallback, raised {e!r}")
+        print("  done")
+        return
+    if len(models_seen) < 3:
+        errors.append(f"expected at least 3 attempts, got {models_seen!r}")
+    elif models_seen[0] != "o3" or models_seen[1] != "o3":
+        errors.append(f"first two attempts should use the reasoning model, got {models_seen!r}")
+    elif models_seen[2] != "gpt-4o":
+        errors.append(f"third attempt should fall back to DEFAULT_MODEL, got {models_seen!r}")
+    print("  done")
+
+
+def test_assignment_delete_purges_diagram_images(errors):
+    """Diagram files referenced in rubric_json are purged on assignment delete."""
+    print("Testing diagram purge on assignment delete...")
+    import tempfile as _tempfile
+    import os as _os
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("PubDelDiagram", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    diagram_name = "diagram_gen_abc123.png"
+    db_module.set_image_owner(diagram_name, "public")
+    rubric = [{"q": "Q1", "max_score": 5,
+               "graph": {"kind": "image", "url": f"/uploads/{diagram_name}"}}]
+    db_module.save_rubric(aid, "Q1 (5 pts)", rubric)
+    names = db_module.get_assignment_image_names(aid)
+    if diagram_name not in names:
+        errors.append(f"diagram URL in rubric_json should be in the purge list, got {names!r}")
+    tmpdir = _tempfile.mkdtemp()
+    with open(_os.path.join(tmpdir, diagram_name), "wb") as f:
+        f.write(b"diagram-bytes")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+        r = client.post(f"/api/assignment/{aid}/delete")
+    if r.status_code != 200:
+        errors.append(f"delete should be 200, got {r.status_code}")
+    if _os.path.exists(_os.path.join(tmpdir, diagram_name)):
+        errors.append("diagram file should be purged on assignment delete")
+    if db_module.get_image_owner(diagram_name) is not None:
+        errors.append("diagram owner row should be purged on assignment delete")
+    print("  done")
+
+
+def test_budget_checker_enforces_public_cap(errors):
+    """_budget_ok enforces the public per-role budget on every call (no session)."""
+    print("Testing per-call public budget gate...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    app_module.grader._set_current_role("public")
+    def _summary(prompt, completion):
+        return {"calls": 1, "prompt_tokens": prompt, "completion_tokens": completion,
+                "by_model": {}}
+    try:
+        with unittest.mock.patch.object(db_module, "get_api_usage_summary",
+                                        return_value=_summary(100, 100)):
+            # Public spend over the per-role budget -> gate closed.
+            with unittest.mock.patch.object(db_module, "get_api_usage_summary_for_role",
+                                            return_value=_summary(500000, 0)):
+                if app_module._budget_ok():
+                    errors.append("budget gate should be closed when public spend hits the cap")
+            # Public spend under the cap -> gate open.
+            with unittest.mock.patch.object(db_module, "get_api_usage_summary_for_role",
+                                            return_value=_summary(1000, 0)):
+                if not app_module._budget_ok():
+                    errors.append("budget gate should be open when public spend is under the cap")
+            # Global budget exceeded -> gate closed even for private roles.
+            with unittest.mock.patch.object(db_module, "get_api_usage_summary",
+                                            return_value=_summary(2000000, 0)):
+                app_module.grader._set_current_role("private")
+                if app_module._budget_ok():
+                    errors.append("budget gate should be closed when the global budget is hit")
+    finally:
+        app_module.grader._set_current_role("private")
+    print("  done")
+
+
+def test_assignment_delete_purges_images(errors):
+    """Deleting an assignment purges its image bytes + ownership records."""
+    print("Testing assignment delete purges images...")
+    import io as _io
+    import tempfile as _tempfile
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    cid = db_module.create_class("Demo", owner="public")
+    aid = db_module.create_assignment(cid, "A1")
+    client = app_module.app.test_client()
+    client.post("/login", data={"username": "public", "password": "test-public-pass-123"})
+    tmpdir = _tempfile.mkdtemp()
+    with unittest.mock.patch.object(app_module, "UPLOAD_DIR", tmpdir):
+        client.post(f"/assignment/{aid}/upload_reference",
+                    data={"images": (_io.BytesIO(b"fake-image-data"), "ref1.jpg")},
+                    content_type="multipart/form-data")
+        names = db_module.get_assignment_image_names(aid)
+        if len(names) != 1:
+            errors.append(f"expected 1 stored image, got {names}")
+            print("  done")
+            return
+        name = names[0]
+        r = client.post(f"/api/assignment/{aid}/delete")
+        if r.status_code != 200:
+            errors.append(f"assignment delete should be 200, got {r.status_code}")
+        data, _ = db_module.get_image(name)
+        if data is not None:
+            errors.append("image bytes should be purged on assignment delete")
+        if db_module.get_image_owner(name) is not None:
+            errors.append("image ownership record should be purged on assignment delete")
+        if os.path.exists(os.path.join(tmpdir, name)):
+            errors.append("image file should be removed on assignment delete")
+    print("  done")
+
+
 if __name__ == "__main__":
     ok = main()
     sys.exit(0 if ok else 1)
