@@ -1892,7 +1892,7 @@ def verify_solution(question_text, solution, model=None, reasoning_effort=None, 
 
 
 def retry_solve_question(question_text, max_score, q_label="", model="o3",
-                         high_effort=False, image_paths=None, max_attempts=3):
+                         high_effort=False, image_paths=None, max_attempts=10):
     """Retry solving a single question, with full debug output.
 
     `model` is "o3" or "gpt-4o". `high_effort` requests o3 with
@@ -2110,7 +2110,7 @@ class RetryExhaustedError(RuntimeError):
 
 
 def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
-                       max_attempts=3):
+                       max_attempts=10):
     """Solve + verify with up to `max_attempts` tries.
 
     Each retry includes the previous attempt's error/verification note in the
@@ -2294,7 +2294,7 @@ def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
             last_note = verdict.get("note", "")
         if verdict is None or verdict["verdict"] != "confirmed":
             verdict = {"verdict": "review",
-                       "note": f"Not confirmed after 3 attempts ({last_note}). "
+                       "note": f"Not confirmed after 10 attempts ({last_note}). "
                                "Please review manually."}
         criteria = q.get("criteria", "")
         # AP enforcement: ALWAYS convert to AP-style steps, even if the teacher
@@ -2375,14 +2375,14 @@ def build_unified_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
                 "criteria": "",
                 "has_diagram": q.get("has_diagram", False),
                 "verified": "review",
-                "verify_note": f"AI solving failed after 3 attempts ({e}). Please solve manually or tap Retry.",
+                "verify_note": f"{e} Please solve manually or tap Retry.",
                 "origin": "ai_solved",
                 "graph": None,
             }
         verified = "yes" if verdict["verdict"] == "confirmed" else "review"
         note = verdict.get("note", "")
         if verified == "review" and not note:
-            note = "AI could not verify the solution after 3 attempts. Please review or tap Retry."
+            note = "AI could not verify the solution after 10 attempts. Please review or tap Retry."
         criteria = "; ".join(
             f"{p.get('points', 1)} pt: {p.get('for', '')}"
             for p in solved["ap_points"] if isinstance(p, dict)
@@ -2500,13 +2500,13 @@ def build_solve_rubric_streaming(image_paths, upload_dir=None, max_workers=3,
                 "criteria": "",
                 "has_diagram": q.get("has_diagram", False),
                 "verified": "review",
-                "verify_note": f"AI solving failed after 3 attempts ({e}). Please solve manually or tap Retry.",
+                "verify_note": f"{e} Please solve manually or tap Retry.",
                 "origin": "ai_solved",
                 "graph": None,
             }
         verified = "yes" if verdict["verdict"] == "confirmed" else "review"
         if verified == "review" and not verdict.get("note"):
-            note = "AI could not verify the solution after 3 attempts. Please review or tap Retry."
+            note = "AI could not verify the solution after 10 attempts. Please review or tap Retry."
         else:
             note = verdict.get("note", "")
         criteria = "; ".join(
