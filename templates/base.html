@@ -14,7 +14,8 @@
   <a class="brand" href="{{ url_for('index') }}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg> AI Grader</a>
   <nav>
     <a href="{{ url_for('index') }}">Home</a>
-    <a href="{{ url_for('settings_page') }}">Settings</a>
+    {% if not is_public_role %}<a href="{{ url_for('settings_page') }}">Settings</a>{% endif %}
+    {% if is_admin %}<a href="{{ url_for('public_monitor_page') }}">Demo Monitor</a>{% endif %}
     <form method="post" action="{{ url_for('logout_page') }}" style="display:inline"><button type="submit" class="linkbtn">Logout</button></form>
   </nav>
 </header>

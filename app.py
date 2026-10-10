@@ -23,7 +23,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
 
 import db
 import grader
@@ -51,13 +51,16 @@ app.config.update(
 )
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
 
-# Shared alpha login. Two roles, one form:
+# Shared login. Three roles, one form:
 #   GRADER_PASSWORD -> tester (uses the app, no /settings)
-#   ADMIN_PASSWORD  -> admin (full access incl. /settings)
+#   ADMIN_PASSWORD  -> admin (full access incl. /settings and public monitoring)
+#   PUBLIC_PASSWORD -> public (isolated demo data, rate-limited, no /settings)
 # Fail closed: no silent defaults anywhere (empty password must never match).
 GRADER_USER = os.environ.get("GRADER_USER", "teacher")
 GRADER_PASSWORD = os.environ.get("GRADER_PASSWORD")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+PUBLIC_USER = os.environ.get("PUBLIC_USER", "public")
+PUBLIC_PASSWORD = os.environ.get("PUBLIC_PASSWORD", "")
 if not GRADER_PASSWORD or len(GRADER_PASSWORD) < 12:
     raise RuntimeError("GRADER_PASSWORD (>=12 chars) must be set")
 if not ADMIN_PASSWORD or len(ADMIN_PASSWORD) < 12:
@@ -66,14 +69,39 @@ if not ADMIN_PASSWORD or len(ADMIN_PASSWORD) < 12:
 # runs first). Fail closed instead. Found by gpt-5.6 review 2026-10-07.
 if GRADER_PASSWORD == ADMIN_PASSWORD:
     raise RuntimeError("GRADER_PASSWORD and ADMIN_PASSWORD must differ")
+# The public demo account is optional: empty PUBLIC_PASSWORD disables it.
+# When enabled it must be >= 12 chars and differ from both other passwords,
+# otherwise a public login could silently escalate to tester/admin.
+if PUBLIC_PASSWORD:
+    if len(PUBLIC_PASSWORD) < 12:
+        raise RuntimeError("PUBLIC_PASSWORD must be >= 12 chars or empty (disabled)")
+    if PUBLIC_PASSWORD in (GRADER_PASSWORD, ADMIN_PASSWORD):
+        raise RuntimeError("PUBLIC_PASSWORD must differ from GRADER_PASSWORD and ADMIN_PASSWORD")
+    if PUBLIC_USER == GRADER_USER:
+        raise RuntimeError("PUBLIC_USER must differ from GRADER_USER")
 
-# Auth version: changing either password invalidates all sessions.
+# Auth version: changing any password invalidates all sessions.
 # HMAC-keyed with the server secret so the cookie value (signed, not encrypted)
 # doesn't leak a crackable password hash.
 AUTH_VERSION = hmac.new(
     app.secret_key.encode(),
-    f"{GRADER_PASSWORD}:{ADMIN_PASSWORD}".encode(),
+    f"{GRADER_PASSWORD}:{ADMIN_PASSWORD}:{PUBLIC_PASSWORD}".encode(),
     hashlib.sha256).hexdigest()[:32]
+
+# Public demo account limits (only apply to the "public" role).
+# All tunable via environment.
+PUBLIC_MAX_RUBRIC_JOBS_PER_DAY = int(os.environ.get("PUBLIC_MAX_RUBRIC_JOBS_PER_DAY", "3"))
+PUBLIC_MAX_GRADES_PER_DAY = int(os.environ.get("PUBLIC_MAX_GRADES_PER_DAY", "20"))
+PUBLIC_MAX_RETRIES_PER_DAY = int(os.environ.get("PUBLIC_MAX_RETRIES_PER_DAY", "10"))
+# One photo per question for the demo account (token protection).
+PUBLIC_MAX_RUBRIC_IMAGES = int(os.environ.get("PUBLIC_MAX_RUBRIC_IMAGES", "1"))
+PUBLIC_MAX_GRADE_IMAGES = int(os.environ.get("PUBLIC_MAX_GRADE_IMAGES", "4"))
+# Lifetime cap on questions the demo account may create/fix via rubric
+# generation + retries. 0 disables the lifetime cap.
+PUBLIC_MAX_QUESTIONS_LIFETIME = int(os.environ.get("PUBLIC_MAX_QUESTIONS_LIFETIME", "100"))
+# Per-day token cap for the public role specifically (in addition to the
+# global DAILY_TOKEN_BUDGET). 0 disables the per-role cap.
+PUBLIC_DAILY_TOKEN_BUDGET = int(os.environ.get("PUBLIC_DAILY_TOKEN_BUDGET", "500000"))
 
 # Log every OpenAI call for owner cost visibility.
 grader.usage_logger = db.log_api_usage
@@ -104,10 +132,94 @@ def _require_login():
                 "X-Requested-With") == "XMLHttpRequest":
             return jsonify({"ok": False, "error": "auth_required"}), 401
         return redirect(url_for("login_page"))
+    # Attribute API token usage to the caller's role for monitoring.
+    # Background job threads set their own role at start (see _run_solve_job);
+    # ContextVar keeps threads isolated.
+    grader._set_current_role(_data_owner())
 
 
 def _is_admin():
     return session.get("auth_v") == AUTH_VERSION and session.get("role") == "admin"
+
+
+def _is_public():
+    """True when the current session is the rate-limited public demo role."""
+    return session.get("auth_v") == AUTH_VERSION and session.get("role") == "public"
+
+
+def _data_owner():
+    """Data partition for the current session.
+
+    'public' for the public demo role (fully isolated sandbox),
+    'private' for the owner's tester/admin roles.
+    """
+    return "public" if _is_public() else "private"
+
+
+def _require_class(class_id):
+    """Load a class or abort: 404 if missing, 403 if in another partition."""
+    c = db.get_class(class_id)
+    if not c:
+        abort(404)
+    if c.get("owner", "private") != _data_owner():
+        abort(403)
+    return c
+
+
+def _require_assignment(assignment_id):
+    """Load an assignment or abort: 404 if missing, 403 if cross-partition."""
+    a = db.get_assignment(assignment_id)
+    if not a:
+        abort(404)
+    _require_class(a["class_id"])  # 403 on cross-partition access
+    return a
+
+
+def _require_grade(grade_id):
+    """Load a grade or abort: 404 if missing, 403 if cross-partition."""
+    g = db.get_grade(grade_id)
+    if not g:
+        abort(404)
+    _require_assignment(g["assignment_id"])  # 403 on cross-partition access
+    return g
+
+
+def _public_rate_limit_exceeded(op, limit):
+    """Check + record one hit of a daily rate limit for the public role.
+
+    Returns an error string when the limit is hit, else None. No-op for
+    non-public roles.
+    """
+    if not _is_public():
+        return None
+    if not db.check_rate_limit("public", op, limit):
+        return (f"Demo limit reached: {limit} {op.replace('_', ' ')}s per day. "
+                "Please try again tomorrow.")
+    return None
+
+
+def _public_token_budget_exceeded():
+    """True when the public role burned its daily token budget (0 = disabled)."""
+    if not _is_public() or PUBLIC_DAILY_TOKEN_BUDGET <= 0:
+        return False
+    day = db._rate_limit_day()
+    used = db.get_api_usage_summary_for_role("public", day)
+    return (used["prompt_tokens"] + used["completion_tokens"]) >= PUBLIC_DAILY_TOKEN_BUDGET
+
+
+def _public_lifetime_cap_error():
+    """Error string when the public role hit its lifetime question cap.
+
+    Returns None for non-public roles, when the cap is disabled (0), or when
+    under the cap.
+    """
+    if not _is_public() or PUBLIC_MAX_QUESTIONS_LIFETIME <= 0:
+        return None
+    used = db.get_lifetime_usage("public", "questions")
+    if used >= PUBLIC_MAX_QUESTIONS_LIFETIME:
+        return (f"Demo limit reached: {PUBLIC_MAX_QUESTIONS_LIFETIME} questions total "
+                "for this demo account. No more questions can be created or fixed.")
+    return None
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -121,7 +233,8 @@ def login_page():
         def _match(secret):
             s = (secret or "").encode()
             return bool(pw) and bool(s) and hmac.compare_digest(pw, s)
-        # Constant-time comparison (L1).
+        # Constant-time comparison (L1). Admin check first (see fail-closed
+        # note above); public check last so it can never shadow the others.
         if user == GRADER_USER and _match(ADMIN_PASSWORD):
             session["auth_v"] = AUTH_VERSION
             session["role"] = "admin"
@@ -130,6 +243,11 @@ def login_page():
         if user == GRADER_USER and _match(GRADER_PASSWORD):
             session["auth_v"] = AUTH_VERSION
             session["role"] = "tester"
+            session.permanent = True
+            return redirect(url_for("index"))
+        if PUBLIC_PASSWORD and user == PUBLIC_USER and _match(PUBLIC_PASSWORD):
+            session["auth_v"] = AUTH_VERSION
+            session["role"] = "public"
             session.permanent = True
             return redirect(url_for("index"))
         err = "Wrong username or password."
@@ -147,6 +265,8 @@ def _save_upload(file_storage, prefix):
     if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
         ext = ".jpg"
     name = f"{prefix}_{int(time.time())}_{random.randint(1000, 9999)}{ext}"
+    # Record the data partition for /uploads/<filename> authorization.
+    db.set_image_owner(name, _data_owner())
     if db.USE_POSTGRES:
         # Render disk is ephemeral: store image bytes in Postgres.
         data = file_storage.read()
@@ -195,19 +315,21 @@ def _env_status():
 # ---------- Home: classes / assignments ----------
 @app.route("/")
 def index():
-    classes = db.list_classes()
+    classes = db.list_classes(_data_owner())
     for c in classes:
         c["assignments"] = db.list_assignments(c["id"])
     dup = request.args.get("dup")
+    # Tell the template whether the public demo account is enabled, so the
+    # login page can hint at it (the password itself is never exposed).
     return render_template("index.html", classes=classes, env=_env_status(),
-                           dup_name=dup)
+                           dup_name=dup, is_public=_is_public())
 
 
 @app.route("/class/new", methods=["POST"])
 def class_new():
     name = (request.form.get("name") or "").strip()
     if name:
-        db.create_class(name)
+        db.create_class(name, _data_owner())
     return redirect(url_for("index"))
 
 
@@ -216,6 +338,7 @@ def assignment_new():
     class_id = request.form.get("class_id")
     name = (request.form.get("name") or "").strip()
     if class_id and name:
+        _require_class(int(class_id))  # 403 if cross-partition
         try:
             aid = db.create_assignment(int(class_id), name)
         except ValueError:
@@ -228,9 +351,7 @@ def assignment_new():
 # ---------- Assignment setup: rubric entry ----------
 @app.route("/assignment/<int:assignment_id>")
 def assignment_page(assignment_id):
-    a = db.get_assignment(assignment_id)
-    if not a:
-        return redirect(url_for("index"))
+    a = _require_assignment(assignment_id)
     items = json.loads(a["rubric_json"] or "[]")
     # Self-heal: normalize LaTeX delimiters in rubrics saved before the fix.
     for it in items:
@@ -258,6 +379,12 @@ def api_rubric_job(job_id):
     job = db.get_rubric_job(job_id)
     if not job:
         return jsonify({"ok": False, "error": "Job not found. The server may have restarted — please tap Generate again."}), 404
+    # Data-partition authorization: jobs are tied to their assignment.
+    # Pre-migration jobs have assignment_id=0 and are treated as private.
+    if job.get("assignment_id"):
+        _require_assignment(job["assignment_id"])  # 404/403 on cross-partition
+    elif _is_public():
+        return jsonify({"ok": False, "error": "Job not found."}), 404
     if job["status"] == "running" and time.time() - job["updated"] > db.JOB_STALE_SECONDS:
         db.fail_rubric_job(job_id, "The generation worker stopped unexpectedly — please tap Generate again.")
         job = db.get_rubric_job(job_id)
@@ -289,20 +416,42 @@ def api_solve_rubric():
     include = data.get("include") or []
     if not assignment_id:
         return jsonify({"ok": False, "error": "Missing assignment."}), 400
+    a = _require_assignment(assignment_id)  # 404/403 on cross-partition access
+    # Validate inputs BEFORE consuming any rate-limit quota: invalid requests
+    # must not burn the shared demo budget.
     saved = db.get_rubric_example_images(assignment_id)
     saved_names = {_upload_basename(p): p for p in saved if _upload_exists(p)}
     paths = [saved_names[n] for n in include if n in saved_names]
     if not paths:
         return jsonify({"ok": False, "error": "No question photos selected. Please add them first."}), 400
+    if _is_public() and len(paths) > PUBLIC_MAX_RUBRIC_IMAGES:
+        return jsonify({"ok": False, "error":
+                        f"Demo limit: at most {PUBLIC_MAX_RUBRIC_IMAGES} photos per rubric generation."}), 400
+    # Public demo guardrails: lifetime cap + token budget first (these don't
+    # consume quota), then the daily operation cap immediately before
+    # starting costly work.
+    err = _public_lifetime_cap_error()
+    if err:
+        return jsonify({"ok": False, "error": err}), 429
+    if _public_token_budget_exceeded():
+        return jsonify({"ok": False,
+                        "error": "Demo token budget exhausted for today. Please try again tomorrow."}), 429
+    err = _public_rate_limit_exceeded("rubric_job", PUBLIC_MAX_RUBRIC_JOBS_PER_DAY)
+    if err:
+        return jsonify({"ok": False, "error": err}), 429
     job_id = uuid.uuid4().hex[:12]
     db.cleanup_old_rubric_jobs()
-    db.create_rubric_job(job_id)
-    threading.Thread(target=_run_solve_job, args=(job_id, paths), daemon=True).start()
+    db.create_rubric_job(job_id, assignment_id=int(assignment_id))
+    # Capture the caller's role for the background thread: each thread has its
+    # own ContextVar state, so pass it explicitly.
+    role = _data_owner()
+    threading.Thread(target=_run_solve_job, args=(job_id, paths, role), daemon=True).start()
     return jsonify({"ok": True, "job_id": job_id})
 
 
-def _run_solve_job(job_id, paths):
-    grader.current_operation = "solve_rubric"
+def _run_solve_job(job_id, paths, role="private"):
+    grader._set_current_operation("solve_rubric")
+    grader._set_current_role(role)
     # Job state lives in the DB (not process memory) so any gunicorn worker
     # can serve poll requests and jobs survive restarts.
     def _on_total(total):
@@ -315,6 +464,9 @@ def _run_solve_job(job_id, paths):
         result = grader.build_unified_rubric_streaming(
             paths, upload_dir=UPLOAD_DIR, on_total=_on_total, on_item=_on_item)
         db.finish_rubric_job(job_id, result["items"])
+        # Public demo lifetime cap: count each generated question.
+        if role == "public":
+            db.add_lifetime_usage("public", "questions", len(result["items"]))
     except RuntimeError as e:
         db.fail_rubric_job(job_id, str(e))
     except Exception as e:  # noqa: BLE001
@@ -346,8 +498,23 @@ def api_retry_question():
         return jsonify({"ok": False, "error": "Missing assignment or question text."}), 400
     if model not in ("o3", "gpt-4o"):
         return jsonify({"ok": False, "error": "Model must be 'o3' or 'gpt-4o'."}), 400
+    _require_assignment(assignment_id)  # 404/403 on cross-partition access
+    # Public demo guardrails: lifetime cap + token budget first (no quota
+    # consumed), then the daily retry cap immediately before costly work.
+    err = _public_lifetime_cap_error()
+    if err:
+        return jsonify({"ok": False, "error": err}), 429
+    if _public_token_budget_exceeded():
+        return jsonify({"ok": False,
+                        "error": "Demo token budget exhausted for today. Please try again tomorrow."}), 429
+    err = _public_rate_limit_exceeded("retry", PUBLIC_MAX_RETRIES_PER_DAY)
+    if err:
+        return jsonify({"ok": False, "error": err}), 429
     # Give the solver the assignment's question photos for a second read.
+    # Demo accounts get at most 1 photo of context (one photo per question).
     image_paths = [p for p in db.get_rubric_example_images(assignment_id) if _upload_exists(p)]
+    if _is_public():
+        image_paths = image_paths[:1]
     try:
         result = grader.retry_solve_question(
             question_text, max_score, q_label,
@@ -361,6 +528,9 @@ def api_retry_question():
         return jsonify({"ok": False, "error": str(e)}), 200
     except Exception as e:  # noqa: BLE001
         return jsonify({"ok": False, "error": f"Retry failed: {e}"}), 500
+    # Public demo lifetime cap: each retry fixes one question.
+    if _is_public():
+        db.add_lifetime_usage("public", "questions", 1)
     return jsonify({"ok": True, "result": result})
 
 @app.route("/api/regenerate_rubric", methods=["POST"])
@@ -385,6 +555,22 @@ def api_regenerate_rubric():
         return jsonify({"ok": False, "error": "Reference solution is empty."}), 400
     if max_score <= 0:
         return jsonify({"ok": False, "error": "Max score must be positive."}), 400
+    try:
+        assignment_id = int(data["assignment_id"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid assignment ID."}), 400
+    _require_assignment(assignment_id)  # 404/403 on cross-partition access
+    # Public demo guardrails: lifetime cap + token budget first (no quota
+    # consumed), then the daily retry cap immediately before costly work.
+    err = _public_lifetime_cap_error()
+    if err:
+        return jsonify({"ok": False, "error": err}), 429
+    if _public_token_budget_exceeded():
+        return jsonify({"ok": False,
+                        "error": "Demo token budget exhausted for today. Please try again tomorrow."}), 429
+    err = _public_rate_limit_exceeded("retry", PUBLIC_MAX_RETRIES_PER_DAY)
+    if err:
+        return jsonify({"ok": False, "error": err}), 429
     try:
         criteria = grader.generate_ap_rubric_only(
             question_text, reference_solution, max_score, q_label)
@@ -412,9 +598,7 @@ def api_regenerate_rubric():
 
 @app.route("/assignment/<int:assignment_id>/upload_rubric_example", methods=["POST"])
 def assignment_upload_rubric_example(assignment_id):
-    a = db.get_assignment(assignment_id)
-    if not a:
-        return jsonify({"ok": False, "error": "Assignment not found."}), 404
+    a = _require_assignment(assignment_id)
     existing = db.get_rubric_example_images(assignment_id)
     for f in request.files.getlist("images"):
         if f and f.filename:
@@ -426,6 +610,7 @@ def assignment_upload_rubric_example(assignment_id):
 
 @app.route("/assignment/<int:assignment_id>/delete_rubric_example", methods=["POST"])
 def assignment_delete_rubric_example(assignment_id):
+    _require_assignment(assignment_id)  # 404/403 on cross-partition access
     data = request.get_json(force=True, silent=True) or {}
     name = _upload_basename(data.get("filename") or "")
     existing = db.get_rubric_example_images(assignment_id)
@@ -445,6 +630,7 @@ def assignment_delete_rubric_example(assignment_id):
 
 @app.route("/assignment/<int:assignment_id>/save_rubric", methods=["POST"])
 def assignment_save_rubric(assignment_id):
+    _require_assignment(assignment_id)  # 404/403 on cross-partition access
     data = request.get_json(force=True, silent=True) or {}
     items = data.get("items") or []
     # The form's items win (the teacher may have edited them after AI generation).
@@ -478,7 +664,7 @@ def assignment_save_rubric(assignment_id):
 @app.route("/assignment/<int:assignment_id>/upload_reference", methods=["POST"])
 def assignment_upload_reference(assignment_id):
     files = request.files.getlist("images")
-    a = db.get_assignment(assignment_id)
+    a = _require_assignment(assignment_id)
     if not a:
         return redirect(url_for("index"))
     existing = json.loads(a["reference_images"] or "[]")
@@ -492,15 +678,14 @@ def assignment_upload_reference(assignment_id):
 # ---------- Grading ----------
 @app.route("/api/assignment/<int:assignment_id>/delete", methods=["POST"])
 def api_assignment_delete(assignment_id):
-    if not db.get_assignment(assignment_id):
-        return jsonify({"ok": False, "error": "Assignment not found."}), 404
+    _require_assignment(assignment_id)  # 404/403 before deleting
     db.delete_assignment(assignment_id)
     return jsonify({"ok": True})
 
 
 @app.route("/grade/<int:assignment_id>")
 def grade_page(assignment_id):
-    a = db.get_assignment(assignment_id)
+    a = _require_assignment(assignment_id)
     if not a:
         return redirect(url_for("index"))
     return render_template("grade.html", a=a, env=_env_status())
@@ -533,26 +718,36 @@ def api_extract_name():
 
 @app.route("/api/grade", methods=["POST"])
 def api_grade():
-    grader.current_operation = "grade"
+    grader._set_current_operation("grade")
     assignment_id = request.form.get("assignment_id")
     student_name = (request.form.get("student_name") or "").strip()
     if not assignment_id:
         return jsonify({"ok": False, "error": "Missing assignment ID."}), 400
-    a = db.get_assignment(int(assignment_id))
-    if not a:
-        return jsonify({"ok": False, "error": "Assignment not found."}), 404
-
+    a = _require_assignment(int(assignment_id))
+    # Validate inputs BEFORE consuming rate-limit quota.
     files = request.files.getlist("images")
+    valid_files = [f for f in files if f and f.filename]
+    if _is_public() and len(valid_files) > PUBLIC_MAX_GRADE_IMAGES:
+        return jsonify({"ok": False, "error":
+                        f"Demo limit: at most {PUBLIC_MAX_GRADE_IMAGES} photos per paper."}), 400
+    if not valid_files:
+        return jsonify({"ok": False, "error": "No paper photos received. Please take/upload photos first."}), 400
+    # Public demo guardrails: lifetime cap + token budget first (no quota
+    # consumed), then the daily grading cap immediately before costly work.
+    if _public_token_budget_exceeded():
+        return jsonify({"ok": False,
+                        "error": "Demo token budget exhausted for today. Please try again tomorrow."}), 429
+    err = _public_rate_limit_exceeded("grade", PUBLIC_MAX_GRADES_PER_DAY)
+    if err:
+        return jsonify({"ok": False, "error": err}), 429
+
     paths = []
     first_path = None
-    for f in files:
-        if f and f.filename:
-            p = _save_upload(f, "paper")
-            paths.append(p)
-            if first_path is None:
-                first_path = p
-    if not paths:
-        return jsonify({"ok": False, "error": "No paper photos received. Please take/upload photos first."}), 400
+    for f in valid_files:
+        p = _save_upload(f, "paper")
+        paths.append(p)
+        if first_path is None:
+            first_path = p
     # Auto-extract student name from first photo if not provided
     if not student_name and first_path:
         try:
@@ -591,8 +786,13 @@ def api_grade():
 def api_save_grade():
     data = request.get_json(force=True, silent=True) or {}
     try:
+        assignment_id = int(data["assignment_id"])
+    except (KeyError, TypeError, ValueError) as e:
+        return jsonify({"ok": False, "error": f"Save failed, incomplete data: {e}"}), 400
+    _require_assignment(assignment_id)  # 404/403 on cross-partition access
+    try:
         gid = db.save_grade(
-            int(data["assignment_id"]),
+            assignment_id,
             (data.get("student_name") or "").strip(),
             data.get("questions") or [],
             float(data.get("total", 0)),
@@ -608,9 +808,7 @@ def api_save_grade():
 # ---------- Results & stats ----------
 @app.route("/results/<int:assignment_id>")
 def results_page(assignment_id):
-    a = db.get_assignment(assignment_id)
-    if not a:
-        return redirect(url_for("index"))
+    a = _require_assignment(assignment_id)
     grades = db.list_grades(assignment_id)
     totals = [g["total"] for g in grades]
     stats = {}
@@ -626,7 +824,7 @@ def results_page(assignment_id):
 
 @app.route("/results/<int:assignment_id>/csv")
 def results_csv(assignment_id):
-    a = db.get_assignment(assignment_id)
+    a = _require_assignment(assignment_id)
     if not a:
         return redirect(url_for("index"))
     grades = db.list_grades(assignment_id)
@@ -643,10 +841,10 @@ def results_csv(assignment_id):
 
 @app.route("/graded/<int:grade_id>")
 def grade_detail_page(grade_id):
-    g = db.get_grade(grade_id)
+    g = _require_grade(grade_id)
     if not g:
         return redirect(url_for("index"))
-    a = db.get_assignment(g["assignment_id"])
+    a = _require_assignment(g["assignment_id"])
     try:
         questions = json.loads(g["questions_json"] or "[]")
     except (json.JSONDecodeError, TypeError):
@@ -663,8 +861,11 @@ def grade_detail_page(grade_id):
 # ---------- Settings ----------
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
-    # Require login (teacher or admin). Owner uses teacher login.
+    # Require login (tester or admin). The public demo role is blocked here:
+    # it must never see or change the owner's OpenAI key.
     _require_login()
+    if _is_public():
+        abort(403)
     msg = ""
     if request.method == "POST":
         api_key = (request.form.get("api_key") or "").strip()
@@ -677,6 +878,81 @@ def settings_page():
         msg = "Saved."
     usage = db.get_api_usage_summary(since_ts=time.time() - 30 * 86400)
     return render_template("settings.html", env=_env_status(), msg=msg, usage=usage)
+
+
+# ---------- Public demo account monitoring (admin only) ----------
+@app.route("/admin/public")
+def public_monitor_page():
+    """Admin dashboard for the public demo account: usage, rate limits, costs.
+
+    Shows what the public account used (ops, tokens, $ estimate), current
+    rate-limit counters, and recent API calls — so the owner can monitor and
+    manage demo usage.
+    """
+    if not _is_admin():
+        abort(403)
+    day = db._rate_limit_day()
+    usage = db.get_api_usage_summary_for_role("public", day)
+    token_budget = PUBLIC_DAILY_TOKEN_BUDGET
+    tokens_used = usage["prompt_tokens"] + usage["completion_tokens"]
+    lifetime_questions = db.get_lifetime_usage("public", "questions")
+    limits = {
+        "rubric_job": {
+            "label": "Rubric generations",
+            "limit": PUBLIC_MAX_RUBRIC_JOBS_PER_DAY,
+            "used": db.get_rate_limit_usage("public", "rubric_job", day),
+        },
+        "grade": {
+            "label": "Paper gradings",
+            "limit": PUBLIC_MAX_GRADES_PER_DAY,
+            "used": db.get_rate_limit_usage("public", "grade", day),
+        },
+        "retry": {
+            "label": "Question retries",
+            "limit": PUBLIC_MAX_RETRIES_PER_DAY,
+            "used": db.get_rate_limit_usage("public", "retry", day),
+        },
+    }
+    recent = db.get_recent_api_usage(role="public", limit=30)
+    public_enabled = bool(PUBLIC_PASSWORD)
+    return render_template(
+        "public_admin.html",
+        day=day,
+        usage=usage,
+        tokens_used=tokens_used,
+        token_budget=token_budget,
+        lifetime_questions=lifetime_questions,
+        lifetime_cap=PUBLIC_MAX_QUESTIONS_LIFETIME,
+        limits=limits,
+        recent=recent,
+        public_enabled=public_enabled,
+        public_user=PUBLIC_USER,
+        env=_env_status(),
+    )
+
+
+@app.route("/admin/public/reset_limits", methods=["POST"])
+def public_reset_limits():
+    """Clear today's rate-limit counters for the public role (admin only)."""
+    if not _is_admin():
+        abort(403)
+    db.reset_rate_limits("public")
+    return redirect(url_for("public_monitor_page"))
+
+
+@app.template_filter("timestamp_to_time")
+def _timestamp_to_time_filter(ts):
+    """Format an epoch timestamp as HH:MM:SS server-local for admin tables."""
+    try:
+        return time.strftime("%H:%M:%S", time.localtime(float(ts)))
+    except (TypeError, ValueError):
+        return "?"
+
+
+@app.context_processor
+def _inject_role():
+    """Make the current role available to all templates (for nav links)."""
+    return {"is_admin": _is_admin(), "is_public_role": _is_public()}
 
 
 def _write_env(api_key, model):
@@ -709,6 +985,14 @@ def uploaded_file(filename):
     # Block path traversal (e.g. ../../ai_grader.db). Also reject backslashes
     # (Windows-style traversal) for defense in depth.
     if "\\" in filename or "/" in filename or filename.startswith("."):
+        return jsonify({"ok": False, "error": "Not found."}), 404
+    # Data-partition authorization: a public demo user must not fetch private
+    # images by guessing filenames. Unknown (pre-migration) images are treated
+    # as private, so only the owner's roles can fetch them.
+    owner = db.get_image_owner(filename)
+    if owner is None:
+        owner = "private"
+    if owner != _data_owner():
         return jsonify({"ok": False, "error": "Not found."}), 404
     # Postgres mode: images live in the DB (Render disk is ephemeral).
     if db.USE_POSTGRES:

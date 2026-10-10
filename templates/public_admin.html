@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Public Demo Monitor - AI Grader{% endblock %}
+{% block content %}
+<h2>Public Demo Account Monitor</h2>
+<p class="muted">Usage for <code>{{ day }}</code> (server local time). Admin only.</p>
+
+{% if not public_enabled %}
+<div class="card">
+  <p class="error-text">The public demo account is <strong>disabled</strong> (PUBLIC_PASSWORD is not set).</p>
+  <p class="muted">Set <code>PUBLIC_PASSWORD</code> (≥12 chars) in the environment and restart to enable it. Share the username <code>{{ public_user }}</code> and password with testers.</p>
+</div>
+{% else %}
+<div class="card">
+  <h3>Status</h3>
+  <p>Demo login: <code>{{ public_user }}</code> / <span class="muted">(password set, hidden)</span></p>
+  <p>Token budget today: <strong>{{ "{:,}".format(tokens_used) }}</strong> / {{ "{:,}".format(token_budget) }} tokens
+    {% if token_budget > 0 and tokens_used >= token_budget %}<span class="error-text">(exhausted)</span>{% endif %}</p>
+  <p>API calls today: <strong>{{ usage.calls }}</strong></p>
+  <p>Lifetime questions created/fixed: <strong>{{ lifetime_questions }}</strong> / {{ lifetime_cap }}
+    {% if lifetime_cap > 0 and lifetime_questions >= lifetime_cap %}<span class="error-text">(capped)</span>{% endif %}</p>
+</div>
+
+<div class="card">
+  <h3>Rate limits (per day)</h3>
+  <table class="stats-table">
+    <tr><th>Operation</th><th>Used</th><th>Limit</th><th></th></tr>
+    {% for key, lim in limits.items() %}
+    <tr>
+      <td>{{ lim.label }}</td>
+      <td><strong>{{ lim.used }}</strong></td>
+      <td>{{ lim.limit }}</td>
+      <td>{% if lim.used >= lim.limit %}<span class="error-text">capped</span>{% else %}<span class="success">ok</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="{{ url_for('public_reset_limits') }}" style="margin-top:10px">
+    <button type="submit" class="btn">Reset today's counters</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Usage by operation (today)</h3>
+  {% if usage.by_endpoint %}
+  <table class="stats-table">
+    <tr><th>Operation</th><th>Calls</th><th>Tokens</th></tr>
+    {% for ep, s in usage.by_endpoint.items() %}
+    <tr><td><code>{{ ep }}</code></td><td>{{ s.calls }}</td><td>{{ "{:,}".format(s.tokens) }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No API usage recorded today.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Recent API calls</h3>
+  {% if recent %}
+  <table class="stats-table">
+    <tr><th>Time</th><th>Operation</th><th>Model</th><th>Tokens</th></tr>
+    {% for r in recent %}
+    <tr>
+      <td class="muted">{{ r.created | int | timestamp_to_time }}</td>
+      <td><code>{{ r.endpoint }}</code></td>
+      <td><code>{{ r.model }}</code></td>
+      <td>{{ "{:,}".format((r.prompt_tokens or 0) + (r.completion_tokens or 0)) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No API calls logged yet.</p>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

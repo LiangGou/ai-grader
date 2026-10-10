@@ -321,8 +321,30 @@ usage_logger = None
 # Optional hook: set by app.py; returns True if the call may proceed.
 # Signature: fn() -> bool. Used to enforce a daily token budget.
 budget_checker = None
-# Label for the current high-level operation (set by callers, e.g. "solve_rubric").
-current_operation = "general"
+# Login role that triggered the current operation. Uses a ContextVar (not a
+# plain module global) so concurrent requests and background threads cannot
+# overwrite each other's role attribution. Each thread starts with "private";
+# app.py sets it per request and per background job.
+# Same for the operation label (used in usage logs).
+import contextvars as _contextvars
+_current_role_var = _contextvars.ContextVar("grader_current_role", default="private")
+_current_operation_var = _contextvars.ContextVar("grader_current_operation", default="general")
+
+
+def _get_current_role():
+    return _current_role_var.get()
+
+
+def _set_current_role(role):
+    _current_role_var.set(role)
+
+
+def _get_current_operation():
+    return _current_operation_var.get()
+
+
+def _set_current_operation(op):
+    _current_operation_var.set(op)
 
 
 def _chat_json(system, user_content, max_tokens, model=None, reasoning_effort=None, _raw=None):
@@ -352,9 +374,10 @@ def _chat_json(system, user_content, max_tokens, model=None, reasoning_effort=No
     if usage_logger is not None:
         try:
             u = getattr(resp, "usage", None)
-            usage_logger(current_operation, model,
+            usage_logger(_get_current_operation(), model,
                          getattr(u, "prompt_tokens", 0) if u else 0,
-                         getattr(u, "completion_tokens", 0) if u else 0)
+                         getattr(u, "completion_tokens", 0) if u else 0,
+                         _get_current_role())
         except Exception:
             pass
     text = (resp.choices[0].message.content or "").strip()

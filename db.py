@@ -109,7 +109,35 @@ def init_db():
         CREATE TABLE IF NOT EXISTS classes (
             id {idcol},
             name TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            owner TEXT NOT NULL DEFAULT 'private'
+        )
+    """)
+    # Migration: data-isolation owner column (public test account, 2026-10-10).
+    # Existing classes belong to the owner ('private'); the public test role
+    # only sees rows with owner='public'.
+    cols = _table_cols(conn, "classes")
+    if "owner" not in cols:
+        cur.execute("ALTER TABLE classes ADD COLUMN owner TEXT NOT NULL DEFAULT 'private'")
+    # Rate-limit counters for restricted roles (public test account).
+    # One row per (role, op, day); day is YYYY-MM-DD in server local time.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS rate_limit_counters (
+            role TEXT NOT NULL,
+            op TEXT NOT NULL,
+            day TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (role, op, day)
+        )
+    """)
+    # Image ownership for data-partition authorization on /uploads/<filename>.
+    # Maps the stored filename to the data partition ('private' or 'public')
+    # that uploaded it, so the file-serving route can enforce isolation.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS image_owners (
+            filename TEXT PRIMARY KEY,
+            owner TEXT NOT NULL DEFAULT 'private',
+            created REAL NOT NULL
         )
     """)
     cur.execute(f"""
@@ -147,6 +175,8 @@ def init_db():
     if "images" not in gcols:
         cur.execute("ALTER TABLE grades ADD COLUMN images TEXT DEFAULT '[]'")
     # API usage log: every OpenAI call, for owner cost visibility.
+    # The `role` column tracks which login role made the call so the owner can
+    # monitor the public demo account separately (added 2026-10-10).
     cur.execute(f"""
         CREATE TABLE IF NOT EXISTS api_usage (
             id {idcol},
@@ -154,11 +184,17 @@ def init_db():
             model TEXT NOT NULL DEFAULT '',
             prompt_tokens INTEGER NOT NULL DEFAULT 0,
             completion_tokens INTEGER NOT NULL DEFAULT 0,
-            created REAL NOT NULL
+            created REAL NOT NULL,
+            role TEXT NOT NULL DEFAULT 'private'
         )
     """)
+    ucols = _table_cols(conn, "api_usage")
+    if "role" not in ucols:
+        cur.execute("ALTER TABLE api_usage ADD COLUMN role TEXT NOT NULL DEFAULT 'private'")
     # Rubric generation jobs: DB-backed so jobs survive multi-worker gunicorn
     # and Render restarts (in-memory dict lost jobs with --workers 2).
+    # assignment_id links the job to its assignment for data-partition
+    # authorization on the poll endpoint (added 2026-10-10).
     cur.execute(f"""
         CREATE TABLE IF NOT EXISTS rubric_jobs (
             job_id TEXT PRIMARY KEY,
@@ -168,9 +204,13 @@ def init_db():
             items_json TEXT NOT NULL DEFAULT '[]',
             error TEXT DEFAULT '',
             created REAL NOT NULL,
-            updated REAL NOT NULL
+            updated REAL NOT NULL,
+            assignment_id INTEGER NOT NULL DEFAULT 0
         )
     """)
+    jcols = _table_cols(conn, "rubric_jobs")
+    if "assignment_id" not in jcols:
+        cur.execute("ALTER TABLE rubric_jobs ADD COLUMN assignment_id INTEGER NOT NULL DEFAULT 0")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created)")
     # Uploaded images: stored in DB when USE_POSTGRES (Render disk is ephemeral).
     # Local dev keeps using the filesystem.
@@ -234,20 +274,27 @@ def _insert_returning_id(cur, sql, params):
     return cur.lastrowid
 
 
-def create_class(name):
+def create_class(name, owner="private"):
+    """Create a class owned by `owner` ('private' for the owner, 'public' for
+    the public test role). Data is isolated by owner."""
+    if owner not in ("private", "public"):
+        raise ValueError(f"Invalid owner: {owner!r}")
     conn = _connect()
     cur = conn.cursor()
     cid = _insert_returning_id(cur,
-        "INSERT INTO classes (name, created_at) VALUES (?, ?)", (name, now()))
+        "INSERT INTO classes (name, created_at, owner) VALUES (?, ?, ?)",
+        (name, now(), owner))
     conn.commit()
     conn.close()
     return cid
 
 
-def list_classes():
+def list_classes(owner="private"):
+    """List classes visible to `owner`. The public test role only sees its own."""
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM classes ORDER BY id DESC")
+    cur.execute(_q("SELECT * FROM classes WHERE owner = ? ORDER BY id DESC"),
+                (owner,))
     rows = _rows_to_dicts(cur.fetchall(), cur)
     conn.close()
     return rows
@@ -440,23 +487,24 @@ def delete_assignment(assignment_id):
 JOB_STALE_SECONDS = 900  # a "running" job with no update for 15 min is dead
 
 
-def create_rubric_job(job_id):
+def create_rubric_job(job_id, assignment_id=0):
     conn = _connect()
     cur = conn.cursor()
     now_ts = time.time()
     if USE_POSTGRES:
         cur.execute(_q(
-            "INSERT INTO rubric_jobs (job_id, status, total, done_json, items_json, error, created, updated)"
-            " VALUES (?, 'running', 0, '[]', '[]', '', ?, ?)"
+            "INSERT INTO rubric_jobs (job_id, status, total, done_json, items_json, error, created, updated, assignment_id)"
+            " VALUES (?, 'running', 0, '[]', '[]', '', ?, ?, ?)"
             " ON CONFLICT (job_id) DO UPDATE SET status='running', total=0,"
-            " done_json='[]', items_json='[]', error='', created=EXCLUDED.created, updated=EXCLUDED.updated"),
-            (job_id, now_ts, now_ts),
+            " done_json='[]', items_json='[]', error='', created=EXCLUDED.created, updated=EXCLUDED.updated,"
+            " assignment_id=EXCLUDED.assignment_id"),
+            (job_id, now_ts, now_ts, assignment_id),
         )
     else:
         cur.execute(
-            "INSERT OR REPLACE INTO rubric_jobs (job_id, status, total, done_json, items_json, error, created, updated)"
-            " VALUES (?, 'running', 0, '[]', '[]', '', ?, ?)",
-            (job_id, now_ts, now_ts),
+            "INSERT OR REPLACE INTO rubric_jobs (job_id, status, total, done_json, items_json, error, created, updated, assignment_id)"
+            " VALUES (?, 'running', 0, '[]', '[]', '', ?, ?, ?)",
+            (job_id, now_ts, now_ts, assignment_id),
         )
     conn.commit()
     conn.close()
@@ -481,6 +529,7 @@ def get_rubric_job(job_id):
         "error": d["error"] or "",
         "created": d["created"],
         "updated": d["updated"],
+        "assignment_id": d.get("assignment_id", 0),
     }
 
 
@@ -547,13 +596,13 @@ def cleanup_old_rubric_jobs(max_age_seconds=1800):
 # Every OpenAI call is logged so the owner can see (and cap) spending when
 # sharing the deployment with alpha testers.
 
-def log_api_usage(endpoint, model, prompt_tokens, completion_tokens):
+def log_api_usage(endpoint, model, prompt_tokens, completion_tokens, role="private"):
     conn = _connect()
     cur = conn.cursor()
     cur.execute(
-        _q("INSERT INTO api_usage (endpoint, model, prompt_tokens, completion_tokens, created)"
-        " VALUES (?, ?, ?, ?, ?)"),
-        (endpoint, model, prompt_tokens or 0, completion_tokens or 0, time.time()),
+        _q("INSERT INTO api_usage (endpoint, model, prompt_tokens, completion_tokens, created, role)"
+        " VALUES (?, ?, ?, ?, ?, ?)"),
+        (endpoint, model, prompt_tokens or 0, completion_tokens or 0, time.time(), role),
     )
     conn.commit()
     conn.close()
@@ -577,3 +626,199 @@ def get_api_usage_summary(since_ts=0):
     conn.close()
     return {"calls": row[0], "prompt_tokens": row[1], "completion_tokens": row[2],
             "by_model": by_model}
+
+
+def get_api_usage_summary_for_role(role, day=None):
+    """Token usage summary for one role on one day (YYYY-MM-DD, server local).
+
+    Used for the public demo account's daily token budget and the admin
+    monitoring page. `day=None` means today.
+    """
+    if day is None:
+        day = _rate_limit_day()
+    # Day boundaries in epoch seconds (server local time).
+    start = time.mktime(time.strptime(day, "%Y-%m-%d"))
+    end = start + 86400
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _q("SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0),"
+           " COALESCE(SUM(completion_tokens),0) FROM api_usage"
+           " WHERE role = ? AND created >= ? AND created < ?"),
+        (role, start, end))
+    row = cur.fetchone()
+    by_endpoint = {}
+    cur.execute(
+        _q("SELECT endpoint, COUNT(*), COALESCE(SUM(prompt_tokens),0),"
+           " COALESCE(SUM(completion_tokens),0) FROM api_usage"
+           " WHERE role = ? AND created >= ? AND created < ?"
+           " GROUP BY endpoint"),
+        (role, start, end))
+    for ep, c, pt, ct in cur.fetchall():
+        by_endpoint[ep or "?"] = {"calls": c, "tokens": (pt or 0) + (ct or 0)}
+    conn.close()
+    return {"calls": row[0], "prompt_tokens": row[1], "completion_tokens": row[2],
+            "by_endpoint": by_endpoint}
+
+
+def get_recent_api_usage(role=None, limit=50):
+    """Recent API calls, newest first. Filter by role when given."""
+    conn = _connect()
+    cur = conn.cursor()
+    if role:
+        cur.execute(
+            _q("SELECT endpoint, model, prompt_tokens, completion_tokens,"
+               " created, role FROM api_usage WHERE role = ?"
+               " ORDER BY id DESC LIMIT ?"),
+            (role, limit))
+    else:
+        cur.execute(
+            _q("SELECT endpoint, model, prompt_tokens, completion_tokens,"
+               " created, role FROM api_usage ORDER BY id DESC LIMIT ?"),
+            (limit,))
+    rows = _rows_to_dicts(cur.fetchall(), cur)
+    conn.close()
+    return rows
+
+
+def reset_rate_limits(role, day=None):
+    """Clear today's rate-limit counters for `role`. Admin management tool."""
+    day = day or _rate_limit_day()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _q("DELETE FROM rate_limit_counters WHERE role = ? AND day = ?"),
+        (role, day))
+    conn.commit()
+    conn.close()
+
+
+def set_image_owner(filename, owner):
+    """Record which data partition uploaded an image file."""
+    conn = _connect()
+    cur = conn.cursor()
+    if USE_POSTGRES:
+        cur.execute(_q(
+            "INSERT INTO image_owners (filename, owner, created) VALUES (?, ?, ?)"
+            " ON CONFLICT (filename) DO UPDATE SET owner=EXCLUDED.owner"),
+            (filename, owner, time.time()))
+    else:
+        cur.execute(
+            "INSERT OR REPLACE INTO image_owners (filename, owner, created)"
+            " VALUES (?, ?, ?)",
+            (filename, owner, time.time()))
+    conn.commit()
+    conn.close()
+
+
+def get_image_owner(filename):
+    """Return the owning partition for an image file, or None if unknown.
+
+    Unknown (pre-migration) images are treated as 'private' by callers.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT owner FROM image_owners WHERE filename = ?"),
+                (filename,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+# ---------- Rate limiting for restricted roles ----------
+# Daily per-(role, op) counters. Used to cap the public test account's
+# consumption of costly operations (rubric generation, grading).
+
+def _rate_limit_day():
+    """Current day as YYYY-MM-DD in server local time."""
+    return time.strftime("%Y-%m-%d", time.localtime())
+
+
+def check_rate_limit(role, op, limit):
+    """Return True and record one hit if (role, op) is under `limit` today.
+
+    Returns False without recording when the limit is reached. Not thread-safe
+    against races, but over-admission by 1 under concurrency is acceptable for
+    a demo guardrail.
+    """
+    day = _rate_limit_day()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _q("SELECT count FROM rate_limit_counters"
+           " WHERE role = ? AND op = ? AND day = ?"),
+        (role, op, day))
+    row = cur.fetchone()
+    current = row[0] if row else 0
+    if current >= limit:
+        conn.close()
+        return False
+    if row:
+        cur.execute(
+            _q("UPDATE rate_limit_counters SET count = count + 1"
+               " WHERE role = ? AND op = ? AND day = ?"),
+            (role, op, day))
+    else:
+        cur.execute(
+            _q("INSERT INTO rate_limit_counters (role, op, day, count)"
+               " VALUES (?, ?, ?, 1)"),
+            (role, op, day))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_rate_limit_usage(role, op, day=None):
+    """Return today's hit count for (role, op). Used by tests and status UI."""
+    day = day or _rate_limit_day()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _q("SELECT count FROM rate_limit_counters"
+           " WHERE role = ? AND op = ? AND day = ?"),
+        (role, op, day))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def add_lifetime_usage(role, op, amount):
+    """Add `amount` to the lifetime counter for (role, op).
+
+    Lifetime counters use day='lifetime' in the same table. Used to cap the
+    total number of questions the public demo account may ever create/fix.
+    """
+    if amount <= 0:
+        return
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _q("SELECT count FROM rate_limit_counters"
+           " WHERE role = ? AND op = ? AND day = 'lifetime'"),
+        (role, op))
+    row = cur.fetchone()
+    if row:
+        cur.execute(
+            _q("UPDATE rate_limit_counters SET count = count + ?"
+               " WHERE role = ? AND op = ? AND day = 'lifetime'"),
+            (amount, role, op))
+    else:
+        cur.execute(
+            _q("INSERT INTO rate_limit_counters (role, op, day, count)"
+               " VALUES (?, ?, 'lifetime', ?)"),
+            (role, op, amount))
+    conn.commit()
+    conn.close()
+
+
+def get_lifetime_usage(role, op):
+    """Return the lifetime total for (role, op)."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        _q("SELECT count FROM rate_limit_counters"
+           " WHERE role = ? AND op = ? AND day = 'lifetime'"),
+        (role, op))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0

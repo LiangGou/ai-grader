@@ -68,8 +68,23 @@ flask --app app run --host=0.0.0.0 --port=5000
 | `OPENAI_API_KEY` | Yes | OpenAI API key (starts with `sk-`) |
 | `OPENAI_MODEL` | No | Override grading model (default: `gpt-4o`) |
 | `DATABASE_URL` | No | Postgres URL; falls back to local SQLite if unset |
+| `PUBLIC_USER` / `PUBLIC_PASSWORD` | No | Public demo account (see below). Empty `PUBLIC_PASSWORD` disables it. |
 
 Copy `.env.example` to `.env` and fill in the values.
+
+### Public demo account
+
+Share a limited demo login without exposing your data or API budget:
+
+- Set `PUBLIC_USER` (default `public`) and `PUBLIC_PASSWORD` (≥12 chars, must differ from the other passwords).
+- The demo account gets a **fully isolated sandbox**: it only sees classes and assignments it creates itself — never your real data.
+- **Guardrails** (all tunable via env):
+  - `PUBLIC_MAX_RUBRIC_JOBS_PER_DAY` (default 3), `PUBLIC_MAX_GRADES_PER_DAY` (default 20), `PUBLIC_MAX_RETRIES_PER_DAY` (default 10)
+  - `PUBLIC_MAX_RUBRIC_IMAGES` (default 1) — one photo per question
+  - `PUBLIC_MAX_QUESTIONS_LIFETIME` (default 100) — total questions the demo account may ever create/fix
+  - `PUBLIC_DAILY_TOKEN_BUDGET` (default 500000) — daily token cap for the demo role
+- **Monitoring**: log in as admin and open **Demo Monitor** in the nav to see the demo account's usage today (operations, tokens, rate-limit status, recent API calls) and reset its counters.
+- The demo role cannot access `/settings` (your API key stays private).
 
 ## Deploy to Render (free)
 
