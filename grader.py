@@ -2065,17 +2065,25 @@ def _check_ap_output(solution, ap_points, max_score, strict_steps=True):
         # sequence — a plan may legitimately mix global setup/conclusion steps
         # with part-grouped steps.
         if not strict_steps and ref_steps:
-            by_part = {}
-            for part, num in ref_steps:
-                by_part.setdefault(part, []).append(num)
-            for part in sorted(by_part, key=lambda p: (p is None, p or "")):
-                nums = by_part[part]
-                if nums != list(range(1, len(nums) + 1)):
-                    label = f"Part ({part}) " if part else ""
-                    issues.append(
-                        f"Rubric {label}step numbers are not sequential from 1: {nums}. "
-                        "Number the steps 1, 2, 3, ... in order.")
-                    break
+            # Auto-renumber non-sequential steps instead of failing validation.
+            # Bug 2026-10-09 (E2E broad): Q1 generated [1,1,1,1,2,2,2,2,3].
+            # Renumbering 1..N in encounter order (per part) is deterministic;
+            # failing forces a retry that often reproduces the same numbering.
+            part_counters = {}
+            for p in pts:
+                for_text = str(p.get("for", ""))
+                m = re.search(r"(?:Part\s*\(([a-zA-Z])\)\s*)?Step\s*(\d+)",
+                              for_text, re.IGNORECASE)
+                if not m:
+                    continue
+                part = m.group(1).lower() if m.group(1) else None
+                old_num = int(m.group(2))
+                part_counters[part] = part_counters.get(part, 0) + 1
+                new_num = part_counters[part]
+                if new_num != old_num:
+                    p["for"] = re.sub(
+                        r"Step\s*\d+", f"Step {new_num}", for_text, count=1,
+                        flags=re.IGNORECASE)
 
     # 4. Point sum: auto-fix ±1, larger diffs are issues.
     total = sum(int(p.get("points", 0) or 0) for p in pts)
@@ -2183,10 +2191,22 @@ def _solve_with_retries(question_text, max_score, q_label="", image_paths=None,
         except Exception as e:  # noqa: BLE001
             last_exc = e
             empty_streak = 0
-            retry_hint = (
-                f"Attempt {attempt} raised an error: {str(e)[:300]}. "
-                "This may have been transient — try again carefully."
-            )
+            err_str = str(e)
+            # Specific hint for JSON escape errors (Bug 2026-10-09 E2E: Q4
+            # failed 3x with "Invalid \escape" from LaTeX backslashes).
+            if "Invalid" in err_str and "escape" in err_str.lower():
+                retry_hint = (
+                    f"Attempt {attempt} failed to parse as JSON: {err_str[:200]}. "
+                    r"This is usually caused by LaTeX backslashes (e.g. \sqrt, "
+                    r"\frac) inside JSON strings. In JSON, every backslash must "
+                    r"be escaped as \\. Write \\sqrt not \sqrt, \\frac not "
+                    r"\frac. Output ONLY the JSON object."
+                )
+            else:
+                retry_hint = (
+                    f"Attempt {attempt} raised an error: {err_str[:300]}. "
+                    "This may have been transient — try again carefully."
+                )
             continue
         # Atomic commit: candidate and candidate_verdict are from the SAME
         # attempt. Never pair a solution with another attempt's verdict.
