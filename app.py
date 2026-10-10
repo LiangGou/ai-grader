@@ -70,11 +70,11 @@ if not ADMIN_PASSWORD or len(ADMIN_PASSWORD) < 12:
 if GRADER_PASSWORD == ADMIN_PASSWORD:
     raise RuntimeError("GRADER_PASSWORD and ADMIN_PASSWORD must differ")
 # The public demo account is optional: empty PUBLIC_PASSWORD disables it.
-# When enabled it must be >= 12 chars and differ from both other passwords,
-# otherwise a public login could silently escalate to tester/admin.
+# The password may be short/simple (it's a shared demo login); the real
+# protection is data isolation + rate limits, not password strength.
+# It must still differ from both other passwords, otherwise a public login
+# could silently escalate to tester/admin.
 if PUBLIC_PASSWORD:
-    if len(PUBLIC_PASSWORD) < 12:
-        raise RuntimeError("PUBLIC_PASSWORD must be >= 12 chars or empty (disabled)")
     if PUBLIC_PASSWORD in (GRADER_PASSWORD, ADMIN_PASSWORD):
         raise RuntimeError("PUBLIC_PASSWORD must differ from GRADER_PASSWORD and ADMIN_PASSWORD")
     if PUBLIC_USER == GRADER_USER:
