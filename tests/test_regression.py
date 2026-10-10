@@ -711,7 +711,7 @@ def test_solve_rubric_route_exists(errors):
         import app as app_module
         client = app_module.app.test_client()
         # Login first (route requires auth; unauthenticated -> 401).
-        client.post("/login", data={"username": "teacher", "password": "test-admin-pass-123"})
+        client.post("/login", data={"username": "admin", "password": "test-admin-pass-123"})
     except Exception as exc:
         errors.append(f"could not create Flask test client: {exc!r}")
         print("  done")
@@ -1534,6 +1534,144 @@ def test_proactive_graph_heuristic(errors):
     print("  done")
 
 
+def test_admin_user_configurable_and_validated(errors):
+    """ADMIN_USER is configurable; collisions/empty values fail closed.
+
+    Found by gpt-5.6 review 2026-10-10: startup collision checks lived inside
+    the PUBLIC_PASSWORD block (skipped when the demo account was disabled),
+    empty ADMIN_USER was accepted, and a custom ADMIN_USER could collide
+    with an existing registered teacher.
+    """
+    print("Testing ADMIN_USER configuration and validation...")
+    import subprocess, sys, textwrap
+
+    def run(code):
+        r = subprocess.run([sys.executable, "-c", code],
+                           capture_output=True, text=True, cwd=".", timeout=60)
+        return r.stdout + r.stderr
+
+    # Every subprocess runs against an isolated temp DB so the real local
+    # DB is never touched (found by gpt-5.6 review 2026-10-10).
+    base = textwrap.dedent("""
+        import os, tempfile
+        os.environ["FLASK_SECRET_KEY"] = "x" * 32
+        os.environ["GRADER_PASSWORD"] = "test-grader-pass-123"
+        os.environ["ADMIN_PASSWORD"] = "test-admin-pass-123"
+        _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        _tmp.close()
+        import db
+        db.DB_PATH = _tmp.name
+        try:
+    """)
+    tail = textwrap.dedent("""
+        finally:
+            os.unlink(_tmp.name)
+    """)
+
+    def script(body):
+        return base + textwrap.indent(textwrap.dedent(body), "    ") + tail
+
+    # 1. Custom ADMIN_USER authenticates the custom name, not "admin".
+    out = run(script("""
+        os.environ["ADMIN_USER"] = "supervisor"
+        import app
+        c = app.app.test_client()
+        r = c.post("/login", data={"username": "supervisor", "password": "test-admin-pass-123"})
+        print("CUSTOM_LOGIN:", r.status_code)
+        r2 = c.get("/settings")
+        print("CUSTOM_SETTINGS:", r2.status_code)
+        c2 = app.app.test_client()
+        r3 = c2.post("/login", data={"username": "admin", "password": "test-admin-pass-123"})
+        print("DEFAULT_LOGIN:", r3.status_code)
+    """))
+    if "CUSTOM_LOGIN: 302" not in out:
+        errors.append(f"custom ADMIN_USER login failed: {out[-200:]}")
+    if "CUSTOM_SETTINGS: 200" not in out:
+        errors.append(f"custom ADMIN_USER /settings failed: {out[-200:]}")
+    if "DEFAULT_LOGIN: 200" not in out:
+        errors.append(f"'admin' should not authenticate with custom ADMIN_USER: {out[-200:]}")
+
+    # 2. ADMIN_USER colliding with GRADER_USER fails startup, even with the
+    # public account disabled.
+    out = run(script("""
+        os.environ["ADMIN_USER"] = "teacher"
+        try:
+            import app
+            print("NO_ERROR")
+        except RuntimeError as e:
+            print("RUNTIME_ERROR:", e)
+    """))
+    if "NO_ERROR" in out or "ADMIN_USER must differ from GRADER_USER" not in out:
+        errors.append(f"ADMIN_USER=GRADER_USER did not fail closed: {out[-200:]}")
+
+    # 3. Empty / whitespace ADMIN_USER fails startup.
+    for bad in ["", "   "]:
+        out = run(script("""
+            os.environ['ADMIN_USER'] = %r
+            try:
+                import app
+                print("NO_ERROR")
+            except RuntimeError as e:
+                print("RUNTIME_ERROR:", e)
+        """ % bad))
+        if "NO_ERROR" in out or "ADMIN_USER must not be empty" not in out:
+            errors.append(f"ADMIN_USER={bad!r} did not fail closed: {out[-200:]}")
+
+    # 4. ADMIN_USER colliding with an existing registered teacher fails startup.
+    out = run(script("""
+        db.init_db()
+        db.create_user("supervisor2", "x" * 60)
+        os.environ["ADMIN_USER"] = "supervisor2"
+        try:
+            import app
+            print("NO_ERROR")
+        except RuntimeError as e:
+            print("RUNTIME_ERROR:", e)
+    """))
+    if "NO_ERROR" in out or "collides with a registered teacher" not in out:
+        errors.append(f"ADMIN_USER/teacher collision did not fail closed: {out[-200:]}")
+
+    # 5. Case-only collision (ADMIN_USER=Teacher vs GRADER_USER=teacher) fails.
+    out = run(script("""
+        os.environ["ADMIN_USER"] = "Teacher"
+        try:
+            import app
+            print("NO_ERROR")
+        except RuntimeError as e:
+            print("RUNTIME_ERROR:", e)
+    """))
+    if "NO_ERROR" in out or "ADMIN_USER must differ from GRADER_USER" not in out:
+        errors.append(f"case-only ADMIN_USER collision did not fail closed: {out[-200:]}")
+
+    # 6. Empty PUBLIC_USER with the public account enabled fails startup.
+    out = run(script("""
+        os.environ["PUBLIC_PASSWORD"] = "test-public-pass-123"
+        os.environ["PUBLIC_USER"] = "   "
+        try:
+            import app
+            print("NO_ERROR")
+        except RuntimeError as e:
+            print("RUNTIME_ERROR:", e)
+    """))
+    if "NO_ERROR" in out or "PUBLIC_USER must not be empty" not in out:
+        errors.append(f"empty PUBLIC_USER did not fail closed: {out[-200:]}")
+
+    # 7. Mixed-case admin login resolves to the admin role.
+    out = run(script("""
+        import app
+        c = app.app.test_client()
+        r = c.post("/login", data={"username": "Admin", "password": "test-admin-pass-123"})
+        print("MIXED_LOGIN:", r.status_code)
+        r2 = c.get("/settings")
+        print("MIXED_SETTINGS:", r2.status_code)
+    """))
+    if "MIXED_LOGIN: 302" not in out:
+        errors.append(f"mixed-case admin login failed: {out[-200:]}")
+    if "MIXED_SETTINGS: 200" not in out:
+        errors.append(f"mixed-case admin /settings failed: {out[-200:]}")
+    print("  done")
+
+
 def test_passwords_must_differ(errors):
     """GRADER_PASSWORD == ADMIN_PASSWORD must fail closed (gpt-5.6 2026-10-07).
 
@@ -1541,7 +1679,7 @@ def test_passwords_must_differ(errors):
     admin check runs first. The app must refuse to start.
     """
     print("Testing password separation...")
-    import subprocess, textwrap
+    import subprocess, sys, textwrap
     code = textwrap.dedent("""
         import os
         os.environ["FLASK_SECRET_KEY"] = "x" * 32
@@ -1553,7 +1691,7 @@ def test_passwords_must_differ(errors):
         except RuntimeError as e:
             print("RUNTIME_ERROR:", e)
     """)
-    r = subprocess.run([".venv/bin/python", "-c", code], capture_output=True, text=True, cwd=".", timeout=30)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=".", timeout=30)
     out = r.stdout + r.stderr
     if "NO_ERROR" in out:
         errors.append("identical passwords did not fail closed")
@@ -1571,7 +1709,7 @@ def test_regenerate_rubric_endpoint(errors):
     os.environ.setdefault("ADMIN_PASSWORD", "test-admin-pass-123")
     import app as app_module
     client = app_module.app.test_client()
-    client.post("/login", data={"username": "teacher", "password": "test-admin-pass-123"})
+    client.post("/login", data={"username": "admin", "password": "test-admin-pass-123"})
     # Missing fields -> 400.
     r = client.post("/api/regenerate_rubric", json={})
     if r.status_code != 400:
@@ -2551,7 +2689,7 @@ def test_retry_question_route_returns_200_not_500(errors):
     import db as db_module
     from unittest.mock import patch
     client = app_module.app.test_client()
-    login_resp = client.post("/login", data={"username": "teacher", "password": "test-admin-pass-123"})
+    login_resp = client.post("/login", data={"username": "admin", "password": "test-admin-pass-123"})
     if login_resp.status_code != 302:
         errors.append(f"test login failed, got {login_resp.status_code}")
         print("  done")
@@ -2852,6 +2990,7 @@ def main():
     test_single_photo_empty_retries_once(errors)
     test_rubric_steps_auto_renumbered(errors)
     # Public demo account: isolation, rate limits, guardrails (no API calls)
+    test_admin_login_username_is_admin(errors)
     test_public_login_and_roles(errors)
     test_public_data_isolation(errors)
     test_public_cannot_access_settings(errors)
@@ -2945,6 +3084,7 @@ def main():
     test_login_required_and_usage_logging(errors)
     test_ap_rubric_no_weak_fallback(errors)
     test_proactive_graph_heuristic(errors)
+    test_admin_user_configurable_and_validated(errors)
     test_passwords_must_differ(errors)
     test_regenerate_rubric_endpoint(errors)
     test_teacher_criteria_forced_to_ap(errors)
@@ -3012,6 +3152,51 @@ def _setup_public_test_app(errors):
         errors.append(f"public test app setup failed: {e}")
         print("  done")
         return None
+
+
+def test_admin_login_username_is_admin(errors):
+    """Admin logs in with username 'admin'; the old 'teacher'+ADMIN_PASSWORD
+    combo no longer works; tester login ('teacher'+GRADER_PASSWORD) is intact."""
+    print("Testing admin login username is 'admin'...")
+    setup = _setup_public_test_app(errors)
+    if not setup:
+        return
+    app_module, _ = setup
+
+    # 'admin' + ADMIN_PASSWORD -> admin role: /settings reachable.
+    client = app_module.app.test_client()
+    r = client.post("/login", data={"username": "admin", "password": "test-admin-pass-123"})
+    if r.status_code != 302:
+        errors.append(f"admin login failed, got {r.status_code}")
+    else:
+        r2 = client.get("/settings")
+        if r2.status_code != 200:
+            errors.append(f"admin /settings should be 200, got {r2.status_code}")
+
+    # Old combo 'teacher' + ADMIN_PASSWORD must NOT authenticate as admin.
+    client2 = app_module.app.test_client()
+    r3 = client2.post("/login", data={"username": "teacher", "password": "test-admin-pass-123"})
+    if r3.status_code != 200:
+        errors.append(f"legacy admin combo should stay on login page, got {r3.status_code}")
+    # ...but it gets a helpful pointer to the new username, not a bare
+    # "wrong password" (upgrade safety; found by claude-opus-5-5 review).
+    if b"Admin login now uses username" not in r3.data:
+        errors.append("legacy admin combo should explain the new admin username")
+    r4 = client2.get("/settings")
+    if r4.status_code == 200:
+        errors.append("old admin combo must not reach /settings")
+
+    # Tester login still works: 'teacher' + GRADER_PASSWORD (tester role, which
+    # may access /settings like before — only limited roles are blocked).
+    client3 = app_module.app.test_client()
+    r5 = client3.post("/login", data={"username": "teacher", "password": "test-grader-pass-123"})
+    if r5.status_code != 302:
+        errors.append(f"tester login failed, got {r5.status_code}")
+    else:
+        r6 = client3.get("/settings")
+        if r6.status_code != 200:
+            errors.append(f"tester /settings should be 200, got {r6.status_code}")
+    print("  done")
 
 
 def test_public_login_and_roles(errors):
@@ -3206,7 +3391,7 @@ def test_admin_public_monitor_access(errors):
     if r2.status_code != 403:
         errors.append(f"tester GET /admin/public should be 403, got {r2.status_code}")
     # Admin -> 200.
-    client.post("/login", data={"username": "teacher", "password": "test-admin-pass-123"})
+    client.post("/login", data={"username": "admin", "password": "test-admin-pass-123"})
     r3 = client.get("/admin/public")
     if r3.status_code != 200:
         errors.append(f"admin GET /admin/public should be 200, got {r3.status_code}")
@@ -4954,7 +5139,7 @@ def test_admin_teacher_management(errors):
     app_module, db_module = setup
     _register_teacher(app_module.app.test_client(), "erin_adm")
     admin = app_module.app.test_client()
-    admin.post("/login", data={"username": "teacher",
+    admin.post("/login", data={"username": "admin",
                                "password": "test-admin-pass-123"})
     # List page.
     r = admin.get("/admin/teachers")
@@ -5062,7 +5247,7 @@ def test_teacher_registration_hardening(errors):
     app_module.REGISTER_MAX_LOGIN_PER_IP_PER_DAY = 100
     # Disabled teacher AJAX callers get JSON 401, not a redirect.
     admin = app_module.app.test_client()
-    admin.post("/login", data={"username": "teacher",
+    admin.post("/login", data={"username": "admin",
                                "password": "test-admin-pass-123"})
     admin.post("/admin/teachers/henry_ok/disable", data={"disabled": "1"})
     lc2 = app_module.app.test_client()

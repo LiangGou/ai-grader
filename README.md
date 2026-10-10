@@ -42,9 +42,10 @@ cd ai-grader
 
 Open http://localhost:5000 in your browser.
 
-On first run you'll be asked to set:
+On first run, set these in `.env` (copy from `.env.example`):
 - `GRADER_PASSWORD` — teacher login (≥12 chars)
-- `ADMIN_PASSWORD` — admin login, can access Settings (≥12 chars)
+- `ADMIN_PASSWORD` — admin login password (≥12 chars)
+- `ADMIN_USER` — admin login username (optional, defaults to `admin`)
 - `OPENAI_API_KEY` — your OpenAI key (or paste it on the Settings page later)
 
 These are written to `.env` (git-ignored, never committed).

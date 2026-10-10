@@ -69,11 +69,22 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
 #   ADMIN_PASSWORD  -> admin (full access incl. /settings and public monitoring)
 #   PUBLIC_PASSWORD -> public (isolated demo data, rate-limited, no /settings)
 # Fail closed: no silent defaults anywhere (empty password must never match).
-GRADER_USER = os.environ.get("GRADER_USER", "teacher")
+# The admin and tester roles have separate usernames (ADMIN_USER vs GRADER_USER)
+# so the two roles are never confused.
+# Usernames are canonicalized to lowercase once here: env-role logins compare
+# case-insensitively, matching how registered teacher usernames are stored.
+# (Found by gpt-5.6 review 2026-10-10: case-only collisions like
+# ADMIN_USER=Teacher vs GRADER_USER=teacher slipped past the checks.)
+GRADER_USER = (os.environ.get("GRADER_USER", "teacher") or "").strip().lower()
 GRADER_PASSWORD = os.environ.get("GRADER_PASSWORD")
+ADMIN_USER = (os.environ.get("ADMIN_USER", "admin") or "").strip().lower()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
-PUBLIC_USER = os.environ.get("PUBLIC_USER", "public")
+PUBLIC_USER = (os.environ.get("PUBLIC_USER", "public") or "").strip().lower()
 PUBLIC_PASSWORD = os.environ.get("PUBLIC_PASSWORD", "")
+if not GRADER_USER:
+    raise RuntimeError("GRADER_USER must not be empty")
+if not ADMIN_USER:
+    raise RuntimeError("ADMIN_USER must not be empty")
 if not GRADER_PASSWORD or len(GRADER_PASSWORD) < 12:
     raise RuntimeError("GRADER_PASSWORD (>=12 chars) must be set")
 if not ADMIN_PASSWORD or len(ADMIN_PASSWORD) < 12:
@@ -82,6 +93,17 @@ if not ADMIN_PASSWORD or len(ADMIN_PASSWORD) < 12:
 # runs first). Fail closed instead. Found by gpt-5.6 review 2026-10-07.
 if GRADER_PASSWORD == ADMIN_PASSWORD:
     raise RuntimeError("GRADER_PASSWORD and ADMIN_PASSWORD must differ")
+# The three env-role usernames must never collide with each other, or one
+# login name could resolve to two roles. Checked unconditionally: the public
+# account is optional, but the admin/tester split must hold regardless.
+# (Found by gpt-5.6 review 2026-10-10: these used to live inside the
+# PUBLIC_PASSWORD block and were skipped when the demo account was disabled.)
+if ADMIN_USER == GRADER_USER:
+    raise RuntimeError("ADMIN_USER must differ from GRADER_USER")
+if ADMIN_USER == PUBLIC_USER:
+    raise RuntimeError("ADMIN_USER must differ from PUBLIC_USER")
+if PUBLIC_USER == GRADER_USER:
+    raise RuntimeError("PUBLIC_USER must differ from GRADER_USER")
 # The public demo account is optional: empty PUBLIC_PASSWORD disables it.
 # The password may be short/simple (it's a shared demo login); the real
 # protection is data isolation + rate limits, not password strength.
@@ -90,8 +112,10 @@ if GRADER_PASSWORD == ADMIN_PASSWORD:
 if PUBLIC_PASSWORD:
     if PUBLIC_PASSWORD in (GRADER_PASSWORD, ADMIN_PASSWORD):
         raise RuntimeError("PUBLIC_PASSWORD must differ from GRADER_PASSWORD and ADMIN_PASSWORD")
-    if PUBLIC_USER == GRADER_USER:
-        raise RuntimeError("PUBLIC_USER must differ from GRADER_USER")
+    # An empty public username with the account enabled would be silently
+    # unusable (or worse); fail closed. Found by gpt-5.6 review 2026-10-10.
+    if not PUBLIC_USER:
+        raise RuntimeError("PUBLIC_USER must not be empty when PUBLIC_PASSWORD is set")
 
 # Auth version: changing any password invalidates all sessions.
 # HMAC-keyed with the server secret so the cookie value (signed, not encrypted)
@@ -231,10 +255,11 @@ TEACHER_TIERS = {
 DEFAULT_TEACHER_TIER = "free"
 
 # Usernames that can never be registered (they address the env-password roles).
-# Built from the configured login names, so a custom GRADER_USER/PUBLIC_USER
-# cannot be shadowed by a teacher account either.
+# Built from the configured login names, so a custom ADMIN_USER/GRADER_USER/
+# PUBLIC_USER cannot be shadowed by a teacher account either.
 def _reserved_usernames():
     return {"teacher", "admin", "public",
+            (ADMIN_USER or "").strip().lower(),
             (GRADER_USER or "").strip().lower(),
             (PUBLIC_USER or "").strip().lower()} - {""}
 
@@ -388,6 +413,19 @@ if PUBLIC_PASSWORD:
             "when the public account is enabled")
 
 db.init_db()
+
+# An env-role username must never match an already-registered teacher: env
+# roles are checked before registered teachers at login, so one username
+# resolving to two identities would confuse the roles. Registration blocks
+# these names going forward; this guards the pre-existing-data case.
+# Found by gpt-5.6 review 2026-10-10.
+for _env_role_name in (ADMIN_USER, GRADER_USER, PUBLIC_USER):
+    # Env-role names are already canonical lowercase, matching how teacher
+    # usernames are stored.
+    if db.get_user_by_username(_env_role_name):
+        raise RuntimeError(
+            f"Configured login name {_env_role_name!r} collides with a "
+            "registered teacher account; rename one of them.")
 
 
 @app.before_request
@@ -563,6 +601,9 @@ def login_page():
         session.clear()  # prevent session fixation (L2)
         pw = (request.form.get("password") or "").encode()
         user = request.form.get("username") or ""
+        # Env-role usernames are canonical lowercase; compare in that space
+        # so "Admin" and "admin" resolve to the same role.
+        user_lc = user.strip().lower()
         # Never match an empty password (fail closed).
         def _match(secret):
             s = (secret or "").encode()
@@ -572,17 +613,24 @@ def login_page():
         # Registered teachers are checked after the env-password roles: their
         # usernames can never be "teacher"/"admin"/"public" (reserved at
         # signup), so there is no shadowing either way.
-        if user == GRADER_USER and _match(ADMIN_PASSWORD):
+        if user_lc == ADMIN_USER and _match(ADMIN_PASSWORD):
             session["auth_v"] = AUTH_VERSION
             session["role"] = "admin"
             session.permanent = True
             return redirect(url_for("index"))
-        if user == GRADER_USER and _match(GRADER_PASSWORD):
+        if user_lc == GRADER_USER and _match(GRADER_PASSWORD):
             session["auth_v"] = AUTH_VERSION
             session["role"] = "tester"
             session.permanent = True
             return redirect(url_for("index"))
-        if PUBLIC_PASSWORD and user == PUBLIC_USER and _match(PUBLIC_PASSWORD):
+        # Legacy admin combo: before 2026-10-10 the admin logged in as the
+        # tester username + ADMIN_PASSWORD. Point at the new username instead
+        # of a bare "wrong password" so upgrades don't silently lock admins out.
+        if user_lc == GRADER_USER and _match(ADMIN_PASSWORD):
+            err = (f"Admin login now uses username '{ADMIN_USER}'. "
+                   "Please log in again with the admin username.")
+            return render_template("login.html", error=err)
+        if PUBLIC_PASSWORD and user_lc == PUBLIC_USER and _match(PUBLIC_PASSWORD):
             session["auth_v"] = AUTH_VERSION
             session["role"] = "public"
             session.permanent = True
