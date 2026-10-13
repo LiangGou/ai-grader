@@ -23,7 +23,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
 import db
 import grader
@@ -675,8 +675,12 @@ def register_page():
     cheap syntactic validation runs before any quota is consumed.
     """
     err = ""
+    typed_username = ""
     if request.method == "POST":
-        username = (request.form.get("username") or "").strip().lower()
+        # Keep the raw typed username so a failed attempt can re-render it
+        # verbatim instead of forcing the teacher to retype everything.
+        typed_username = request.form.get("username") or ""
+        username = typed_username.strip().lower()
         password = request.form.get("password") or ""
         confirm = request.form.get("confirm") or ""
         ip = _client_ip()
@@ -691,8 +695,10 @@ def register_page():
             err = "Passwords do not match."
         elif db.get_user_by_username(username):
             # Taken: report without consuming quota (the UNIQUE constraint
-            # remains the backstop for the check-then-act race).
-            err = "That username is taken. Please choose another."
+            # remains the backstop for the check-then-act race). The wording
+            # covers the double-submit case: the "taken" name may be the
+            # account the same teacher created seconds ago.
+            err = "That username is taken. If you just created this account, try logging in."
         elif not db.check_rate_limit(f"register:{ip}", "signup",
                                      REGISTER_MAX_PER_IP_PER_DAY):
             err = "Too many signups from this address today. Please try again tomorrow."
@@ -704,12 +710,15 @@ def register_page():
             try:
                 db.create_user(username, _gen(password), DEFAULT_TEACHER_TIER)
             except db.DuplicateUserError:
-                err = "That username is taken. Please choose another."
+                err = "That username is taken. If you just created this account, try logging in."
             else:
                 # Do not auto-login: a cross-site forged signup must not drop
-                # the victim into an attacker-known account.
+                # the victim into an attacker-known account. A one-time flash
+                # (carried in the signed session cookie, not a query flag a
+                # hand-made link could fake) makes the login page confirm.
+                flash("Account created — now log in", "registration_success")
                 return redirect(url_for("login_page"))
-    return render_template("register.html", error=err)
+    return render_template("register.html", error=err, username=typed_username)
 
 
 def _save_upload(file_storage, prefix):

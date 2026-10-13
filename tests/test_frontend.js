@@ -247,5 +247,48 @@ if (canRetryMatch) {
   check("delete uses btn-danger", indexHtml.includes("btn-danger"), true);
 })();
 
+// Registration anti-double-submit (2026-10-13): the register form disables
+// its submit button once a submit starts, so on a slow cold start a retry
+// click cannot produce a misleading "username is taken" error after the
+// first attempt already created the account.
+(function () {
+  console.log("register anti-double-submit:");
+  const regHtml = fs.readFileSync(path.join(__dirname, "..", "templates", "register.html"), "utf8");
+  const m = regHtml.match(/function disableSubmitOnSubmit\(form, btn\) \{[\s\S]*?\n\}/);
+  check("disableSubmitOnSubmit exists in register.html", !!m, true);
+  if (m) {
+    const disableSubmitOnSubmit = eval("(" + m[0] + ")");
+    const btn = { disabled: false, textContent: "Create account" };
+    let submitHandler = null;
+    let pageshowHandler = null;
+    const form = {
+      addEventListener: function (ev, fn) { if (ev === "submit") submitHandler = fn; },
+    };
+    const hadWindow = "window" in global;
+    const prevWindow = global.window;
+    global.window = {
+      addEventListener: function (ev, fn) { if (ev === "pageshow") pageshowHandler = fn; },
+    };
+    disableSubmitOnSubmit(form, btn);
+    check("submit handler registered", typeof submitHandler, "function");
+    check("button enabled before submit", btn.disabled, false);
+    submitHandler();
+    check("button disabled on submit", btn.disabled, true);
+    check("button label shows progress", btn.textContent, "Creating account...");
+    // Back/forward cache can restore the page with the button still
+    // disabled; pageshow must restore it or the teacher is stuck.
+    check("pageshow handler registered", typeof pageshowHandler, "function");
+    pageshowHandler();
+    check("button re-enabled on pageshow (bfcache)", btn.disabled, false);
+    check("button label restored on pageshow", btn.textContent, "Create account");
+    if (hadWindow) global.window = prevWindow; else delete global.window;
+    // Production wiring: the real element ids and the invocation itself.
+    check("registration form has regForm id", regHtml.includes('<form method="post" id="regForm">'), true);
+    check("registration button has submitBtn id", regHtml.includes('<button type="submit" id="submitBtn">'), true);
+    check("handler wired to production elements",
+      regHtml.includes('disableSubmitOnSubmit(document.getElementById("regForm"), document.getElementById("submitBtn"));'), true);
+  }
+})();
+
 console.log(failures === 0 ? "\nAll frontend tests passed!" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

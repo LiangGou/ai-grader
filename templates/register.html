@@ -84,6 +84,7 @@ button {
 }
 button:hover { background: var(--primary-hover); }
 button:active { background: var(--primary-active); }
+button:disabled { opacity: 0.6; cursor: default; }
 .err {
   color: var(--danger);
   background: var(--danger-soft);
@@ -100,15 +101,38 @@ button:active { background: var(--primary-active); }
 <div class="login-card">
   <h2>Teacher sign up</h2>
   <p class="login-sub">Your own classes, assignments, and usage limits</p>
-  {% if error %}<p class="err">{{ error }}</p>{% endif %}
-  <form method="post">
-    <input name="username" placeholder="Username" autocomplete="username" required>
-    <div class="hint">3-32 characters: lowercase letters, digits, underscore.</div>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" id="regForm">
+    <input name="username" placeholder="Username" autocomplete="username" required value="{{ username or '' }}">
+    <div class="hint">3-32 characters: lowercase letters, digits, underscore (for example, mrs_smith).</div>
     <input name="password" type="password" placeholder="Password (12+ characters)" autocomplete="new-password" required>
+    <div class="hint">Use 12-256 characters.</div>
     <input name="confirm" type="password" placeholder="Confirm password" autocomplete="new-password" required>
-    <button type="submit">Create account</button>
+    <button type="submit" id="submitBtn">Create account</button>
   </form>
   <p style="text-align:center;margin-top:18px;font-size:14px;color:var(--text-muted)">Already have an account? <a href="{{ url_for('login_page') }}" style="color:var(--primary)">Log in</a></p>
 </div>
+<script>
+// Disable the submit button as soon as a signup submit starts: on a slow
+// page load a second click would resubmit, and the retry then reports
+// "username is taken" even though the first attempt created the account.
+// The pageshow handler restores the button when the browser returns to
+// this page from its back/forward cache with the disabled state intact.
+// Accepted trade-off: if the user aborts the request (Stop/Esc) no
+// pageshow fires and the button stays disabled until a reload - a
+// timeout-based re-enable would reopen the double-submit window.
+function disableSubmitOnSubmit(form, btn) {
+  var originalText = btn.textContent;
+  form.addEventListener("submit", function () {
+    btn.disabled = true;
+    btn.textContent = "Creating account...";
+  });
+  window.addEventListener("pageshow", function () {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  });
+}
+disableSubmitOnSubmit(document.getElementById("regForm"), document.getElementById("submitBtn"));
+</script>
 </body>
 </html>

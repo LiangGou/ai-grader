@@ -3044,6 +3044,7 @@ def main():
     test_assignment_delete_ignores_planted_cross_partition_urls(errors)
     # Registered teachers (self-service signup, 2026-10-10).
     test_teacher_registration(errors)
+    test_teacher_registration_ux(errors)
     test_teacher_login_and_data_isolation(errors)
     test_teacher_tier_limits_enforced(errors)
     test_teacher_uses_owner_models(errors)
@@ -5006,6 +5007,101 @@ def test_teacher_registration(errors):
     r7 = client.get("/register")
     if r7.status_code != 200 or b"Teacher sign up" not in r7.data:
         errors.append("register page should render without login")
+    print("  done")
+
+
+def test_teacher_registration_ux(errors):
+    """Signup UX (2026-10-13): success notice, preserved username, up-front
+    guidance, duplicate submit creates no second account.
+
+    Customer report: a teacher believed registration had failed. Code
+    review found success was silent (blank login page), a rejected attempt
+    discarded the typed username, and the rules were only half-stated.
+    """
+    print("Testing teacher registration UX...")
+    setup = _setup_teacher_test_app(errors)
+    if not setup:
+        return
+    app_module, db_module = setup
+    # Clean this test's users so reruns against the shared test DB pass.
+    conn = db_module._connect()
+    cur = conn.cursor()
+    for _u in ("notice_teach", "dupe_teach"):
+        cur.execute(db_module._q("DELETE FROM users WHERE username = ?"), (_u,))
+    conn.commit()
+    conn.close()
+    client = app_module.app.test_client()
+    # Guidance is visible before submitting: an example username and the
+    # full password rule, not just placeholder text.
+    g = client.get("/register")
+    if b"mrs_smith" not in g.data:
+        errors.append("register page should show an example username (mrs_smith)")
+    if b"12-256" not in g.data:
+        errors.append("register page should state the 12-256 password rule up front")
+    # Successful signup lands on a login page that confirms creation. The
+    # confirmation rides in a one-time server-side flash, so the redirect
+    # target is the plain /login URL and no hand-made link can fake it.
+    r = _register_teacher(client, "notice_teach")
+    loc = r.headers.get("Location") or ""
+    from urllib.parse import urlsplit
+    parts = urlsplit(loc)
+    if r.status_code != 302 or parts.path != "/login" or parts.query:
+        errors.append(
+            f"successful registration should redirect to plain /login, "
+            f"got {r.status_code} {loc!r}")
+    landed = client.get(loc)
+    if b"Account created" not in landed.data:
+        errors.append("login page after signup should show the 'Account created' notice")
+    again = client.get("/login")
+    if b"Account created" in again.data:
+        errors.append("signup notice must be one-time: gone on the next login view")
+    spoofed = client.get("/login?created=1")
+    if b"Account created" in spoofed.data:
+        errors.append("a hand-made /login?created=1 link must not show the signup notice")
+    # Failed signup preserves the typed username, exactly as typed.
+    bad = client.post("/register", data={
+        "username": "Mrs.Smith", "password": "test-teacher-pass-123",
+        "confirm": "test-teacher-pass-123"})
+    if bad.status_code != 200 or b'value="Mrs.Smith"' not in bad.data:
+        errors.append("failed registration should preserve the typed username (Mrs.Smith)")
+    short_pw = client.post("/register", data={
+        "username": "valid_name", "password": "short", "confirm": "short"})
+    if short_pw.status_code != 200 or b'value="valid_name"' not in short_pw.data:
+        errors.append("short-password failure should preserve the typed username")
+    # Duplicate submit (double-click / retry on a slow load) creates no
+    # second account; the retry is rejected as taken.
+    d1 = _register_teacher(client, "dupe_teach")
+    d2 = _register_teacher(client, "dupe_teach")
+    if d1.status_code != 302:
+        errors.append(f"first dupe_teach registration should succeed, got {d1.status_code}")
+    if d2.status_code != 200 or b"taken" not in d2.data:
+        errors.append("duplicate registration should be rejected as taken")
+    conn = db_module._connect()
+    cur = conn.cursor()
+    row = cur.execute(db_module._q(
+        "SELECT COUNT(*) FROM users WHERE username = ?"), ("dupe_teach",)).fetchone()
+    conn.close()
+    if row[0] != 1:
+        errors.append(f"duplicate submit created {row[0]} accounts, expected exactly 1")
+    # Race backstop: when two submits are in flight together, both can pass
+    # the availability pre-check; the loser must be stopped by the UNIQUE
+    # constraint (DuplicateUserError) with the same "taken" answer - not a
+    # 500 and not a second account. Force the pre-check to miss to prove it.
+    orig_lookup = db_module.get_user_by_username
+    db_module.get_user_by_username = lambda u: None
+    try:
+        d3 = _register_teacher(client, "dupe_teach")
+    finally:
+        db_module.get_user_by_username = orig_lookup
+    if d3.status_code != 200 or b"try logging in" not in d3.data:
+        errors.append("UNIQUE-backstop duplicate should answer 'taken / try logging in'")
+    conn = db_module._connect()
+    cur = conn.cursor()
+    row = cur.execute(db_module._q(
+        "SELECT COUNT(*) FROM users WHERE username = ?"), ("dupe_teach",)).fetchone()
+    conn.close()
+    if row[0] != 1:
+        errors.append(f"backstop path left {row[0]} accounts, expected exactly 1")
     print("  done")
 
 
