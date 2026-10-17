@@ -175,10 +175,22 @@
     return Promise.resolve().then(function () {
       var items = collectItems(); // may be [] if the teacher deleted all rows
       setSaveStatus("refresh", "Saving…", false);
+      var body = JSON.stringify({ items: items });
+      // Browsers cap keepalive request bodies at 64 KiB (bytes, not
+      // chars). A body near that cap can be dropped silently when the
+      // save races a page unload, so log any save over 60 KiB. Checked
+      // on every save, not only unloads, so the risk is visible in the
+      // console while the teacher is still on the page.
+      if (typeof TextEncoder !== "undefined" &&
+          new TextEncoder().encode(body).length > 61440) {
+        console.warn("rubric save body exceeds 60 KiB; keepalive delivery" +
+          " during unload may exceed the browser's 64 KiB cap");
+      }
       return fetch("/assignment/" + window.ASSIGNMENT_ID + "/save_rubric", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: items })
+        body: body,
+        keepalive: true
       })
         .then(function (r) {
           // Check HTTP status before parsing (H3: HTML error pages).
@@ -199,8 +211,25 @@
   }
   function scheduleAutoSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(saveRubric, 1500);
+    saveTimer = setTimeout(function () { saveTimer = null; saveRubric(); }, 1500);
   }
+  // Flush a pending debounced auto-save before the page is hidden or left.
+  // Bug (phone report): an edit followed within the 1.5s debounce window by
+  // navigating away (e.g. tapping "Go to Grading"), closing, or
+  // backgrounding the tab lost the edit entirely -- the pending timer never
+  // fired, so the old rubric text came back on reopen. Flushing on pagehide
+  // / visibilitychange-hidden delivers that last edit instead; the save
+  // fetch uses keepalive so it can complete while the page unloads.
+  function flushRubricSave() {
+    if (saveTimer === null) return;
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    saveRubric();
+  }
+  window.addEventListener("pagehide", flushRubricSave);
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) flushRubricSave();
+  });
   function rubricRow(item) {
     item = item || {};
     var state = item.verified === "yes" ? "ok" : (item.verify_note ? "warn" : "manual");

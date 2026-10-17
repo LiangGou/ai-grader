@@ -290,5 +290,345 @@ if (canRetryMatch) {
   }
 })();
 
+// Bug (phone report, 2026-10-17): edit a rubric and save, then reopen and
+// the old text comes back. Root cause: edits only auto-save via a 1500ms
+// debounce, and nothing flushed a pending save when the page was hidden
+// or left, so an edit followed quickly by navigating away / closing /
+// backgrounding the tab on the phone was lost entirely.
+(function () {
+  console.log("rubric auto-save flush on page leave:");
+  check("flushRubricSave defined", /(?:^|\n)[ \t]*function\s+flushRubricSave\s*\(\s*\)/.test(appJs), true);
+  check("pagehide flushes pending save", /window\.addEventListener\(\s*["']pagehide["']\s*,\s*flushRubricSave\s*\)/.test(appJs), true);
+  check("visibility hidden flushes pending save", /if\s*\(\s*document\.hidden\s*\)\s*flushRubricSave\(\s*\)/.test(appJs), true);
+  check("save fetch uses keepalive", /keepalive\s*:\s*true/.test(appJs), true);
+  check("flush is a no-op with no pending save", /if\s*\(\s*saveTimer\s*===\s*null\s*\)\s*return;/.test(appJs), true);
+  check("debounced save clears its pending marker", /saveTimer\s*=\s*setTimeout\(\s*function\s*\(\s*\)\s*\{\s*saveTimer\s*=\s*null;\s*saveRubric\(\s*\);\s*\},\s*1500\s*\)/.test(appJs), true);
+  // The flush guard compares against null, so the declaration itself
+  // must initialise saveTimer to null (not leave it undefined).
+  check("saveTimer initialised to null", /var\s+saveTimer\s*=\s*null\s*;/.test(appJs), true);
+  // Oversized rubric bodies get a diagnostic (browsers cap keepalive
+  // bodies at 64 KiB in bytes; past that the unload save can be dropped).
+  check("oversized save body logs a warning", /TextEncoder\(\)\.encode\(body\)\.length\s*>\s*61440/.test(appJs), true);
+})();
+
+// Bug (phone report, 2026-10-17) — BEHAVIORAL regression test.
+// The pins above only prove the flush code exists. This test executes the
+// real autosave block from app.js (saveRubric / scheduleAutoSave /
+// flushRubricSave plus the pagehide / visibilitychange registrations) in a
+// vm sandbox with stubbed fetch, timers and listeners, and drives the
+// exact reported scenario: edit -> page hidden inside the 1500ms debounce
+// window -> the pending save must go out (with keepalive) instead of
+// being lost. On the pre-fix app.js there is no flush wiring at all, so
+// the "save sent on pagehide / on hide" checks below fail — that failure
+// is the bug, reproduced. Note: the sandbox asserts the keepalive flag
+// is passed to fetch; whether a given browser actually delivers a
+// keepalive request during unload is UA behavior a Node test cannot
+// prove.
+(function () {
+  console.log("rubric auto-save flush behavior:");
+  const vm = require("vm");
+  // Precondition for scenario E/E2: the oversized-body diagnostic needs
+  // TextEncoder (makeEnv injects it into the sandbox). Assert it here so
+  // a missing stub fails with the real cause, not a warning-count miss.
+  check("sandbox precondition: TextEncoder available", typeof TextEncoder, "function");
+
+  // Tiny synchronous Promise so the eval'd code settles in step with the
+  // fake timers (saveRubric chains off Promise.resolve().then(...)).
+  function settled(state, value) {
+    const p = {
+      then: function (onF, onR) {
+        try {
+          if (state === "fulfilled") {
+            return typeof onF === "function" ? unwrap(onF(value)) : p;
+          }
+          return typeof onR === "function" ? unwrap(onR(value)) : p;
+        } catch (e) {
+          return settled("rejected", e);
+        }
+      },
+      catch: function (onR) { return p.then(undefined, onR); },
+    };
+    return p;
+  }
+  function unwrap(r) {
+    // Only SyncPromise thenables settle synchronously. If eval'd code
+    // ever returns a real Promise, it surfaces here as a rejection —
+    // keep every dependency of the eval'd block stubbed (as makeEnv does).
+    if (r && typeof r.then === "function") {
+      let out = settled("rejected", new Error("async thenable in sync sandbox"));
+      r.then(
+        function (v) { out = settled("fulfilled", v); },
+        function (e) { out = settled("rejected", e); }
+      );
+      return out;
+    }
+    return settled("fulfilled", r);
+  }
+  const SyncPromise = {
+    resolve: function (v) { return unwrap(v); },
+    reject: function (e) { return settled("rejected", e); },
+  };
+
+  // Extract a top-level `function name(...) { ... }` by brace matching
+  // (string/comment aware, tolerant of whitespace style). The
+  // declaration is located with a line-anchored regex so a comment
+  // mentioning the function cannot be matched instead. Null if absent.
+  function extractFn(src, name) {
+    const decl = src.match(
+      new RegExp("(?:^|\\n)[ \\t]*function\\s+" + name + "\\s*\\("));
+    if (!decl) return null;
+    const start = decl.index + (decl[0].startsWith("\n") ? 1 : 0);
+    let i = src.indexOf("{", start);
+    if (i < 0) return null;
+    let depth = 0;
+    let quote = null, lineComment = false, blockComment = false;
+    for (let j = i; j < src.length; j++) {
+      const ch = src[j], next = src[j + 1];
+      if (lineComment) { if (ch === "\n") lineComment = false; continue; }
+      if (blockComment) {
+        if (ch === "*" && next === "/") { blockComment = false; j++; }
+        continue;
+      }
+      if (quote) {
+        if (ch === "\\") { j++; continue; }
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === "/" && next === "/") { lineComment = true; continue; }
+      if (ch === "/" && next === "*") { blockComment = true; continue; }
+      if (ch === "'" || ch === '"' || ch === "`") { quote = ch; continue; }
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) return src.slice(start, j + 1);
+      }
+    }
+    return null;
+  }
+
+  // Extract the addEventListener registration statement(s) for an event
+  // that wire up flushRubricSave (paren matched). app.js has other
+  // listeners for the same events (e.g. the rubric polling
+  // visibilitychange at the bottom) whose handlers reference unrelated
+  // IIFE state, so only statements mentioning flushRubricSave qualify.
+  // Returns "" when absent (the pre-fix file has none).
+  function extractFlushListeners(src, target, eventName) {
+    const needle = new RegExp(
+      target + "\\.addEventListener\\(\\s*[\"']" + eventName + "[\"']", "g");
+    let out = "";
+    let match;
+    while ((match = needle.exec(src)) !== null) {
+      const start = match.index;
+      let depth = 0, quote = null, end = -1;
+      let lineComment = false, blockComment = false;
+      for (let j = src.indexOf("(", start); j < src.length; j++) {
+        const ch = src[j], next = src[j + 1];
+        if (lineComment) { if (ch === "\n") lineComment = false; continue; }
+        if (blockComment) {
+          if (ch === "*" && next === "/") { blockComment = false; j++; }
+          continue;
+        }
+        if (quote) {
+          if (ch === "\\") { j++; continue; }
+          if (ch === quote) quote = null;
+          continue;
+        }
+        if (ch === "/" && next === "/") { lineComment = true; continue; }
+        if (ch === "/" && next === "*") { blockComment = true; continue; }
+        if (ch === "'" || ch === '"' || ch === "`") { quote = ch; continue; }
+        if (ch === "(") depth++;
+        else if (ch === ")") {
+          depth--;
+          if (depth === 0) { end = j; break; }
+        }
+      }
+      if (end < 0) break;
+      const stmt = src.slice(start, end + 1) + ";";
+      if (stmt.includes("flushRubricSave")) out += stmt + "\n";
+      needle.lastIndex = end + 1; // continue past this whole statement
+    }
+    return out;
+  }
+
+  // Fresh sandbox per scenario, mirroring a fresh page load: fresh
+  // saveTimer, fresh listener registries, a virtual timer clock.
+  function makeEnv(items) {
+    const fetchCalls = [];
+    const warnings = [];
+    const winListeners = {};
+    const docListeners = {};
+    let now = 0, nextTimerId = 1;
+    const timers = new Map();
+    const sandbox = {
+      Promise: SyncPromise,
+      TextEncoder: TextEncoder,
+      console: {
+        warn: function (msg) { warnings.push(String(msg)); },
+        log: function () {},
+      },
+      fetch: function (url, opts) {
+        fetchCalls.push({ url: url, opts: opts || {} });
+        return settled("fulfilled", {
+          ok: true,
+          status: 200,
+          json: function () { return settled("fulfilled", { ok: true }); },
+        });
+      },
+      collectItems: function () { return items; },
+      setSaveStatus: function () {},
+      setTimeout: function (fn, ms) {
+        const id = nextTimerId++;
+        timers.set(id, { fn: fn, at: now + ms });
+        return id;
+      },
+      clearTimeout: function (id) { timers.delete(id); },
+      window: {
+        ASSIGNMENT_ID: 4242,
+        addEventListener: function (ev, fn) {
+          (winListeners[ev] = winListeners[ev] || []).push(fn);
+        },
+      },
+      document: {
+        hidden: false,
+        addEventListener: function (ev, fn) {
+          (docListeners[ev] = docListeners[ev] || []).push(fn);
+        },
+      },
+    };
+    vm.createContext(sandbox);
+    // Use the saveTimer declaration exactly as written in app.js, so the
+    // sandbox exercises the real initial value: with a bare
+    // `var saveTimer;` the flush guard (=== null) misfires and scenario
+    // C fails behaviorally, not just on the pin. Fail loudly if the
+    // declaration cannot be found at all — never silently substitute.
+    const decl = appJs.match(/(?:^|\n)[ \t]*var\s+saveTimer(?:\s*=\s*[^;\n]+)?;/);
+    if (!decl) throw new Error("saveTimer declaration not found in app.js");
+    let boot = decl[0] + "\n";
+    const fnNames = ["saveRubric", "scheduleAutoSave", "flushRubricSave"];
+    for (const name of fnNames) {
+      const fnSrc = extractFn(appJs, name);
+      if (fnSrc) boot += fnSrc + "\n";
+    }
+    boot += extractFlushListeners(appJs, "window", "pagehide");
+    boot += extractFlushListeners(appJs, "document", "visibilitychange");
+    vm.runInContext(boot, sandbox);
+    return {
+      fetchCalls: fetchCalls,
+      warnings: warnings,
+      // An edit in the page: the rubric inputs call scheduleAutoSave().
+      edit: function () { vm.runInContext("scheduleAutoSave()", sandbox); },
+      advance: function (ms) {
+        now += ms;
+        for (const entry of Array.from(timers)) {
+          if (entry[1].at <= now) { timers.delete(entry[0]); entry[1].fn(); }
+        }
+      },
+      pagehide: function () {
+        (winListeners["pagehide"] || []).forEach(function (fn) { fn(); });
+      },
+      visibility: function (hidden) {
+        sandbox.document.hidden = hidden;
+        (docListeners["visibilitychange"] || []).forEach(function (fn) { fn(); });
+      },
+    };
+  }
+
+  const editedItems = [{ prompt: "Edited criterion", points: 5 }];
+
+  // Scenario A (the reported bug): edit, then leave the page inside the
+  // debounce window. The pending save must be flushed by pagehide.
+  {
+    const env = makeEnv(editedItems);
+    env.edit();
+    env.advance(500); // still inside the 1500ms debounce
+    check("A: no save sent yet inside debounce window", env.fetchCalls.length, 0);
+    env.pagehide();
+    check("A: pagehide sends the pending save", env.fetchCalls.length, 1);
+    if (env.fetchCalls.length === 1) {
+      const call = env.fetchCalls[0];
+      check("A: save posts to the rubric endpoint",
+        call.url, "/assignment/4242/save_rubric");
+      check("A: save uses POST", call.opts.method, "POST");
+      check("A: save uses keepalive so it survives unload",
+        call.opts.keepalive, true);
+      check("A: save body carries the edit",
+        call.opts.body, JSON.stringify({ items: editedItems }));
+    }
+    env.advance(5000); // the flushed debounce timer must not re-send
+    check("A: no duplicate save after flush", env.fetchCalls.length, 1);
+    check("A: normal-size body logs no size warning", env.warnings.length, 0);
+  }
+
+  // Scenario B: backgrounding the tab (visibilitychange -> hidden) also
+  // flushes; becoming visible again does not.
+  {
+    const env = makeEnv(editedItems);
+    env.edit();
+    env.visibility(true);
+    check("B: hiding the tab sends the pending save", env.fetchCalls.length, 1);
+
+    const env2 = makeEnv(editedItems);
+    env2.edit();
+    env2.visibility(false);
+    check("B: visibilitychange to visible sends nothing", env2.fetchCalls.length, 0);
+  }
+
+  // Scenario C: with nothing pending the flush is a no-op, and the normal
+  // debounce path still saves exactly once (no re-send on later pagehide).
+  {
+    const env = makeEnv(editedItems);
+    env.pagehide();
+    check("C: pagehide with no pending edit sends nothing", env.fetchCalls.length, 0);
+    env.edit();
+    env.advance(1500);
+    check("C: debounce still saves after 1500ms", env.fetchCalls.length, 1);
+    env.pagehide();
+    check("C: pagehide after a completed save sends nothing more",
+      env.fetchCalls.length, 1);
+  }
+
+  // Scenario D: one navigation on mobile typically fires BOTH pagehide
+  // and visibilitychange-hidden for the same edit; the pair must still
+  // produce exactly one save, in either order.
+  {
+    const env = makeEnv(editedItems);
+    env.edit();
+    env.pagehide();
+    env.visibility(true);
+    check("D: pagehide + visibility-hidden send exactly one save",
+      env.fetchCalls.length, 1);
+
+    const env2 = makeEnv(editedItems);
+    env2.edit();
+    env2.visibility(true);
+    env2.pagehide();
+    check("D: visibility-hidden + pagehide send exactly one save",
+      env2.fetchCalls.length, 1);
+  }
+
+  // Scenario E: an oversized rubric body (over the 64 KiB keepalive cap,
+  // counted in BYTES) still gets its save attempt, and the size risk is
+  // logged as a diagnostic. E2 uses multibyte chars whose byte length
+  // exceeds the cap while their char length does not — the warning must
+  // be driven by bytes, not String.length.
+  {
+    const bigItems = [{ prompt: "x".repeat(70000), points: 5 }];
+    const env = makeEnv(bigItems);
+    env.edit();
+    env.pagehide();
+    check("E: oversized body still sends the save", env.fetchCalls.length, 1);
+    check("E: oversized body logs a size warning", env.warnings.length, 1);
+
+    const mbItems = [{ prompt: "é".repeat(40000), points: 5 }]; // 40k chars, 80k bytes
+    const env2 = makeEnv(mbItems);
+    env2.edit();
+    env2.pagehide();
+    check("E2: multibyte body over the byte cap still sends the save",
+      env2.fetchCalls.length, 1);
+    check("E2: multibyte body over the byte cap logs a warning",
+      env2.warnings.length, 1);
+  }
+})();
+
 console.log(failures === 0 ? "\nAll frontend tests passed!" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
