@@ -395,10 +395,18 @@ def _chat_json(system, user_content, max_tokens, model=None, reasoning_effort=No
     if _get_current_role() == "public":
         model = PUBLIC_MODEL
         reasoning_effort = None
-    # Reasoning models (o1/o3) and gpt-5.x use max_completion_tokens and don't
-    # support response_format=json_object; ask for JSON in the prompt instead.
+    # Reasoning models (o1/o3) and gpt-5.x/gpt-6.x use max_completion_tokens
+    # instead of max_tokens; this path asks for JSON in the prompt instead
+    # of sending response_format=json_object. (gpt-6.x added 2026-10-24
+    # with the gpt-6.1-sol swap: keyed on "gpt-5" only, _chat_json sent
+    # max_tokens and the API answered 400 "Unsupported parameter:
+    # 'max_tokens'". Verified by smoke call the same day: gpt-6.1-sol
+    # accepts response_format alongside max_completion_tokens — only
+    # max_tokens is rejected — but prompt-only JSON is kept for gpt-6
+    # deliberately, for parity with the gpt-5 reasoning path.)
     is_reasoning = (model.startswith("o1") or model.startswith("o3")
-                    or model.startswith("gpt-5"))
+                    or model.startswith("gpt-5")
+                    or model.startswith("gpt-6"))
     kwargs = dict(
         model=model,
         messages=[
@@ -859,7 +867,7 @@ def extract_student_name(image_path):
                 {"type": "image_url", "image_url": {"url": data_url}},
             ],
             max_tokens=100,
-            model="gpt-5.6-sol",
+            model="gpt-6.1-sol",
         )
         if tmp_crop:
             try:
@@ -890,7 +898,7 @@ def _validate_diagram(image_path, question_text, reference_solution):
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
             ],
             max_tokens=500,
-            model="gpt-5.6-sol",
+            model="gpt-6.1-sol",
         )
         if isinstance(data, dict):
             return bool(data.get("valid", False)), str(data.get("reason", ""))
@@ -915,8 +923,10 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
         f"{hint_line}"
         "Write Python code that draws the diagram for this problem."
     )
-    # Retry up to 3 times: gpt-5.6-sol sometimes returns empty responses
-    # for complex prompts (seen 2026-10-08 on rational function graphs).
+    # Retry up to 3 times: the previous model (gpt-5.6-sol) sometimes
+    # returned empty responses for complex prompts (seen 2026-10-08 on
+    # rational function graphs); the retry stays as a safety net after
+    # the 2026-10-24 swap to gpt-6.1-sol.
     code = ""
     for attempt in range(3):
         try:
@@ -924,7 +934,7 @@ def _generate_diagram(question_text, reference_solution, upload_dir, diagram_hin
                 DIAGRAM_GEN_SYSTEM,
                 [{"type": "text", "text": prompt}],
                 max_tokens=2000,
-                model="gpt-5.6-sol",  # was o3; gpt-5.6-sol is more reliable (2026-10-08)
+                model="gpt-6.1-sol",  # owner swap 2026-10-24; was gpt-5.6-sol since 2026-10-08
             )
             code = data.get("code", "") if isinstance(data, dict) else ""
             if not code or not isinstance(code, str):
@@ -1178,7 +1188,7 @@ def _digitize_single_photo(image_path, photo_idx, total_photos, hint=None):
     for attempt in range(4):
         try:
             data = _chat_json(EXAMPLE_RUBRIC_SYSTEM, attempt_content, max_tokens=12000,
-                              model="gpt-5.6-sol")
+                              model="gpt-6.1-sol")
             questions = data.get("questions") if isinstance(data, dict) else None
             if not isinstance(questions, list):
                 last_err = RuntimeError(
@@ -1343,7 +1353,7 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
                 "You are an expert calculus teacher. Solve the problem completely, showing every step.",
                 [{"type": "text", "text": f"Solve this problem step by step:\n\n{question_text}"}],
                 max_tokens=2000,
-                model="gpt-5.6-sol",
+                model="gpt-6.1-sol",
             )
             reference_solution = gen.get("solution", "") if isinstance(gen, dict) else str(gen)
             if not reference_solution.strip():
@@ -1374,10 +1384,10 @@ def validate_question(question_text, reference_solution, retry_hint="", image_pa
                 pass
         user_msg += "\n\n[Original photos attached — verify the transcription against the handwriting.]"
         user_content[0] = {"type": "text", "text": user_msg}
-    # Try gpt-5.6-sol (OpenAI's strongest) for verification.
+    # Try gpt-6.1-sol for verification (owner swap 2026-10-24).
     # (2026-10-07: o3 was worse than gpt-4o — more confidently wrong + crashes.)
     data = _chat_json(VALIDATE_SYSTEM, user_content,
-        max_tokens=2048, model="gpt-5.6-sol",
+        max_tokens=2048, model="gpt-6.1-sol",
     )
     # Fail-safe: empty/invalid LLM response (seen with o3, 2026-10-07).
     if not isinstance(data, dict):
@@ -1786,7 +1796,7 @@ def transcribe_questions_only(image_paths):
     for p in image_paths:
         user_content.append({"type": "image_url", "image_url": {"url": _data_url(p)}})
     data = _chat_json(QUESTIONS_ONLY_SYSTEM, user_content, max_tokens=4096,
-                      model="gpt-5.6-sol")
+                      model="gpt-6.1-sol")
     questions = []
     for it in data.get("questions", []):
         try:
@@ -2793,7 +2803,7 @@ def grade_paper(rubric_text, rubric_items, image_paths, reference_image_paths=No
         )
 
     data = _chat_json(GRADER_SYSTEM, user_content, max_tokens=4096,
-                      model="gpt-5.6-sol")
+                      model="gpt-6.1-sol")
 
     # Normalize + safety checks.
     questions = []

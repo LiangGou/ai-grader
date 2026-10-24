@@ -149,9 +149,9 @@ node tests/test_frontend.js
 
 ### Models
 
-- **Digitization** (reading reference photos): `gpt-5.6-sol` — vision
+- **Digitization** (reading reference photos): `gpt-6.1-sol` — vision (swapped from `gpt-5.6-sol` 2026-10-24; the same model also serves student-name extraction, diagram validation and generation, reference-solution generation inside `validate_question`, question-only transcription, question verification, and grading)
 - **Solving** (generating reference solutions): `o3` — reasoning, up to 10 attempts with error feedback
-- **Grading** (scoring student papers): configurable via `OPENAI_MODEL`, default `gpt-4o`
+- **Grading** (scoring student papers): `gpt-6.1-sol` (hardcoded in `grade_paper`)
 
 ### Database
 

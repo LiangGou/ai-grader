@@ -1040,8 +1040,14 @@ def test_verify_solution_python_check_confirmed_and_mismatch(errors):
     try:
         # Patch both common client names so this remains network-free whether
         # grader.py uses the chat-completions or responses interface.
+        # Also patch _get_client: _chat_json builds a fresh client through
+        # it and never reads the module-level client attributes, so without
+        # this patch the test silently made live calls to the reasoning
+        # model and its verdict rode on nondeterministic live output
+        # (flake observed 2026-10-24; dual review round 2).
         with patch.object(grader, "client", fake_client, create=True), \
-             patch.object(grader, "openai_client", fake_client, create=True):
+             patch.object(grader, "openai_client", fake_client, create=True), \
+             patch.object(grader, "_get_client", return_value=fake_client):
             matching = grader.verify_solution(
                 "Evaluate 2 + 3 * 4.",
                 "Using order of operations, the final answer is 14.",
@@ -1855,16 +1861,18 @@ def test_validate_ocr_check(errors):
 
 
 def test_verifier_uses_reasoning_model(errors):
-    """Verifier must use gpt-5.6-sol (2026-10-07).
+    """Verifier must use gpt-6.1-sol (owner swap 2026-10-24).
 
-    Trying OpenAI's strongest model after o3 disappointed.
+    Originally pinned to gpt-5.6-sol on 2026-10-07 after o3
+    disappointed; the owner moved every gpt-5.6-sol call in the
+    grader to gpt-6.1-sol on 2026-10-24 (same tier, half the price).
     """
-    print("Testing verifier uses gpt-5.6-sol...")
+    print("Testing verifier uses gpt-6.1-sol...")
     import grader
     import inspect
     src_code = inspect.getsource(grader.validate_question)
-    if 'model="gpt-5.6-sol"' not in src_code:
-        errors.append("validate_question should use gpt-5.6-sol")
+    if 'model="gpt-6.1-sol"' not in src_code:
+        errors.append("validate_question should use gpt-6.1-sol")
     print("  done")
 
 
@@ -1899,26 +1907,119 @@ def test_chat_json_gpt5_compat(errors):
     print("  done")
 
 
-def test_digitize_uses_gpt56(errors):
-    """Digitization (OCR) must use gpt-5.6-sol (user req 2026-10-08)."""
+def test_chat_json_gpt6_reasoning_params(errors):
+    """_chat_json must send reasoning-style params for gpt-6* models.
+
+    Bug 2026-10-24: the swap to gpt-6.1-sol left _chat_json's compat
+    check keyed on the "gpt-5" prefix only, so gpt-6.1-sol received
+    legacy max_tokens and the API answered 400 "Unsupported
+    parameter: 'max_tokens'" (the full-pipeline regression run died
+    in digitization). Mocked client, no API calls: capture the
+    kwargs _chat_json builds for gpt-6.1-sol, gpt-5.6-sol, and gpt-4o.
+    """
+    print("Testing gpt-6 reasoning params...")
+    import grader
+    from unittest.mock import patch
+
+    captured = {}
+
+    class _Msg:
+        content = '{"ok": true}'
+
+    class _Choice:
+        message = _Msg()
+
+    class _Resp:
+        choices = [_Choice()]
+        usage = None
+
+    class _Completions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _Resp()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    def kwargs_for(model):
+        captured.clear()
+        # Pin a non-public role: _chat_json overrides the model with
+        # PUBLIC_MODEL for the public role, which would silently change
+        # what this test measures (dual review 2026-10-24).
+        with patch.object(grader, "_get_client", return_value=_Client()), \
+             patch.object(grader, "_get_current_role", return_value="private"):
+            grader._chat_json("sys", "user", max_tokens=321, model=model)
+        return dict(captured)
+
+    kw = kwargs_for("gpt-6.1-sol")
+    if kw.get("max_completion_tokens") != 321 or "max_tokens" in kw:
+        errors.append(
+            f"gpt-6.1-sol must use max_completion_tokens, got {sorted(kw)}")
+    if "response_format" in kw:
+        errors.append("gpt-6.1-sol must not send response_format")
+    kw = kwargs_for("gpt-5.6-sol")
+    if kw.get("max_completion_tokens") != 321 or "max_tokens" in kw:
+        errors.append("gpt-5.6-sol reasoning params regressed")
+    if "response_format" in kw:
+        errors.append("gpt-5.6-sol must not send response_format")
+    kw = kwargs_for("gpt-4o")
+    if kw.get("max_tokens") != 321 or "max_completion_tokens" in kw:
+        errors.append("gpt-4o must keep legacy max_tokens")
+    if kw.get("response_format") != {"type": "json_object"}:
+        errors.append("gpt-4o must keep response_format=json_object")
+    print("  done")
+
+
+def test_digitize_uses_gpt61(errors):
+    """Digitization (OCR) must use gpt-6.1-sol.
+
+    User req 2026-10-08 pinned digitization to gpt-5.6-sol; the
+    owner swapped every gpt-5.6-sol call to gpt-6.1-sol on 2026-10-24.
+    """
     print("Testing digitize model...")
     import grader
     import inspect
     for fn_name in ("_digitize_single_photo", "transcribe_questions_only"):
         src_code = inspect.getsource(getattr(grader, fn_name))
-        if 'model="gpt-5.6-sol"' not in src_code:
-            errors.append(f"{fn_name} should use gpt-5.6-sol")
+        if 'model="gpt-6.1-sol"' not in src_code:
+            errors.append(f"{fn_name} should use gpt-6.1-sol")
     print("  done")
 
 
-def test_grader_uses_gpt56(errors):
-    """Grading must use gpt-5.6-sol (user req 2026-10-08)."""
+def test_grader_uses_gpt61(errors):
+    """Grading must use gpt-6.1-sol.
+
+    User req 2026-10-08 pinned grading to gpt-5.6-sol; the owner
+    swapped every gpt-5.6-sol call to gpt-6.1-sol on 2026-10-24.
+    """
     print("Testing grader model...")
     import grader
     import inspect
     src_code = inspect.getsource(grader.grade_paper)
-    if 'model="gpt-5.6-sol"' not in src_code:
-        errors.append("grade_paper should use gpt-5.6-sol")
+    if 'model="gpt-6.1-sol"' not in src_code:
+        errors.append("grade_paper should use gpt-6.1-sol")
+    print("  done")
+
+
+def test_name_and_diagram_sites_use_gpt61(errors):
+    """Name extraction and the diagram helpers must use gpt-6.1-sol.
+
+    These three call sites were part of the owner's 2026-10-24 swap of
+    every gpt-5.6-sol call, but unlike digitize/grade/verify they had
+    no pin; a future revert would not have failed the suite (dual
+    review 2026-10-24).
+    """
+    print("Testing name/diagram model pins...")
+    import grader
+    import inspect
+    for fn_name in ("extract_student_name", "_validate_diagram",
+                    "_generate_diagram"):
+        src_code = inspect.getsource(getattr(grader, fn_name))
+        if 'model="gpt-6.1-sol"' not in src_code:
+            errors.append(f"{fn_name} should use gpt-6.1-sol")
     print("  done")
 
 
@@ -2828,8 +2929,8 @@ def test_digitize_uses_large_token_budget(errors):
         errors.append("digitize prompt should state photo position (photo X of Y)")
     if "Do not invent" not in seen.get("prompt", ""):
         errors.append("digitize prompt should forbid inventing questions")
-    if seen.get("model") != "gpt-5.6-sol":
-        errors.append(f"digitize should use gpt-5.6-sol, got {seen.get('model')}")
+    if seen.get("model") != "gpt-6.1-sol":
+        errors.append(f"digitize should use gpt-6.1-sol, got {seen.get('model')}")
     print("  done")
 
 
@@ -2953,8 +3054,10 @@ def main():
     test_validate_ocr_check(errors)
     test_verifier_uses_reasoning_model(errors)
     test_chat_json_gpt5_compat(errors)
-    test_digitize_uses_gpt56(errors)
-    test_grader_uses_gpt56(errors)
+    test_chat_json_gpt6_reasoning_params(errors)
+    test_digitize_uses_gpt61(errors)
+    test_grader_uses_gpt61(errors)
+    test_name_and_diagram_sites_use_gpt61(errors)
     test_digitize_retry_on_bad_json(errors)
     test_verifier_empty_response(errors)
     test_q_placeholder_conversion(errors)
